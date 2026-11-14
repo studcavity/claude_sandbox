@@ -4,8 +4,9 @@
 github_user="studcavity"
 git_email="353176155+studcavity@users.noreply.github.com"
 
-if [ -z $1 ]; then
+if [ -z "${1:-}" ]; then
   echo "Usage: $0 repository [extra claude_sandbox.py flags, e.g. --tmux]"
+  echo "       $0 --setup-token   (one-time: save a Claude login token)"
   exit 1
 fi
 
@@ -26,4 +27,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 
-python3 claude_sandbox.py --repo "${github_user}/${1}" --image images:ubuntu/24.04 --cli incus --git-name "${github_user}" --git-email "${git_email}" "${@:2}"
+common=(--image images:ubuntu/24.04 --cli incus)
+if [ "$1" = "--setup-token" ]; then
+  exec python3 claude_sandbox.py "${common[@]}" "$@"
+fi
+
+python3 claude_sandbox.py --repo "${github_user}/${1}" "${common[@]}" --git-name "${github_user}" --git-email "${git_email}" "${@:2}"

@@ -26,6 +26,25 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 `<github_user>/<repository>`. Any extra flags go to `claude_sandbox.py`
 (see `python3 claude_sandbox.py --help`).
 
+## Claude login
+Run this once to avoid `/login` in every session:
+```
+./run.sh --setup-token
+```
+It starts a throwaway sandbox (no GitHub key, no clone) and runs
+`claude setup-token`. Sign in through the browser link, copy the token it
+prints, and paste it at the hidden prompt. It's saved to
+`~/.config/claude_sandbox/oauth_token` (mode 600; override with
+`--token-file`). Every later session, including concurrent ones, uses it
+automatically. The token lasts about a year; re-run the command to replace
+it, or delete the file to go back to `/login`.
+
+Credential lookup, first match wins: `CLAUDE_CODE_OAUTH_TOKEN` in the host
+environment, then the token file. `ANTHROPIC_API_KEY` is also passed through
+if set. Credentials go into the container over stdin, into a mode-600 file
+that the session loads and deletes, so they never show up in the host's
+process list.
+
 ## cached base image
 On first run, `claude_sandbox.py` builds a local image (`claude-sandbox-<hash>`)
 with Claude Code, git, ssh, tmux, Python (pip, venv), build tools and

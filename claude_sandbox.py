@@ -22,8 +22,14 @@ GitHub auth: set GITHUB_TOKEN / GH_TOKEN, or be logged in with `gh`.
   - Deploy key mode needs admin rights on the repo
     (fine-grained token: "Administration: read & write").
 
-Claude auth: if ANTHROPIC_API_KEY is set on the host it is passed into the
-session. Otherwise, run /login inside Claude Code.
+Claude auth, first match wins:
+  - CLAUDE_CODE_OAUTH_TOKEN on the host, or the token file
+    (~/.config/claude_sandbox/oauth_token; create it with --setup-token,
+    which runs `claude setup-token` in a throwaway sandbox). Long-lived and
+    read-only, so it is safe to share between concurrent sessions.
+  - ANTHROPIC_API_KEY on the host (API billing).
+  - Otherwise, run /login inside Claude Code.
+Secrets are piped into the container over stdin, never put on a command line.
 
 Examples:
   ./claude_sandbox.py --repo myuser/myproject      # deploy key + clone
@@ -32,9 +38,11 @@ Examples:
 """
 import argparse
 import datetime
+import getpass
 import hashlib
 import json
 import os
+import shlex
 import signal
 import string
 import subprocess
@@ -56,6 +64,11 @@ USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
 # in the container; incus already sets LANG=C.UTF-8.)
 TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                  "LC_TERMINAL", "LC_TERMINAL_VERSION")
+
+DEFAULT_TOKEN_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "claude_sandbox", "oauth_token")
+SECRETS_FILE = f"{HOME}/.sandbox_secrets"  # inside the container
 
 # Tools listed in the sandbox's CLAUDE.md when present.
 SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
@@ -144,7 +157,7 @@ def gh_api(method, path, token, body=None):
 
 
 # --------------------------------------------------------------------------- #
-# sandbox
+# containers
 # --------------------------------------------------------------------------- #
 class Container:
     """Thin wrapper for running commands in one named container."""
@@ -250,6 +263,23 @@ def ensure_base_image(cli, source, max_age_days, rebuild):
             run([cli, "image", "delete", stale], check=False, capture=True)
             log(f"removed stale image {stale}")
     return alias
+
+
+def read_token_file(path):
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def save_token_file(path, token):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    os.replace(tmp, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -392,17 +422,46 @@ class Sandbox:
         )
         self.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md", input=md)
 
+    def claude_secrets(self):
+        secrets = {}
+        token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+                 or read_token_file(self.args.token_file))
+        if token:
+            secrets["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            secrets["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
+        return secrets
+
+    def push_secrets(self):
+        """Write credentials to a 0600 file in the container via stdin.
+
+        `incus exec --env K=V` would put them on the host's process list.
+        Returns a shell prefix that loads and removes the file.
+        """
+        secrets = self.claude_secrets()
+        if not secrets:
+            log("no Claude credential found; run /login in the session "
+                "(or create one with --setup-token)")
+            return ""
+        log("passing " + " and ".join(secrets) + " into the sandbox")
+        self.user(f"umask 077 && cat > {SECRETS_FILE}", input="".join(
+            f"export {k}={shlex.quote(v)}\n" for k, v in secrets.items()))
+        # Already logged in, so skip Claude Code's first-run onboarding.
+        self.user("[ -e ~/.claude.json ] || "
+                  "echo '{\"hasCompletedOnboarding\": true}' > ~/.claude.json")
+        return f". {SECRETS_FILE} && rm -f {SECRETS_FILE} && "
+
     def session(self, workdir):
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
+        load_secrets = self.push_secrets()
         prog = "bash -l" if self.args.shell else "claude"
         if self.args.tmux:
             # tmux sets its own TERM/TERM_PROGRAM, giving Claude Code a
             # well-known terminal; scroll with the mouse or prefix-[ .
             prog = f"tmux new-session -s claude '{prog}'"
         prog = f"exec {prog}"
-        cmd = self.user_cmd("bash", "-lc", f"cd '{workdir}' && {prog}", env=env)
+        cmd = self.user_cmd("bash", "-lc",
+                            f"{load_secrets}cd '{workdir}' && {prog}", env=env)
         cmd[cmd.index("--cwd") + 1] = workdir
 
         log("starting session (exit Claude Code to tear everything down)")
@@ -413,6 +472,28 @@ class Sandbox:
             subprocess.run(cmd)
         finally:
             signal.signal(signal.SIGINT, prev)
+
+    def setup_token(self):
+        """Run `claude setup-token` interactively, then save the pasted token."""
+        env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
+        log("running `claude setup-token`: sign in in your browser, then "
+            "copy the token it prints")
+        prev = signal.signal(signal.SIGINT, lambda *_: None)
+        try:
+            subprocess.run(self.user_cmd("bash", "-lc", "claude setup-token",
+                                         env=env))
+        finally:
+            signal.signal(signal.SIGINT, prev)
+        token = getpass.getpass(
+            "\nPaste the token (input hidden, empty to cancel): ").strip()
+        if not token:
+            log("no token entered; nothing saved")
+            return 1
+        if not token.startswith("sk-ant-"):
+            log("warning: that doesn't look like a Claude token; saving anyway")
+        save_token_file(self.args.token_file, token)
+        log(f"saved token to {self.args.token_file} (mode 600)")
+        return 0
 
     def teardown(self):
         if self._torn_down:
@@ -470,6 +551,14 @@ def main():
                        os.path.abspath(__file__)), "sandbox_CLAUDE.md"),
                    help="template for ~/.claude/CLAUDE.md in the sandbox "
                         "(default: sandbox_CLAUDE.md next to this script)")
+    p.add_argument("--setup-token", action="store_true",
+                   help="run `claude setup-token` in a throwaway sandbox and "
+                        "save the long-lived login token to --token-file, "
+                        "then exit (no GitHub key, no clone)")
+    p.add_argument("--token-file", default=DEFAULT_TOKEN_FILE, metavar="PATH",
+                   help="Claude login token passed into every session "
+                        f"(default: {DEFAULT_TOKEN_FILE}); overridden by "
+                        "CLAUDE_CODE_OAUTH_TOKEN on the host")
     args = p.parse_args()
     if not os.path.isfile(args.claude_md):
         p.error(f"--claude-md: no such file: {args.claude_md}")
@@ -487,6 +576,9 @@ def main():
             image = ensure_base_image(args.cli, args.image,
                                       args.max_age, args.rebuild)
         box.launch(image)
+        if args.setup_token:
+            box.install_claude()
+            return box.setup_token()
         box.provision_key()
         box.install_claude()
         workdir = box.clone()
