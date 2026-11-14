@@ -40,6 +40,24 @@ import uuid
 API = "https://api.github.com"
 USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
 
+# `incus/lxc exec` starts with a clean environment: only TERM is carried over
+# from the client. Without the rest, Claude Code can't identify the outer
+# terminal (or that it's running under tmux/screen) and falls back to
+# conservative rendering, which can break native scrollback. Forward the
+# terminal-identity variables so the session behaves like it does on the host.
+# (LANG/LC_ALL are deliberately not forwarded: the host locale may not exist
+# in the container; incus already sets LANG=C.UTF-8.)
+TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
+                 "LC_TERMINAL", "LC_TERMINAL_VERSION")
+
+TMUX_CONF = """\
+set -g mouse on
+set -g history-limit 100000
+set -g default-terminal tmux-256color
+set -as terminal-features ',*:RGB'
+set -g status off
+"""
+
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -134,6 +152,13 @@ class Sandbox:
                   "apt-get install -y -qq git curl openssh-client)",
                   capture=True)
 
+        if self.args.tmux:
+            log("installing tmux")
+            self.root("command -v tmux >/dev/null || "
+                      "(apt-get update -qq && apt-get install -y -qq tmux)",
+                      capture=True)
+            self.user("cat > ~/.tmux.conf", input=TMUX_CONF)
+
     def provision_key(self):
         log("generating SSH key inside the container")
         self.user(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
@@ -181,10 +206,15 @@ class Sandbox:
         return repo_dir
 
     def session(self, workdir):
-        env = {}
+        env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
         if os.environ.get("ANTHROPIC_API_KEY"):
             env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
-        prog = "exec bash -l" if self.args.shell else "exec claude"
+        prog = "bash -l" if self.args.shell else "claude"
+        if self.args.tmux:
+            # tmux sets its own TERM/TERM_PROGRAM, giving Claude Code a
+            # well-known terminal; scroll with the mouse or prefix-[ .
+            prog = f"tmux new-session -s claude '{prog}'"
+        prog = f"exec {prog}"
         cmd = self.user_cmd("bash", "-lc", f"cd '{workdir}' && {prog}", env=env)
         cmd[cmd.index("--cwd") + 1] = workdir
 
@@ -238,6 +268,9 @@ def main():
     p.add_argument("--git-email", help="git user.email inside the sandbox")
     p.add_argument("--shell", action="store_true",
                    help="open a login shell instead of launching claude")
+    p.add_argument("--tmux", action="store_true",
+                   help="wrap the session in tmux inside the container "
+                        "(mouse scrolling, 100k-line history)")
     args = p.parse_args()
 
     box = Sandbox(args)

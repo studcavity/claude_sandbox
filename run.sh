@@ -5,7 +5,7 @@ github_user="studcavity"
 git_email="353176155+studcavity@users.noreply.github.com"
 
 if [ -z $1 ]; then
-  echo "Usage: $0 repository"
+  echo "Usage: $0 repository [extra claude_sandbox.py flags, e.g. --tmux]"
   exit 1
 fi
 
@@ -26,4 +26,4 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 
-python3 claude_sandbox.py --repo "${github_user}/${1}" --image images:ubuntu/24.04 --cli incus --git-name "${github_user}" --git-email "${git_email}"
+python3 claude_sandbox.py --repo "${github_user}/${1}" --image images:ubuntu/24.04 --cli incus --git-name "${github_user}" --git-email "${git_email}" "${@:2}"
