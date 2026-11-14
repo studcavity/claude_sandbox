@@ -10,13 +10,16 @@ if [ -z "${1:-}" ]; then
   exit 1
 fi
 
-# gate operations by anticipated user; if we're accidentally someone we don't
-# expect, bail.
 set -euo pipefail
-who_am_i="$(gh auth status -a --json hosts --jq '.hosts."github.com"[0].login')"
-if [ "${who_am_i}" != "${github_user}" ]; then
-  echo "authenticated as an unexpected user! expected: ${github_user}, got: ${who_am_i}"
-  exit 1
+
+# gate operations by anticipated user; if we're accidentally someone we don't
+# expect, bail. --setup-token never touches GitHub, so it skips this.
+if [ "$1" != "--setup-token" ]; then
+  who_am_i="$(gh auth status -a --json hosts --jq '.hosts."github.com"[0].login')"
+  if [ "${who_am_i}" != "${github_user}" ]; then
+    echo "authenticated as an unexpected user! expected: ${github_user}, got: ${who_am_i}"
+    exit 1
+  fi
 fi
 
 # install any prereqs
