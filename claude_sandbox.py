@@ -38,6 +38,7 @@ Examples:
 """
 import argparse
 import datetime
+import functools
 import getpass
 import hashlib
 import json
@@ -293,10 +294,14 @@ class Sandbox:
         self.box = Container(self.cli, self.name)
         self.root, self.user, self.user_cmd = (
             self.box.root, self.box.user, self.box.user_cmd)
-        self.token = github_token()
         self.key_id = None
         self.container_up = False
         self._torn_down = False
+
+    @functools.cached_property
+    def token(self):
+        # Looked up on first use so --setup-token works without GitHub auth.
+        return github_token()
 
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
@@ -564,6 +569,8 @@ def main():
         p.error(f"--claude-md: no such file: {args.claude_md}")
 
     box = Sandbox(args)
+    if not args.setup_token:
+        box.token  # fail fast, before building or launching anything
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)
