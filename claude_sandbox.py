@@ -9,6 +9,10 @@ What it does:
   3. Registers the public key with GitHub, either as a deploy key on one
      repo (--repo, recommended) or as an account key (default).
   4. Installs Claude Code and drops you into it (or a shell with --shell).
+     Packages and Claude Code are baked into a cached local image
+     (claude-sandbox-<hash>) on first run, so later launches skip the
+     install. The image is rebuilt when the recipe or --image changes, when
+     it is older than --max-age days, or on --rebuild. --no-cache disables it.
   5. On exit (normal, error, Ctrl-C, SIGTERM, SIGHUP) deletes the GitHub key
      and destroys the container.
 
@@ -27,6 +31,8 @@ Examples:
   ./claude_sandbox.py --cli incus --image images:ubuntu/24.04 --repo me/proj
 """
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import signal
@@ -49,6 +55,36 @@ USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
 # in the container; incus already sets LANG=C.UTF-8.)
 TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                  "LC_TERMINAL", "LC_TERMINAL_VERSION")
+
+# Cached base image. The alias embeds a hash of the source image and the build
+# steps below, so editing either one triggers a rebuild automatically.
+IMAGE_PREFIX = "claude-sandbox-"
+BASE_PACKAGES = (
+    # session essentials
+    "git", "curl", "openssh-client", "tmux", "ca-certificates",
+    # python
+    "python3-pip", "python3-venv", "python3-dev",
+    # building native deps
+    "build-essential", "pkg-config",
+    # search / inspection tools Claude Code reaches for
+    "ripgrep", "fd-find", "jq", "tree", "file", "less", "wget",
+    "unzip", "zip", "xz-utils",
+    # process / system debugging
+    "procps", "psmisc", "lsof", "strace", "gdb", "htop",
+    "iproute2", "dnsutils", "netcat-openbsd",
+)
+BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
+                   "apt-get update -qq && "
+                   "apt-get install -y -qq --no-install-recommends "
+                   + " ".join(BASE_PACKAGES) + " && "
+                   # Debian/Ubuntu ship fd as fdfind
+                   "ln -sf /usr/bin/fdfind /usr/local/bin/fd && "
+                   "apt-get clean && rm -rf /var/lib/apt/lists/*")
+CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
+# Reset per-instance identity so every container launched from the image
+# gets its own.
+BASE_CLEANUP = ("(command -v cloud-init >/dev/null && cloud-init clean --logs);"
+                " truncate -s 0 /etc/machine-id; true")
 
 TMUX_CONF = """\
 set -g mouse on
@@ -104,17 +140,19 @@ def gh_api(method, path, token, body=None):
 # --------------------------------------------------------------------------- #
 # sandbox
 # --------------------------------------------------------------------------- #
-class Sandbox:
-    def __init__(self, args):
-        self.args = args
-        self.cli = args.cli
-        self.name = args.name or f"claude-{uuid.uuid4().hex[:8]}"
-        self.token = github_token()
-        self.key_id = None
-        self.container_up = False
-        self._torn_down = False
+class Container:
+    """Thin wrapper for running commands in one named container."""
 
-    # -- container exec -------------------------------------------------------
+    def __init__(self, cli, name):
+        self.cli, self.name = cli, name
+
+    def launch(self, image, ephemeral):
+        run([self.cli, "launch", image, self.name]
+            + (["--ephemeral"] if ephemeral else []))
+
+    def delete(self):
+        run([self.cli, "delete", "--force", self.name], check=False, capture=True)
+
     def root(self, script, **kw):
         return run([self.cli, "exec", self.name, "--", "bash", "-c", script], **kw)
 
@@ -129,12 +167,7 @@ class Sandbox:
     def user(self, script, env=None, **kw):
         return run(self.user_cmd("bash", "-lc", script, env=env), **kw)
 
-    # -- lifecycle ------------------------------------------------------------
-    def launch(self):
-        log(f"launching ephemeral container {self.name} ({self.args.image})")
-        run([self.cli, "launch", self.args.image, self.name, "--ephemeral"])
-        self.container_up = True
-
+    def wait_network(self):
         log("waiting for network")
         self.root("command -v cloud-init >/dev/null && "
                   "cloud-init status --wait >/dev/null 2>&1 || true",
@@ -142,18 +175,107 @@ class Sandbox:
         for _ in range(60):
             if self.root("getent hosts github.com >/dev/null",
                          check=False).returncode == 0:
-                break
+                return
             time.sleep(1)
-        else:
-            raise RuntimeError("container never got network access")
+        raise RuntimeError("container never got network access")
 
+
+# --------------------------------------------------------------------------- #
+# cached base image
+# --------------------------------------------------------------------------- #
+def base_alias(source):
+    h = hashlib.sha256("\0".join(
+        (source, BASE_ROOT_SETUP, CLAUDE_INSTALL, BASE_CLEANUP)).encode())
+    return IMAGE_PREFIX + h.hexdigest()[:12]
+
+
+def cached_images(cli):
+    """{alias: created_at (aware datetime)} for our local images."""
+    out = run([cli, "image", "list", "local:", "--format", "json"],
+              capture=True).stdout
+    found = {}
+    for img in json.loads(out or "[]"):
+        # e.g. 2026-11-14T23:15:00.123456789Z; drop the fraction to stay
+        # portable across Python versions.
+        created = datetime.datetime.strptime(
+            img["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
+        ).replace(tzinfo=datetime.timezone.utc)
+        for a in img.get("aliases") or []:
+            if a["name"].startswith(IMAGE_PREFIX):
+                found[a["name"]] = created
+    return found
+
+
+def ensure_base_image(cli, source, max_age_days, rebuild):
+    alias = base_alias(source)
+    images = cached_images(cli)
+
+    created = images.get(alias)
+    if created and not rebuild:
+        age = datetime.datetime.now(datetime.timezone.utc) - created
+        if age < datetime.timedelta(days=max_age_days):
+            log(f"using cached image {alias} "
+                f"(built {age.days}d {age.seconds // 3600}h ago)")
+            return alias
+        log(f"cached image {alias} is older than {max_age_days}d, rebuilding")
+
+    log(f"building base image {alias} from {source} (one-time)")
+    build = Container(cli, f"{IMAGE_PREFIX}build-{uuid.uuid4().hex[:8]}")
+    try:
+        build.launch(source, ephemeral=False)
+        build.wait_network()
+        log("installing packages")
+        build.root(BASE_ROOT_SETUP, capture=True)
+        log("installing Claude Code")
+        build.user(CLAUDE_INSTALL, capture=True)
+        build.root(BASE_CLEANUP, check=False, capture=True)
+        run([cli, "stop", build.name], capture=True)
+        if alias in images:
+            # Only affects future launches; running containers are unaffected.
+            run([cli, "image", "delete", alias], check=False, capture=True)
+        log("publishing image")
+        run([cli, "publish", build.name, "--alias", alias], capture=True)
+    finally:
+        build.delete()
+
+    # Drop images from older recipes / other source images.
+    for stale in images:
+        if stale != alias:
+            run([cli, "image", "delete", stale], check=False, capture=True)
+            log(f"removed stale image {stale}")
+    return alias
+
+
+# --------------------------------------------------------------------------- #
+# sandbox
+# --------------------------------------------------------------------------- #
+class Sandbox:
+    def __init__(self, args):
+        self.args = args
+        self.cli = args.cli
+        self.name = args.name or f"claude-{uuid.uuid4().hex[:8]}"
+        self.box = Container(self.cli, self.name)
+        self.root, self.user, self.user_cmd = (
+            self.box.root, self.box.user, self.box.user_cmd)
+        self.token = github_token()
+        self.key_id = None
+        self.container_up = False
+        self._torn_down = False
+
+    # -- lifecycle ------------------------------------------------------------
+    def launch(self, image):
+        log(f"launching ephemeral container {self.name} ({image})")
+        self.box.launch(image, ephemeral=True)
+        self.container_up = True
+        self.box.wait_network()
+
+        # No-ops when launched from the cached image.
         self.root("command -v git >/dev/null && command -v curl >/dev/null || "
                   "(apt-get update -qq && "
                   "apt-get install -y -qq git curl openssh-client)",
                   capture=True)
 
         if self.args.tmux:
-            log("installing tmux")
             self.root("command -v tmux >/dev/null || "
                       "(apt-get update -qq && apt-get install -y -qq tmux)",
                       capture=True)
@@ -193,9 +315,10 @@ class Sandbox:
             self.user(f"git config --global user.email '{self.args.git_email}'")
 
     def install_claude(self):
+        if self.user("command -v claude >/dev/null", check=False).returncode == 0:
+            return  # baked into the cached image
         log("installing Claude Code")
-        self.user("curl -fsSL https://claude.ai/install.sh | bash",
-                  capture=True)
+        self.user(CLAUDE_INSTALL, capture=True)
 
     def clone(self):
         if not self.args.repo:
@@ -246,8 +369,7 @@ class Sandbox:
                     "/settings/keys")
 
         if self.container_up:
-            run([self.cli, "delete", "--force", self.name],
-                check=False, capture=True)
+            self.box.delete()
             log(f"destroyed container {self.name}")
 
 
@@ -271,6 +393,14 @@ def main():
     p.add_argument("--tmux", action="store_true",
                    help="wrap the session in tmux inside the container "
                         "(mouse scrolling, 100k-line history)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="launch --image directly and install everything at "
+                        "boot instead of using the cached base image")
+    p.add_argument("--rebuild", action="store_true",
+                   help="rebuild the cached base image even if it is fresh")
+    p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
+                   help="rebuild the cached image when older than this "
+                        "(default: 7)")
     args = p.parse_args()
 
     box = Sandbox(args)
@@ -281,7 +411,11 @@ def main():
     signal.signal(signal.SIGHUP, on_signal)
 
     try:
-        box.launch()
+        image = args.image
+        if not args.no_cache:
+            image = ensure_base_image(args.cli, args.image,
+                                      args.max_age, args.rebuild)
+        box.launch(image)
         box.provision_key()
         box.install_claude()
         box.session(box.clone())
