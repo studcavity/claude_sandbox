@@ -12,6 +12,26 @@ fi
 
 set -euo pipefail
 
+# Warn (don't block) if this checkout is behind its upstream, so we don't
+# run stale scripts. Quietly skipped when offline or without an upstream.
+check_for_updates() {
+  local dir behind
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  git -C "${dir}" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || return 0
+  GIT_TERMINAL_PROMPT=0 timeout 10 git -C "${dir}" fetch --quiet 2>/dev/null || {
+    echo "[run.sh] note: couldn't check for updates (git fetch failed)" >&2
+    return 0
+  }
+  behind="$(git -C "${dir}" rev-list --count 'HEAD..@{u}' 2>/dev/null)" || return 0
+  if [ "${behind}" -gt 0 ]; then
+    echo "[run.sh] NOTICE: this checkout is ${behind} commit(s) behind" \
+         "$(git -C "${dir}" rev-parse --abbrev-ref '@{u}')." >&2
+    git -C "${dir}" log --oneline 'HEAD..@{u}' | sed 's/^/[run.sh]   /' >&2
+    echo "[run.sh] run 'git -C ${dir} pull' and re-run to use the latest version." >&2
+  fi
+}
+check_for_updates
+
 # gate operations by anticipated user; if we're accidentally someone we don't
 # expect, bail. --setup-token never touches GitHub, so it skips this.
 if [ "$1" != "--setup-token" ]; then
