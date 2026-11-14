@@ -36,6 +36,7 @@ import hashlib
 import json
 import os
 import signal
+import string
 import subprocess
 import sys
 import time
@@ -55,6 +56,11 @@ USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
 # in the container; incus already sets LANG=C.UTF-8.)
 TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                  "LC_TERMINAL", "LC_TERMINAL_VERSION")
+
+# Tools listed in the sandbox's CLAUDE.md when present.
+SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
+                 "make", "gdb", "strace", "lsof", "htop", "dig", "nc", "tmux",
+                 "curl", "wget")
 
 # Cached base image. The alias embeds a hash of the source image and the build
 # steps below, so editing either one triggers a rebuild automatically.
@@ -313,6 +319,11 @@ class Sandbox:
             self.user(f"git config --global user.name '{self.args.git_name}'")
         if self.args.git_email:
             self.user(f"git config --global user.email '{self.args.git_email}'")
+        # Linear history: rebase on pull, refuse non-fast-forward merges.
+        self.user("git config --global pull.rebase true && "
+                  "git config --global rebase.autoStash true && "
+                  "git config --global merge.ff only && "
+                  "git config --global push.autoSetupRemote true")
 
     def install_claude(self):
         if self.user("command -v claude >/dev/null", check=False).returncode == 0:
@@ -327,6 +338,59 @@ class Sandbox:
         log(f"cloning {self.args.repo}")
         self.user(f"git clone git@github.com:{self.args.repo}.git {repo_dir}")
         return repo_dir
+
+    def write_claude_md(self, workdir):
+        """Render the CLAUDE.md template into ~/.claude/ in the container.
+
+        The template is plain Markdown with string.Template placeholders
+        ($container, $access, $user, $uid, $home, $sudo, $tools, $branch);
+        write $$ for a literal dollar sign.
+        """
+        probe = self.user(
+            "sudo -n true 2>/dev/null && echo sudo=yes || echo sudo=no; "
+            "printf 'tools='; for t in " + " ".join(SANDBOX_TOOLS) + "; do "
+            "command -v $t >/dev/null && printf '%s ' $t; done; echo; "
+            f"printf 'branch='; git -C '{workdir}' rev-parse --abbrev-ref HEAD "
+            "2>/dev/null || echo",
+            capture=True, check=False).stdout
+        facts = dict(l.split("=", 1) for l in probe.splitlines() if "=" in l)
+        tools = facts.get("tools", "").split()
+        branch = facts.get("branch", "").strip()
+        repo = self.args.repo
+
+        if repo:
+            access = [
+                f"- Working copy: `{workdir}`, a clone of `github.com/{repo}`"
+                + (f" (branch `{branch}`)" if branch else "") + ".",
+                f"- GitHub access is an SSH **deploy key scoped to `{repo}` "
+                "only**. Other repos can't be cloned or pushed over SSH. "
+                "`https://github.com/` URLs are rewritten to SSH.",
+                "- The deploy key is **read-only**: you cannot push. Tell the "
+                "user early that commits will be lost when the sandbox ends "
+                "unless they export them some other way."
+                if self.args.read_only else
+                "- The deploy key has write access, so you can push.",
+            ]
+        else:
+            access = [f"- Working directory: `{workdir}`. No repo was cloned.",
+                      "- An SSH key is registered on the user's GitHub "
+                      "**account** for this session, so you can clone and "
+                      "push to any repo they can access."]
+
+        with open(self.args.claude_md) as f:
+            template = string.Template(f.read())
+        md = template.substitute(
+            container=self.name,
+            access="\n".join(access),
+            user=USER, uid=UID, home=HOME,
+            sudo=("Passwordless `sudo` works, so installing apt packages is "
+                  "fine." if facts.get("sudo") == "yes" else
+                  "No passwordless `sudo`, so you can't install system "
+                  "packages."),
+            tools=", ".join(f"`{t}`" for t in tools) or "(minimal image)",
+            branch=f" (`{branch}`)" if branch else "",
+        )
+        self.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md", input=md)
 
     def session(self, workdir):
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
@@ -401,7 +465,14 @@ def main():
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
                    help="rebuild the cached image when older than this "
                         "(default: 7)")
+    p.add_argument("--claude-md", metavar="PATH",
+                   default=os.path.join(os.path.dirname(
+                       os.path.abspath(__file__)), "sandbox_CLAUDE.md"),
+                   help="template for ~/.claude/CLAUDE.md in the sandbox "
+                        "(default: sandbox_CLAUDE.md next to this script)")
     args = p.parse_args()
+    if not os.path.isfile(args.claude_md):
+        p.error(f"--claude-md: no such file: {args.claude_md}")
 
     box = Sandbox(args)
 
@@ -418,7 +489,9 @@ def main():
         box.launch(image)
         box.provision_key()
         box.install_claude()
-        box.session(box.clone())
+        workdir = box.clone()
+        box.write_claude_md(workdir)
+        box.session(workdir)
     except KeyboardInterrupt:
         log("interrupted")
     except (subprocess.CalledProcessError, RuntimeError) as e:

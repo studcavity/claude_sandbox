@@ -44,6 +44,21 @@ it's a copy-on-write clone instead of an unpack.
 The image contains no credentials: SSH keys and git identity are still
 created per session.
 
+## sandbox CLAUDE.md
+Each session writes `~/.claude/CLAUDE.md` inside the container. It tells
+Claude Code about the sandbox: that the container and its key are thrown away
+on exit, which repo and branch it can reach, whether the key can push,
+whether `sudo` works, and which tools are installed. It also tells Claude to
+keep git history linear (rebase, never merge, never force-push shared
+commits) and to commit and push working steps automatically, so nothing is
+lost if the sandbox disappears. Git inside the container is set to
+`pull.rebase=true` and `merge.ff=only` to back this up.
+
+The text comes from `sandbox_CLAUDE.md`, a Markdown template next to the
+script; pass `--claude-md PATH` to use a different one. Placeholders filled
+in per session: `$container`, `$access`, `$user`, `$uid`, `$home`, `$sudo`,
+`$tools`, `$branch`. Write `$$` for a literal `$`.
+
 ## scrollback / terminal behavior
 `incus exec` only passes `TERM` into the container, so Claude Code can't tell
 which terminal it's running in. `claude_sandbox.py` therefore forwards
