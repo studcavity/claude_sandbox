@@ -62,6 +62,7 @@ def clean_text(text, limit):
 
 
 MAX_RECORD_ITEMS = 10
+MAX_SUMMARY_LINES = sandbox_record.MAX_SUMMARY_LINES
 
 
 def safe_line(text, limit):
@@ -105,6 +106,22 @@ def record_section(rec):
     return "\n".join(out)
 
 
+def synopsis_section(rec):
+    """Markdown for the session's own proposed title and summary, or "" when
+    its commits carry none. Sanitised like everything else from the session."""
+    if not rec or not rec.synopsis:
+        return ""
+    sha, title, summary = rec.synopsis
+    if not re.fullmatch(r"[0-9a-f]{4,40}", sha or ""):
+        sha = "?"
+    out = ["### Proposed synopsis", "",
+           f"_Proposed by the session in commit `{sha}`; untrusted like "
+           "everything below. The PR title above is the launcher's, not this._",
+           "", f"**Proposed title:** {safe_line(title, 120)}", ""]
+    out.extend(f"- {safe_line(s, 200)}" for s in summary[:MAX_SUMMARY_LINES])
+    return "\n".join(out) + "\n"
+
+
 def label_pr(repo, pr, session):
     """Label a PR we just opened `sandbox` and `session:<id>`. Best effort: a
     PR without labels is still a PR."""
@@ -133,7 +150,8 @@ def pr_text(session, branch, subjects, record=None):
     more = len(subjects) - MAX_SUBJECTS
     body = sandbox_templates.render(
         "pr.md", session=session, branch=clean_text(branch, 120),
-        record=(record_section(record) + "\n") if record is not None else "",
+        record=((synopsis_section(record) + "\n" if record.synopsis else "")
+                + record_section(record) + "\n") if record is not None else "",
         subjects=shown,
         more=f"\n...and {more} more commits.\n" if more > 0 else "")
     return title, body
