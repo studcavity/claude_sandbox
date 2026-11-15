@@ -33,7 +33,6 @@ def test_checker_code_comes_from_the_base_not_the_pr(wf):
               if "sandbox_check.py" in s.get("run", "")]
     # always the trusted checkout: no fallback to the PR's own copy
     assert "../trusted/scripts/sandbox_check.py" in run
-    assert "../trusted/sandbox_check.py" in run     # transitional fallback, spec 09
     assert "pr/" not in run.replace("cd pr", "") and "$src" not in run
     # stdlib-only checker: nothing is installed (no PR-chosen packages)
     assert "pip install" not in run
