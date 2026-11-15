@@ -184,3 +184,16 @@ def test_check_workflow_scope_never_raises(monkeypatch, capsys):
     monkeypatch.setattr(cs, "token_scopes", down)
     cs.check_workflow_scope("t")
     assert "couldn't verify" in capsys.readouterr().err
+
+
+def test_launch_runs_self_check_right_after_network(make_args, monkeypatch,
+                                                    fake_box):
+    box = _sandbox(make_args, monkeypatch)
+    order = []
+    fake_box.launch = lambda image, ephemeral: order.append("launch")
+    fake_box.wait_network = lambda: order.append("network")
+    fake_box.self_check = lambda: order.append("self_check")
+    fake_box.root = lambda script, **kw: order.append("root")
+    box.box = fake_box
+    box.launch("ubuntu:24.04")
+    assert order[:3] == ["launch", "network", "self_check"]

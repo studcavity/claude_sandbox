@@ -233,6 +233,7 @@ class Sandbox:
         self.box.launch(image, ephemeral=True)
         self.container_up = True
         self.box.wait_network()
+        self.box.self_check()  # fail fast, before any real work
 
         # No-ops when launched from the cached image.
         self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "

@@ -29,6 +29,9 @@ class FakeBox:
     def put_file(self, path, data, mode="0644"):
         self.calls.append(("put_file", path, data, mode))
 
+    def self_check(self):
+        self.calls.append(("self_check",))
+
     def root(self, script, **kw):
         self.calls.append(("root", script))
 

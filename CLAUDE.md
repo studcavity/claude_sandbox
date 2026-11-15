@@ -46,7 +46,21 @@ CI (`.github/workflows/tests.yml`) runs pyflakes, shellcheck and pytest on
 Python 3.10, 3.12 and 3.13. It runs on every push to `main` and on PRs from
 branches in this repo. PRs from forks are skipped.
 
+### Real-container checks
+Unit tests fake `subprocess`, so they can't catch bugs in how incus actually
+behaves (e.g. `incus exec` stdin vs `/dev/stdin`). `tests/integration/` holds
+opt-in tests marked `incus`; they skip unless `CS_INTEGRATION=1` and incus are
+present. `./smoke.sh [owner/repo]` runs them (plus a real launch with a repo).
+Enable the pre-push warning with `git config core.hooksPath .githooks`.
+The launcher also runs `Container.self_check()` right after boot, so a broken
+exec/stdin path fails immediately with a clear error.
+
 ### Rules
+- **Changes to `sandbox_containers.py`, `sandbox_images.py` or
+  `sandbox_deps.py` need a real-container run.** Run `./smoke.sh` on a host
+  with incus and put `Verified: ./smoke.sh` in the commit message. If you are
+  in a sandbox (no incus), say "Not verified against real incus" instead and
+  tell the user to run it.
 - **Every change comes with tests when feasible.** New behaviour gets a test.
   A bug fix gets a test that fails without the fix. Changes to
   `sandbox_CLAUDE.md` are covered by `test_render_claude_md_real_template`,

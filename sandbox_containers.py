@@ -37,8 +37,29 @@ class Container:
                               capture_output=capture)
 
     def put_file(self, path, data, mode="0644"):
-        """Write bytes to path in the container (as root) via stdin."""
-        self.root_argv(["install", "-m", mode, "/dev/stdin", path], input=data)
+        """Write bytes to path in the container (as root) via stdin.
+
+        Reads fd 0 through the shell only: `incus exec` stdin can't be
+        reopened as /dev/stdin (so no `install ... /dev/stdin`). The data goes
+        to a private temp file that is chmod'ed and then renamed, so a partial
+        write is never readable or executable at the final path. path and mode
+        are positional args, never interpolated into the script.
+        """
+        self.root_argv(
+            ["sh", "-c",
+             'umask 077 && cat > "$1.tmp" && chmod "$2" "$1.tmp" '
+             '&& mv "$1.tmp" "$1"',
+             "sh", path, mode], input=data)
+
+    def self_check(self):
+        """Round-trip a file through put_file; raises if the container's exec
+        and stdin plumbing can't do what image/deps installs rely on."""
+        path = "/tmp/.claude-sandbox-canary"
+        self.put_file(path, b"ok", "0600")
+        out = self.root_argv(["cat", path]).stdout
+        self.root_argv(["rm", "-f", path])
+        if out != b"ok":
+            raise RuntimeError(f"container self-check failed: read back {out!r}")
 
     def user_cmd(self, *argv, env=None):
         cmd = [self.cli, "exec", self.name,
