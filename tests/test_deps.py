@@ -16,7 +16,7 @@ SHA = "a" * 64
 def test_sample_file_in_repo_is_valid(repo_root):
     with open(os.path.join(repo_root, d.DEPS_FILE), "rb") as f:
         deps = d.parse(f.read())
-    assert deps["apt"] == ["shfmt"]
+    assert deps["apt"] == ["shfmt", "incus"]
     assert deps["binaries"][0]["name"] == "shellcheck"
     assert deps["last_generated"].startswith("2026-")
 
