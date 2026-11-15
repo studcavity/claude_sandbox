@@ -31,11 +31,17 @@ def test_checker_code_comes_from_the_base_not_the_pr(wf):
         "${{ github.event.pull_request.base.sha }}")
     (run,) = [s["run"] for s in wf["jobs"]["commit-metadata"]["steps"]
               if "sandbox_check.py" in s.get("run", "")]
-    # default source is the trusted checkout; the PR copy is only a bootstrap
-    # fallback for when main has no checker yet
-    assert run.lstrip().startswith("src=trusted")
-    assert "[ ! -f trusted/sandbox_check.py ]" in run
-    assert '"../$src/sandbox_check.py"' in run
+    # always the trusted checkout: no fallback to the PR's own copy
+    assert "../trusted/sandbox_check.py" in run
+    assert "pr/sandbox_check.py" not in run and "$src" not in run
+    # stdlib-only checker: nothing is installed (no PR-chosen packages)
+    assert "pip install" not in run
+
+
+def test_fork_prs_are_checked_not_skipped(wf):
+    """A job skipped by a job-level `if` counts as passing for a required
+    check, so a fork PR would sail through the gate unchecked."""
+    assert "if" not in wf["jobs"]["commit-metadata"]
 
 
 def test_workflow_never_interpolates_untrusted_context_into_scripts(wf):

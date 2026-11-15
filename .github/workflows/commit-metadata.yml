@@ -12,6 +12,11 @@ on:
 permissions:
   contents: read
 
+# Strict shell, as in tests.yml (GitHub's default has no pipefail).
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 concurrency:
   group: commit-metadata-${{ github.ref }}
   cancel-in-progress: true
@@ -20,7 +25,10 @@ jobs:
   # The job name is the status check's name. It is what the ruleset requires;
   # renaming it strands every open PR, so change both together.
   commit-metadata:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Runs on fork PRs too. A job skipped by a job-level `if` reports as
+    # passing to a required check, so skipping forks would wave them
+    # through. Running is safe: the checker comes from the base, the PR's
+    # commits are only data, and fork PRs get a read-only token, no secrets.
     runs-on: ubuntu-latest
     steps:
       # The checker comes from the PR's BASE (main), never from the PR: a
@@ -45,14 +53,9 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # The checker is stdlib-only: nothing to install. There is no
+        # fallback to the PR's own copy; if main has no checker, this fails.
+        # -E -s: ignore PYTHON* env vars and the user site directory.
         run: |
-          src=trusted
-          if [ ! -f trusted/sandbox_check.py ]; then
-            # Only while main has no checker at all (the PR that introduces
-            # it). Once merged, this branch is never taken.
-            echo "::notice::main has no sandbox_check.py yet; using the PR's copy (bootstrap)"
-            src=pr
-          fi
-          pip install -r "$src/requirements.txt"
           cd pr
-          python "../$src/sandbox_check.py" "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
+          python -E -s ../trusted/sandbox_check.py "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
