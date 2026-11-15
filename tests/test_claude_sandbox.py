@@ -359,6 +359,29 @@ def _render(repo_root, devices, visible=""):
         usb_devices=devices, cli="incus")
 
 
+# Every character of the rendered CLAUDE.md is loaded into every session's
+# context. The budget is ~6k tokens with room for long per-session notes;
+# before raising it, move detail into an on-demand reference file
+# (sandbox_ref_deps.md is the model) or cut it.
+CLAUDE_MD_BUDGET_CHARS = 23_000
+DEPS_REF_BUDGET_CHARS = 8_000
+
+
+def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
+    md = cs.render_claude_md(
+        open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read(),
+        cs.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
+        "quirky-hopper", "/home/ubuntu/some-repo", "owner/some-repo", False,
+        "- apt: `a`\n- binaries: `b`", session="quirky-hopper",
+        protection_note=cs.protection_note("o/r", "main", "protected", ("a", "b")),
+        disk_note="- " + "disk note " * 30)
+    assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
+        f"{len(md)} chars: move detail to an on-demand reference file")
+    ref = cs.render_deps_ref(
+        open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read())
+    assert len(ref) <= DEPS_REF_BUDGET_CHARS
+
+
 def test_claude_md_usb_states(repo_root):
     dev = lambda n, p, ok: dict(name=n, vendor_id="2e8a", product_id=p,
                                 description="Probe", tools=["pyocd"],
