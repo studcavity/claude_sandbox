@@ -189,10 +189,14 @@ or just launch against it and answer yes. A test keeps every required check
 name equal to a real CI job name, except `sandbox/check`, which is a commit
 *status* posted by `sandbox_check.py --post-status OWNER/REPO --pr N` (no
 workflow needed). `rulesets/require-sandbox-check.json` requires it.
-**Don't apply that ruleset yet**: nothing posts the status automatically until
-the launcher does it at session exit (plan 5d), so every PR would sit blocked
-until someone ran the command by hand. The break-glass levels (re-run,
-`--override "reason"`, suspend the ruleset) are in `docs/plans/README.md`.
+The launcher posts that status for each PR a session opens, but only in a repo
+whose default-branch rules require it (`--no-check-status` skips it), so applying
+the ruleset is what turns the gate on. Once it is on, **every** PR into the
+default branch needs the status, including ones the launcher did not open: post
+it with `python sandbox_check.py --post-status OWNER/REPO --pr N`. To get past a
+wrong failure, run the same command with `--override "reason"` (one commit only,
+and it comments on the PR), or have an admin set the ruleset's `enforcement` to
+`disabled` and back to `active` afterwards.
 
 Each
 session's CLAUDE.md states this repo's protection status and which checks are
