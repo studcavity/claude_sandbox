@@ -17,6 +17,7 @@ Each spec is meant to be its own PR.
 | [06](06-one-landing-pipeline.md) | new, + 5 | Setup-script review hold skipped under `--land-all` / `--no-deps`; one landing pipeline |
 | [07](07-untrusted-ci-context.md) | new | Check that CI runs of session code are untrusted, and offer the settings that make them so; repo security gaps (including branch protection) shown only as host-side warnings, never to the session |
 | [08](08-local-backend.md) | new | A local-repo backend: work on a host git repo through bundles in and out, with a `Backend` refactor |
+| [09](09-package-layout.md) | new | A `claude_sandbox/` package with grouped subpackages, `scripts/`, `config/` instead of 30 flat modules (PR 1: the move; PR 2: clean-up) |
 
 ## Suggested order
 
