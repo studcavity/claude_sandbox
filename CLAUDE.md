@@ -71,9 +71,18 @@ exec/stdin path fails immediately with a clear error.
   A bug fix gets a test that fails without the fix. Changes to
   `sandbox_CLAUDE.md` are covered by `test_render_claude_md_real_template`,
   which fails on any unsubstituted placeholder.
-- **All tests and lint must pass before committing.** Run the commands above
-  before every commit. Don't commit with failing or skipped-because-broken
-  tests, and don't weaken or delete a test just to make it pass.
+- **Validate inline, and everything must pass before committing.**
+  - Lint synchronously for all code you changed. Here the whole-repo lint
+    (`pyflakes`, `shellcheck`) takes well under 4s, so just lint everything.
+  - Run the specific tests that cover your change. The whole unit suite is
+    also fast here (about a second or less), so running all of it inline is
+    fine. If it ever becomes slow enough to hurt interactivity, go back to
+    targeted tests and leave the full picture to CI. The `incus` integration
+    tests are opt-in and are covered by CI's `integration` job.
+  - After pushing, start a background watcher on the CI run and fix failures
+    as they come back (see "CI after every push" in `sandbox_CLAUDE.md`).
+  - Don't commit with failing or skipped-because-broken tests, and don't
+    weaken or delete a test just to make it pass.
 - **Be pragmatic, not exhaustive.** Test the logic that can break: validation,
   security-relevant quoting and escaping, cache and freshness decisions,
   teardown guarantees, and command construction. Skip trivial glue and

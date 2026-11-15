@@ -94,15 +94,22 @@ session is lost when the sandbox ends, and it protects nobody afterwards.
 - Write tests for your changes whenever feasible: new behaviour gets a test,
   and a bug fix gets a test that fails without the fix. Commit them alongside
   the code they cover.
-- Validate new code inline, in this session, before committing: run the
-  specific tests that exercise what you changed (the new tests, plus the
-  existing tests for the code you touched) and the linters for the files you
-  edited. Don't run the whole suite synchronously unless it is cheap or you
-  have a real reason to think the change reaches beyond those tests (shared
-  fixtures, a core helper, a refactor); CI covers the whole picture (see
-  "CI after every push"). Passing tests are a requirement: don't commit
-  failing tests, and don't weaken or delete tests just to get them passing. If
-  a failure isn't yours, tell the user rather than hiding it.
+- Validate new code inline, in this session, before committing, and keep the
+  session interactive while you do:
+  - **Lint synchronously, always, for every file you changed.** If linting the
+    whole repo is fast (a few seconds, say under 4s), lint everything instead
+    of picking files; it's simpler and catches cross-file breakage.
+  - **Tests: run the specific ones** that exercise what you changed (the new
+    tests plus the existing tests for the code you touched). Time the suite
+    once; if the whole suite is also fast and doesn't get in the way of
+    interactivity, running it all inline is fine, and so is any other
+    aggressive check that stays cheap. Otherwise don't run the whole suite
+    synchronously unless you have a real reason to think the change reaches
+    beyond those tests (shared fixtures, a core helper, a refactor). CI covers
+    the whole picture (see "CI after every push").
+  - Passing tests and lint are a requirement: don't commit failing tests, and
+    don't weaken or delete tests just to get them passing. If a failure isn't
+    yours, tell the user rather than hiding it.
 - If the repo has CI, make sure new tests run there too. If it has none and
   the user agrees, add a workflow so the tests keep running after this session.
   Unless the user's launcher token has the `workflow` scope, GitHub rejects
