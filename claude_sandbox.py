@@ -302,6 +302,20 @@ def ask_protect(repo, branch, effects):
         return False
 
 
+def ask_ruleset(repo, name, effects):
+    """Interactive yes/no (default no) to apply a ruleset the repo defines."""
+    print(f"\n\033[1m{repo} defines ruleset `{name}` "
+          "(rulesets/ on its default branch), not applied yet.\033[0m"
+          "\nApplying it would:", file=sys.stderr)
+    for e in effects:
+        print(f"  - {e}", file=sys.stderr)
+    try:
+        return input(f"Apply ruleset `{name}` to this repo? [y/N] "
+                     ).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def ask_checks(branch, checks):
     """Interactive yes/no (default no) to also require these CI checks."""
     print("\nThese checks passed on the latest commit of "
@@ -779,20 +793,34 @@ class Sandbox:
             branch, warn, state = sandbox_sessions.check_protection(a.repo)
             if warn:
                 log(f"warning: {warn}")
-            if (state == "unprotected" and not a.no_protect_prompt
-                    and sys.stdin.isatty()):
-                state, checks = self.offer_protection(branch)
+            if (state in ("unprotected", "protected")
+                    and not a.no_protect_prompt and sys.stdin.isatty()):
+                state, checks = self.offer_protection(branch, state)
         except (GitHubError, OSError, ValueError) as e:
             log(f"warning: couldn't check or apply branch protection: {e}")
         self.protection_note = protection_note(a.repo, branch, state, checks)
 
-    def offer_protection(self, branch):
-        """Ask, then apply. Returns (state, required_checks)."""
+    def offer_protection(self, branch, state="unprotected"):
+        """Ask, then apply. Returns (state, required_checks).
+
+        Rulesets the repo defines itself (rulesets/*.json on its default
+        branch) win over the launcher's generic one and are offered even when
+        the branch is already protected (they may add e.g. a required check).
+        """
         a = self.args
+        repo_rs, problems = sandbox_protect.fetch_repo_rulesets(a.repo, branch)
+        for p in problems:
+            log(f"warning: ignoring {p}")
+        existing = sandbox_protect.existing_ruleset_names(a.repo)
+        if repo_rs:
+            return self.offer_repo_rulesets(
+                branch, state, sandbox_protect.pending(repo_rs, existing))
+        if state != "unprotected":
+            return state, []
         rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "rulesets", "protect-main.json")
         ruleset = sandbox_protect.load_ruleset(rs_path)
-        if ruleset["name"] in sandbox_protect.existing_ruleset_names(a.repo):
+        if ruleset["name"] in existing:
             log(f"ruleset {ruleset['name']!r} already exists but doesn't "
                 "require PRs on the default branch; fix it in Settings -> Rules")
             return "unprotected", []
@@ -808,6 +836,23 @@ class Sandbox:
             + (f", requiring: {', '.join(checks)}" if checks else
                " (no required status checks)"))
         return "applied", checks
+
+    def offer_repo_rulesets(self, branch, state, todo):
+        """Offer each not-yet-applied repo-defined ruleset, one yes/no each.
+        Returns (state, required_checks of the ones applied)."""
+        a = self.args
+        checks = set()
+        for rs in todo:
+            if not ask_ruleset(a.repo, rs["name"],
+                               sandbox_protect.describe_rules(rs, branch)):
+                continue
+            sandbox_protect.apply_ruleset(a.repo, rs)
+            checks.update(sandbox_protect.required_checks(rs))
+            log(f"applied ruleset {rs['name']!r} to {a.repo}")
+            if state == "unprotected" and any(
+                    r["type"] == "pull_request" for r in rs["rules"]):
+                state = "applied"
+        return state, sorted(checks)
 
     def land(self):
         """Open PRs for this session's pushed branches (host-side, with the

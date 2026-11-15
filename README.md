@@ -146,7 +146,27 @@ that **passed on the default branch's latest commit** (names are repo-specific,
 so they aren't in the file; a name that never reports would block every
 merge, hence opt-in). It won't create a duplicate if a ruleset of that name
 exists, and a failure (no admin, plan without rulesets) only warns.
-`--no-protect-prompt` silences the offer; the warning still prints. Each
+`--no-protect-prompt` silences the offer; the warning still prints.
+
+**A repo can define its own rulesets**, in the same place: `rulesets/*.json` on
+its *default branch* (reviewed and merged, never a session's branch). If it
+has any, the launcher offers those *instead of* the generic one above, one
+yes/no each, listing the effects first, and it does so even when the branch is
+already protected (a repo-defined ruleset may just add a rule: GitHub layers
+rulesets). Because that file is untrusted text that edits repo settings, it
+must pass a strict allowlist (`sandbox_protect.validate_repo_ruleset`):
+default branch only, no bypass actors, enforcement `active`/`evaluate`, only
+the rule types `deletion`, `non_fast_forward`, `required_linear_history`,
+`pull_request`, `required_status_checks` and `required_signatures`. Invalid
+files are skipped with a warning. This repo ships
+`rulesets/require-commit-metadata.json` (requires the `commit-metadata` check,
+see `.github/workflows/commit-metadata.yml`); apply it to a repo that already
+has `protect-default-branch` with
+`gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/require-commit-metadata.json`
+or just launch against it and answer yes. A test keeps every required check
+name equal to a real CI job name.
+
+Each
 session's CLAUDE.md states this repo's protection status and which checks are
 required, and tells the session to name the check names to require whenever it
 adds, renames or removes a CI job (renaming a required job strands open PRs).

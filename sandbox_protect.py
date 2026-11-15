@@ -8,9 +8,19 @@ The base ruleset is rulesets/protect-main.json. Required status checks are
 repo-specific, so they are added only when the user opts in, using check names
 that actually reported *success* on the default branch's head commit; a
 required check that never reports would block every merge.
+
+A repo can also define its own rulesets, in the same place: `rulesets/*.json`
+on its default branch (the reviewed, merged state; never a session's branch).
+When it does, those are offered *instead of* the generic one above, each only
+after a yes at the terminal. Their content is untrusted text that edits repo
+settings, so it is held to a strict allowlist (`validate_repo_ruleset`): the
+default branch only, no bypass actors, known rule types, known keys. Anything
+else is skipped with a warning. Rulesets layer in GitHub, so a repo-defined one
+can hold just the extra rule (e.g. one required check) next to the base.
 """
 import copy
 import json
+import re
 import urllib.parse
 
 from sandbox_github import GitHubError, gh_api
@@ -63,3 +73,126 @@ def describe(ruleset, branch):
             "block force-pushes and deletion of it, and require linear history",
             "no bypass actors: this includes you, so you will merge through "
             "PRs too (edit or delete the ruleset in Settings -> Rules to undo)"]
+
+
+# --- rulesets defined by the repo itself (rulesets/*.json) ------------------ #
+RULESET_DIR = "rulesets"
+MAX_REPO_RULESETS = 10
+MAX_RULESET_BYTES = 20_000
+RULESET_KEYS = {"name", "target", "enforcement", "conditions", "bypass_actors",
+                "rules"}
+RULE_TYPES = {"deletion", "non_fast_forward", "required_linear_history",
+              "pull_request", "required_status_checks", "required_signatures"}
+_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json$")
+
+
+def validate_repo_ruleset(data):
+    """A repo-supplied ruleset -> a normalised copy, or ValueError.
+
+    Allowed: only the default branch, enforcement active|evaluate, no bypass
+    actors (the copy always has none), known top-level keys and rule types.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    extra = set(data) - RULESET_KEYS
+    if extra:
+        raise ValueError(f"unknown keys {sorted(extra)}")
+    name = data.get("name")
+    if not isinstance(name, str) or not re.match(r"^[A-Za-z0-9][\w .()-]{0,99}$",
+                                                 name):
+        raise ValueError("needs a plain `name` (letters, digits, space, ._-())")
+    if data.get("target") != "branch":
+        raise ValueError("`target` must be \"branch\"")
+    if data.get("enforcement") not in ("active", "evaluate"):
+        raise ValueError("`enforcement` must be active or evaluate")
+    if data.get("bypass_actors") not in (None, []):
+        raise ValueError("`bypass_actors` must be empty")
+    cond = data.get("conditions")
+    ref = cond.get("ref_name") if isinstance(cond, dict) else None
+    if (not isinstance(ref, dict) or set(cond) != {"ref_name"}
+            or ref.get("include") != ["~DEFAULT_BRANCH"]
+            or ref.get("exclude") != []):
+        raise ValueError("`conditions` must be exactly ref_name including "
+                         "only ~DEFAULT_BRANCH and excluding nothing")
+    rules = data.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("needs at least one rule")
+    for r in rules:
+        if (not isinstance(r, dict) or r.get("type") not in RULE_TYPES
+                or set(r) - {"type", "parameters"}
+                or not isinstance(r.get("parameters", {}), dict)):
+            raise ValueError(f"unsupported rule {str(r)[:60]!r}; allowed "
+                             f"types: {sorted(RULE_TYPES)}")
+    out = copy.deepcopy(data)
+    out["bypass_actors"] = []
+    return out
+
+
+def fetch_repo_rulesets(repo, branch):
+    """-> (valid rulesets, problems) from `rulesets/*.json` on `branch`.
+
+    No such directory is normal (`([], [])`). Bounded in count and size.
+    Problems are human-readable strings (one per skipped file)."""
+    ref = urllib.parse.quote(branch, safe="")
+    try:
+        listing = gh_api("GET", f"/repos/{repo}/contents/{RULESET_DIR}?ref={ref}")
+    except GitHubError as e:
+        if e.code == 404:
+            return [], []
+        raise
+    if not isinstance(listing, list):
+        return [], []
+    found, problems = [], []
+    files = [f for f in listing if isinstance(f, dict) and f.get("type") == "file"
+             and _FILE_RE.match(str(f.get("name")))]
+    if len(files) > MAX_REPO_RULESETS:
+        problems.append(f"{len(files)} ruleset files; only the first "
+                        f"{MAX_REPO_RULESETS} are read")
+    for f in files[:MAX_REPO_RULESETS]:
+        label = f"{RULESET_DIR}/{f['name']}"
+        if f.get("size", 0) > MAX_RULESET_BYTES:
+            problems.append(f"{label}: larger than {MAX_RULESET_BYTES} bytes")
+            continue
+        try:
+            raw = gh_api("GET", f"/repos/{repo}/contents/{label}?ref={ref}",
+                         raw=True)
+            found.append(validate_repo_ruleset(json.loads(raw)))
+        except (ValueError, GitHubError) as e:
+            problems.append(f"{label}: {e}")
+    return found, problems
+
+
+def pending(rulesets, existing_names):
+    """The rulesets whose names the repo doesn't have yet."""
+    return [r for r in rulesets if r["name"] not in existing_names]
+
+
+def required_checks(ruleset):
+    """Check names the ruleset requires."""
+    return sorted(c["context"] for r in ruleset["rules"]
+                  if r["type"] == "required_status_checks"
+                  for c in r.get("parameters", {}).get(
+                      "required_status_checks", []))
+
+
+def describe_rules(ruleset, branch):
+    """Plain-language effect of any (validated) ruleset, shown before asking."""
+    said = {
+        "deletion": f"block deletion of `{branch}`",
+        "non_fast_forward": f"block force-pushes to `{branch}`",
+        "required_linear_history": "require linear history",
+        "pull_request": f"require a pull request to change `{branch}` "
+                        "(no direct pushes)",
+        "required_signatures": "require signed commits",
+    }
+    out = [said[r["type"]] for r in ruleset["rules"] if r["type"] in said]
+    checks = required_checks(ruleset)
+    if checks:
+        out.append("require these status checks to pass: "
+                   + ", ".join(f"`{c}`" for c in checks)
+                   + " (a name that never reports would block every merge)")
+    if ruleset["enforcement"] == "evaluate":
+        out.append("only evaluate (report), not enforce")
+    out.append("no bypass actors: this includes you (edit or delete the "
+               "ruleset in Settings -> Rules to undo)")
+    return out
