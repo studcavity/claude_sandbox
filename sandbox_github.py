@@ -205,23 +205,28 @@ def token_scopes():
     return fut.result() if fut is not None else _token_scopes_live()
 
 
-WORKFLOW_FIX = ("to allow it, run `gh auth refresh -s workflow` on the host "
-                "(or use a GITHUB_TOKEN with the `workflow` scope / fine-grained "
-                "\"Workflows: read & write\") and relaunch")
+WORKFLOW_FIX = ("unless you need sessions to edit CI, drop it: `gh auth "
+                "refresh --remove-scopes workflow` on the host (fine-grained "
+                "token: remove \"Workflows: write\") and relaunch")
 
 
 def workflow_push_warning(scopes):
-    """Warning text if keys made with a token of these scopes can't push
+    """Warning text if keys made with a token of these scopes CAN push
     .github/workflows/ changes, else None.
 
     Deploy and account keys created through an OAuth token are limited to
-    that token's scopes when pushing.
+    that token's scopes when pushing. A pushed workflow with an `on: push`
+    trigger runs straight away, before any PR or review, with the repo's
+    Actions secrets, so the launcher's hold on PRs that touch .github/ can't
+    help. Not having the scope is the safe default and needs no warning.
     """
     if scopes is None:
-        return ("couldn't verify the GitHub token's `workflow` scope "
-                "(fine-grained token?); pushes to .github/workflows/ may be "
-                "rejected. If so, " + WORKFLOW_FIX)
-    if "workflow" not in scopes:
-        return ("the GitHub token lacks the `workflow` scope, so the sandbox "
-                "can't push changes to .github/workflows/; " + WORKFLOW_FIX)
+        return ("couldn't verify the GitHub token's scopes (fine-grained "
+                "token?). If it can write workflows, the sandbox can push a "
+                "workflow that runs with this repo's Actions secrets before "
+                "any review; " + WORKFLOW_FIX)
+    if "workflow" in scopes:
+        return ("the GitHub token has the `workflow` scope, so the sandbox can "
+                "push a workflow that runs with this repo's Actions secrets "
+                "before any review; " + WORKFLOW_FIX)
     return None

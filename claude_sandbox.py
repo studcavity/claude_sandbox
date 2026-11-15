@@ -23,9 +23,10 @@ GitHub auth: all GitHub calls go through the host's `gh` CLI (run locally with
 invoke), so log in with `gh auth login` (or set GH_TOKEN / GITHUB_TOKEN for gh).
 No token is handled by this program. The launcher refuses to run when gh is
 logged in as anyone but --github-user (override: --no-user-check).
-  - Keys inherit the token's scopes when pushing: without `workflow`
-    (gh auth refresh -s workflow) the sandbox can't push .github/workflows/
-    changes. The launcher warns at startup when that's the case.
+  - Keys inherit the token's scopes when pushing: without `workflow` the
+    sandbox can't push .github/workflows/ changes. Keep it that way: a pushed
+    workflow runs with the repo's Actions secrets before any review. The
+    launcher warns at startup when the token has it.
   - Account key mode needs the `admin:public_key` scope
     (gh auth refresh -s admin:public_key).
   - Deploy key mode needs admin rights on the repo
@@ -552,7 +553,7 @@ def report_actions(outcomes):
 
 
 def check_workflow_scope():
-    """Warn (never fail) if the sandbox won't be able to push workflow files."""
+    """Warn (never fail) if the sandbox WILL be able to push workflow files."""
     try:
         msg = workflow_push_warning(token_scopes())
     except (GitHubError, OSError) as e:

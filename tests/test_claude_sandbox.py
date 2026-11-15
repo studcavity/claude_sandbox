@@ -188,12 +188,12 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
 
 
 @pytest.mark.parametrize("scopes, warned", [
-    ({"repo", "workflow"}, False),
-    ({"repo"}, True),
-    (None, True),
+    ({"repo", "workflow"}, True),   # the sandbox could push a live workflow
+    ({"repo"}, False),              # the safe default: nothing to say
+    (None, True),                   # can't tell: say what's at stake
 ])
-def test_check_workflow_scope_warns_only_on_failure(monkeypatch, capsys,
-                                                    scopes, warned):
+def test_check_workflow_scope_warns_when_workflows_are_pushable(
+        monkeypatch, capsys, scopes, warned):
     monkeypatch.setattr(cs, "token_scopes", lambda: scopes)
     cs.check_workflow_scope()
     assert ("warning:" in capsys.readouterr().err) == warned
