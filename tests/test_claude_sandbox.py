@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import subprocess
+import threading
 import types
 
 import pytest
@@ -186,6 +187,45 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
     box.key_id, box.container_up = 7, True
     box.teardown()
     assert deleted == [True]
+
+
+def test_volumes_delete_in_background_and_wait_joins_them(
+        make_args, monkeypatch):
+    """Teardown must not block on the volume retries (landing runs beside
+    them), but wait_volumes() must not return until they have finished."""
+    box = _sandbox(make_args, monkeypatch)
+    monkeypatch.setattr(box.box, "delete", lambda: None)
+    started, release, done = (threading.Event(), threading.Event(),
+                              threading.Event())
+
+    def slow_delete():
+        started.set()
+        release.wait(5)
+        done.set()
+    monkeypatch.setattr(box.volumes, "delete", slow_delete)
+    box.volumes.created = ["vol"]
+    box.container_up = True
+    box.teardown()                      # returns while the delete is running
+    assert started.wait(5) and not done.is_set()
+    release.set()
+    box.wait_volumes()
+    assert done.is_set()
+    box.wait_volumes()                  # idempotent
+
+
+def test_a_failing_volume_delete_is_reported_not_lost(
+        make_args, monkeypatch, capsys):
+    box = _sandbox(make_args, monkeypatch)
+    monkeypatch.setattr(box.box, "delete", lambda: None)
+
+    def boom():
+        raise RuntimeError("incus gone")
+    monkeypatch.setattr(box.volumes, "delete", boom)
+    box.volumes.created = ["vol"]
+    box.container_up = True
+    box.teardown()
+    box.wait_volumes()
+    assert "volume cleanup failed (incus gone)" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("scopes, warned", [
