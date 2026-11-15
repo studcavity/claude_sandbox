@@ -4,9 +4,7 @@ import shlex
 
 import pytest
 
-import sandbox_github as g
-
-
+from claude_sandbox.github import gh as g
 @pytest.mark.parametrize("repo", ["me/proj", "my-org/my.repo_1", "a/b"])
 def test_validate_repo_accepts(repo):
     assert g.validate_repo(repo) == repo

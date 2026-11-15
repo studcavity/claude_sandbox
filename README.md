@@ -17,7 +17,7 @@ repo-scoped GitHub deploy key. The key and container are destroyed on exit.
 
 ## usage
 ```
-./run.sh <repository> [flags]       # same as: python3 claude_sandbox.py ...
+./run.sh <repository> [flags]       # same as: python3 claude_sandbox/__main__.py ...
 ./run.sh --setup-token              # one-time Claude login token
 ```
 `<repository>` is a bare name (looked up under `--github-user`) or
@@ -75,39 +75,11 @@ network, point the launcher at a git repository on this machine:
   `--read-only`) are refused with `--local`. Design: `docs/specs/08-local-backend.md`.
 
 ## code layout
-| file | role |
-| --- | --- |
-| `run.sh` | thin shim: `exec`s `claude_sandbox.py` |
-| `claude_sandbox.py` | CLI entry point and defaults, `Sandbox` lifecycle, pure rendering helpers |
-| `sandbox_backend.py` | `Backend`: the parts of a launch that depend on where the code comes from (credential, clone, CLAUDE.md access text, landing) |
-| `sandbox_backend_local.py` | the local backend (`--local`): bundle in, bundle out, import into the host repo, review report, `--recover` |
-| `sandbox_backend_github.py` | the GitHub backend: deploy key, clone over SSH, PRs and provenance, protection and Actions checks |
-| `sandbox_bootstrap.py` | stdlib-only: create `venv/`, install requirements, re-exec |
-| `sandbox_update.py` | offer to `git pull` when this checkout is behind |
-| `sandbox_images.py` | cached base/deps images, applying deps into a container |
-| `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
-| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
-| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments); auth is still your `gh` login |
-| `sandbox_claude_config.py` | pre-answers Claude Code's first-run dialogs (theme, onboarding, API key, trust for repos you own) |
-| `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
-| `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
-| `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
-| `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
-| `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
-| `sandbox_hardening.py` | host-side: checks (and, after a yes, tightens) the repo's Actions settings so session code's CI runs stay untrusted |
-| `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
-| `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
-| `sandbox_issues.py` | files an issue for each `todo/` file a commit adds to the default branch (the post-merge filer, run by `file-issues.yml` or by hand) |
-| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with the commits' `Not verified` lines), hold privileged ones |
-| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`) |
-| `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
-| `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
-| `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
-| `sandbox_templates.py` | validated `templates/pr.md` and `templates/issue.md` |
-| `sandbox_names.py` | stdlib-only: session-name and branch-root rules shared with the checker |
-| `sandbox_timing.py` | `--timings`: stages and call counts |
-| `sandbox_util.py` | logging, subprocess and signal helpers |
-| `sandbox_CLAUDE.md`, `sandbox_ref_deps.md` | templates for the sandbox's `~/.claude/CLAUDE.md` and `~/.claude/ref/deps.md` |
+The launcher is the `claude_sandbox/` package; `run.sh` execs
+`claude_sandbox/__main__.py`. Every module, with its role, is listed in
+[`claude_sandbox/README.md`](claude_sandbox/README.md). Outside it: `scripts/`
+(`sandbox_check.py`, `smoke.sh`, `final-check.sh`), `config/rulesets/`,
+`tests/`, `docs/`, `todo/`.
 
 ## tests
 ```
@@ -118,7 +90,7 @@ python -m pytest
 CI runs the suite (plus pyflakes, mypy and shellcheck) on pushes to `main` and
 on PRs from branches in this repo, and a real-container smoke test of the whole
 launch lifecycle (`tests/integration/test_launch.py`; run it on a host with
-`./smoke.sh`). See `CLAUDE.md` for testing conventions.
+`./scripts/smoke.sh`). See `CLAUDE.md` for testing conventions.
 
 ## concurrent sessions
 Any number of sandboxes can run on one repo at once.
@@ -140,15 +112,15 @@ Any number of sandboxes can run on one repo at once.
   (CI) checks the name, size and heading. The issue is filed **only after the
   file reaches the default branch**, so a human has reviewed the text before it
   is published, and a request whose PR is never merged is never filed (delete
-  the file before merge to withdraw it). The filer is `sandbox_issues.py`,
+  the file before merge to withdraw it). The filer is `github/issues.py`,
   run by `.github/workflows/file-issues.yml` on every push to `main` (issues
   come from `github-actions[bot]`; the job's only write permission is
   `issues: write`), or by hand in a checkout:
-  `python sandbox_issues.py OWNER/REPO --since REV [--dry-run]`. The one
+  `python github/issues.py OWNER/REPO --since REV [--dry-run]`. The one
   ledger is a marker on the last line of each issue, so running it twice over
   a range files nothing new. A later edit is ignored, deleting a file closes
   nothing, and a path added again after deletion is a new request. A repo
-  without the workflow (and `sandbox_issues.py`) files nothing unless someone
+  without the workflow (and `github/issues.py`) files nothing unless someone
   runs it. The launcher no longer files anything when a session ends, and the
   old `--no-actions`, `--max-actions` and `--max-issues` flags are gone.
 - **Exit summary.** The launcher prints every branch with its PR number,
@@ -197,7 +169,7 @@ permission. The enforcement is GitHub-side. Apply the ruleset once per repo
 (needs admin; review it first; it also blocks *you* pushing straight to `main`,
 because it has no bypass actors):
 ```
-gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/protect-main.json
+gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/protect-main.json
 ```
 It requires PRs for the default branch and blocks force-push and deletion.
 
@@ -223,7 +195,7 @@ rule types `deletion`, `non_fast_forward`,
 files are skipped with a warning.
 
 This repo ships two more rulesets, applied the same way (launch against the
-repo and answer yes, or `gh api -X POST ... --input rulesets/<file>`):
+repo and answer yes, or `gh api -X POST ... --input config/rulesets/<file>`):
 - `require-commit-metadata.json` requires the `commit-metadata` check (see
   `.github/workflows/commit-metadata.yml`), pinned to GitHub Actions
   (`integration_id` 15368) so no other app or token can satisfy it with a
@@ -314,9 +286,9 @@ launcher can prove which commits a session made:
   a merge commit. It posts the result as the commit status `sandbox/provenance`
   on the head commit (`--no-provenance` skips this).
 - A status belongs to one commit: anything pushed later leaves the new head
-  without one. With `rulesets/require-sandbox-provenance.json` applied, the
+  without one. With `config/rulesets/require-sandbox-provenance.json` applied, the
   merge stays blocked until you re-check:
-  `./venv/bin/python sandbox_provenance.py OWNER/REPO --pr N`
+  `./venv/bin/python provenance.py OWNER/REPO --pr N`
   (fixes: drop or re-sign foreign commits; or `git rebase --exec 'git commit
   --amend --no-edit -S' origin/main` with your own SSH signing key);
   or break glass for this one head commit with `--override "reason"`, which
@@ -345,7 +317,7 @@ to approve or post anything that gates a merge, and logs that stay on GitHub.
 approval settings (`fork-pr-contributor-approval`,
 `fork-pr-workflows-private-repos`) cover *fork* PRs only, and sandbox PRs come
 from a branch in the repo. So at launch the launcher checks what *can* be set
-(`sandbox_hardening.py`) and states each condition as ok / NOT MET / unknown:
+(`github/hardening.py`) and states each condition as ok / NOT MET / unknown:
 - the default workflow token is read-only, and
 - Actions may not approve pull requests: offered on a terminal, one yes/no
   each (default no), showing the exact `PUT .../actions/permissions/workflow`
@@ -374,11 +346,11 @@ record the result. It has not been done (see `todo/`).
 A deploy key can create any branch and push tags. A pushed tag runs
 tag-triggered (release) workflows on code the session wrote, with whatever
 publishing secrets they use; a pushed branch runs any unfiltered `on: push`
-workflow. Two rulesets in `rulesets/optional/` stop that for everyone but repo
+workflow. Two rulesets in `config/rulesets/optional/` stop that for everyone but repo
 admins (deploy keys are never admins):
 ```
-gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/sandbox-branches-only.json
-gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/no-tag-pushes.json
+gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/optional/sandbox-branches-only.json
+gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/optional/no-tag-pushes.json
 ```
 - `sandbox-branches-only`: outside `refs/heads/sbx/**`, non-admins can't
   create, update or delete branches. That includes non-admin collaborators
@@ -559,7 +531,7 @@ warning in the log (what was pushed still becomes a PR). Ctrl-C during the
 check skips it and tears down. `--no-final-check`, `--no-deps` and `--shell`
 skip it.
 
-This repo's `final-check.sh` also runs `tests/integration` when the sandbox
+This repo's `scripts/final-check.sh` also runs `tests/integration` when the sandbox
 was launched with `--nesting` (and says so when it skips them).
 
 Point `check:` at one script that runs the repo's whole lint and test suite
@@ -593,7 +565,7 @@ Hardening:
 
 ## sandbox CLAUDE.md
 Each session gets `~/.claude/CLAUDE.md` in the container, rendered from
-`sandbox_CLAUDE.md` (use `--claude-md PATH` for a different one). It says the
+`claude_sandbox/data/sandbox_CLAUDE.md` (use `--claude-md PATH` for a different one). It says the
 container and key are thrown away on exit, which repo and branch are reachable,
 whether the key can push, whether `sudo` works and which tools exist, and it
 tells Claude to keep history linear and to commit and push working steps so
@@ -602,7 +574,7 @@ nothing is lost. Git in the container is set to `pull.rebase=true` and
 
 Everything in it is loaded into every session's context, so it is kept short
 (a test caps its size) and detail needed only sometimes lives in an on-demand
-file: the deps-file schema is rendered from `sandbox_ref_deps.md` to
+file: the deps-file schema is rendered from `claude_sandbox/data/sandbox_ref_deps.md` to
 `~/.claude/ref/deps.md`, which the session is told to read before editing
 `claude_sandbox_deps.yaml`. Placeholders are `string.Template` fields filled in
 by `render_claude_md`; write `$$` for a literal `$`.

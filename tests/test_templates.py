@@ -1,10 +1,8 @@
 import pytest
 
-import sandbox_issues as si
-import sandbox_land as sl
-import sandbox_templates as st
-
-
+from claude_sandbox.github import issues as si
+from claude_sandbox.github import land as sl
+from claude_sandbox.github import templates as st
 def tdir(tmp_path, **files):
     for name, text in files.items():
         (tmp_path / name).write_text(text)

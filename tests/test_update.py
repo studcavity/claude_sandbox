@@ -4,8 +4,7 @@ import subprocess
 
 import pytest
 
-import sandbox_update as su
-
+from claude_sandbox import update as su
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 

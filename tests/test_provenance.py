@@ -10,8 +10,7 @@ import types
 
 import pytest
 
-import sandbox_provenance as sp
-
+from claude_sandbox import provenance as sp
 needs_tools = pytest.mark.skipif(
     not (shutil.which("git") and shutil.which("ssh-keygen")),
     reason="needs git and ssh-keygen")

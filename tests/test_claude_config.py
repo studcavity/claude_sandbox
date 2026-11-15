@@ -4,9 +4,7 @@ import sys
 
 import pytest
 
-import sandbox_claude_config as cc
-
-
+from claude_sandbox import claude_config as cc
 def test_trust_only_for_own_repo_case_insensitive():
     assert cc.trust_decision("StudCavity", "studcavity") == (True, None)
 

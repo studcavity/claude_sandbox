@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-import sandbox_check as sc
+from claude_sandbox.portable import check as sc
 
 TODO = "todo/fix-ci.md"
 BRIEF = "# Fix the flaky CI job\n\nWhat went wrong and options.\n"
@@ -91,11 +91,11 @@ def test_option_like_revisions_are_refused():
 
 def test_checker_imports_without_third_party_dependencies():
     """CI (and, planned, the sandbox itself) must be able to run the checker
-    without the launcher's dependencies: `invoke` arrives via sandbox_github."""
+    without the launcher's dependencies: `invoke` arrives via github/gh.py."""
     import subprocess
     import sys
     code = ("import sys; sys.modules['invoke'] = None; sys.path.insert(0, %r); "
-            "import sandbox_check, sandbox_todo; print('ok')"
+            "import claude_sandbox.portable.check, claude_sandbox.portable.todo; print('ok')"
             % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     r = subprocess.run([sys.executable, "-I", "-c", code],
                        capture_output=True, text=True)
@@ -103,14 +103,14 @@ def test_checker_imports_without_third_party_dependencies():
 
 
 def test_session_and_branch_rules_have_one_definition():
-    import sandbox_names
-    import sandbox_sessions
+    from claude_sandbox.portable import names as sandbox_names
+    from claude_sandbox import sessions as sandbox_sessions
     assert sandbox_sessions.SESSION_RE is sandbox_names.SESSION_RE
     assert sandbox_sessions.BRANCH_ROOT == sandbox_names.BRANCH_ROOT == "sbx"
 
 
 def test_branch_session_parsing():
-    import sandbox_names
+    from claude_sandbox.portable import names as sandbox_names
     s = "quirky-hopper"
     assert sandbox_names.branch_session(f"sbx/{s}/work") == s
     assert sandbox_names.branch_session(f"refs/heads/sbx/{s}/a/b") == s

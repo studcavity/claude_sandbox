@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-import sandbox_ghclient as gc
-from sandbox_github import GitHubError
+from claude_sandbox.github import client as gc
+from claude_sandbox.github.gh import GitHubError
 
 pytestmark = pytest.mark.gh
 
@@ -189,7 +189,7 @@ def test_http_errors_become_githuberror_with_the_status(client, srv, code):
 
 def test_gh_token_comes_from_the_gh_login_and_is_never_in_an_error(monkeypatch):
     import types
-    import sandbox_github
+    from claude_sandbox.github import gh as sandbox_github
     monkeypatch.setattr(sandbox_github, "_gh", lambda args, body=None: types.SimpleNamespace(
         failed=False, stdout="ghp_secretvalue\n", stderr=""))
     assert gc.gh_token() == "ghp_secretvalue"

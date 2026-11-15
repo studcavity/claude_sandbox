@@ -2,11 +2,9 @@ import itertools
 
 import pytest
 
-import sandbox_issues as si
-import sandbox_land as sl
-import sandbox_untrusted as su
-
-
+from claude_sandbox.github import issues as si
+from claude_sandbox.github import land as sl
+from claude_sandbox.portable import untrusted as su
 # --- parity: the refactor must not change a single output ------------------ #
 # Verbatim copies of the implementations this module replaced.
 def old_clean_block(text, limit):

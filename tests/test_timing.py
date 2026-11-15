@@ -2,10 +2,8 @@ import json
 
 import pytest
 
-import sandbox_timing as st
-import sandbox_util
-
-
+from claude_sandbox import timing as st
+from claude_sandbox import util as sandbox_util
 class Clock:
     def __init__(self):
         self.now = 0.0
@@ -139,8 +137,7 @@ def test_a_failing_subprocess_is_still_counted(monkeypatch):
 
 
 def test_gh_calls_are_counted(monkeypatch):
-    import sandbox_github
-
+    from claude_sandbox.github import gh as sandbox_github
     class Ctx:
         def run(self, *a, **k):
             return type("R", (), {"failed": False, "stdout": "{}"})()

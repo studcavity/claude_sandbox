@@ -3,8 +3,8 @@ import random
 
 import pytest
 
-import sandbox_sessions as ss
-from sandbox_github import GitHubError
+from claude_sandbox import sessions as ss
+from claude_sandbox.github.gh import GitHubError
 
 
 def test_pick_name_is_docker_style_and_valid():

@@ -3,9 +3,7 @@ import os
 
 import pytest
 
-import sandbox_bootstrap as sb
-
-
+from claude_sandbox import bootstrap as sb
 @pytest.fixture
 def proj(tmp_path):
     (tmp_path / "requirements.txt").write_text("PyYAML>=6\n")

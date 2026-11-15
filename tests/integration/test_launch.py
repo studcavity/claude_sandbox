@@ -22,9 +22,8 @@ import uuid
 
 import pytest
 
-import claude_sandbox as cs
-import sandbox_backend_github as bg
-
+from claude_sandbox import cli as cs
+from claude_sandbox.backends import github as bg
 pytestmark = [pytest.mark.incus, pytest.mark.smoke]
 
 CLI = next((c for c in ("incus", "lxc") if shutil.which(c)), None)

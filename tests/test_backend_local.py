@@ -12,11 +12,10 @@ import subprocess
 
 import pytest
 
-import claude_sandbox as cs
-import sandbox_backend_local as lb
-import sandbox_provenance
-import sandbox_volumes
-
+from claude_sandbox import cli as cs
+from claude_sandbox.backends import local as lb
+from claude_sandbox import provenance as sandbox_provenance
+from claude_sandbox.container import volumes as sandbox_volumes
 S = "quirky-hopper"
 SHA = "a" * 40
 
@@ -554,6 +553,6 @@ def test_recover_needs_local():
 def test_only_a_writable_github_session_can_push(make_args, local):
     be, _ = local
     assert be.can_push is False
-    import sandbox_backend_github as bg
+    from claude_sandbox.backends import github as bg
     assert bg.GitHubBackend(make_args(repo="o/r")).can_push is True
     assert bg.GitHubBackend(make_args(repo="o/r", read_only=True)).can_push is False

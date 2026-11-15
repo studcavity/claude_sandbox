@@ -3,8 +3,8 @@ import threading
 
 import pytest
 
-import sandbox_land as sl
-from sandbox_github import GitHubError
+from claude_sandbox.github import land as sl
+from claude_sandbox.github.gh import GitHubError
 
 
 def test_sensitive_paths():

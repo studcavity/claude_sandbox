@@ -5,8 +5,7 @@ import subprocess
 
 import pytest
 
-import sandbox_volumes as sv
-
+from claude_sandbox.container import volumes as sv
 NOW = datetime.datetime(2026, 11, 15, 12, 0, tzinfo=datetime.timezone.utc)
 
 

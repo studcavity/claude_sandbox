@@ -1,7 +1,7 @@
 name: file-issues
 
 # Files a GitHub issue for each todo/<name>.md that a commit ADDS to the
-# default branch (see sandbox_todo.py and sandbox_issues.py). It runs only on
+# default branch (see portable/todo.py and github/issues.py). It runs only on
 # pushes to main, so the text it publishes has been through review, and the
 # code it runs is main's own: no PR, fork or session branch ever reaches this
 # job. Issues are created by github-actions[bot].
@@ -53,4 +53,4 @@ jobs:
           else
             range=(--last 50)
           fi
-          python sandbox_issues.py "$GITHUB_REPOSITORY" "${range[@]}"
+          python -m claude_sandbox.github.issues "$GITHUB_REPOSITORY" "${range[@]}"

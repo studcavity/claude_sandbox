@@ -36,7 +36,7 @@ def test_run_sh_shellcheck(repo_root):
 
 def test_passes_every_argument_through_untouched(shim, repo_root):
     out = shim("repo", "--tmux", "a b", "--model=x;y", "--no-update-check")
-    assert out[0] == os.path.join(repo_root, "claude_sandbox.py")
+    assert out[0] == os.path.join(repo_root, "claude_sandbox", "__main__.py")
     assert out[1:] == ["repo", "--tmux", "a b", "--model=x;y",
                        "--no-update-check"]
 
@@ -44,13 +44,13 @@ def test_passes_every_argument_through_untouched(shim, repo_root):
 def test_works_from_any_directory_and_by_bare_name(shim, repo_root, tmp_path):
     assert shim("--setup-token", cwd=tmp_path)[1:] == ["--setup-token"]
     here = shim("x", cwd=repo_root, script="run.sh")  # BASH_SOURCE has no slash
-    assert here[0].endswith("claude_sandbox.py") and here[1:] == ["x"]
+    assert here[0].endswith("claude_sandbox/__main__.py") and here[1:] == ["x"]
     assert os.path.isfile(os.path.join(repo_root, here[0]))
 
 
 def test_stays_a_thin_shim(repo_root):
     """No subshells, pipes or external commands: the only process started is
-    the exec'd python. Logic belongs in claude_sandbox.py."""
+    the exec'd python. Logic belongs in the claude_sandbox package."""
     code = [l for l in open(os.path.join(repo_root, "run.sh")).read().splitlines()
             if l.strip() and not l.lstrip().startswith("#")]
     assert len(code) <= 5

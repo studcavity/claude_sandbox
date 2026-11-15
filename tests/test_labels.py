@@ -1,8 +1,6 @@
 import pytest
 
-import sandbox_labels as sl
-
-
+from claude_sandbox.github import labels as sl
 @pytest.mark.parametrize("s,expect", [
     ("frosty-volta", "session:frosty-volta"), ("a", "session:a"),
     ("", None), (None, None), ("-bad", None), ("has space", None),
