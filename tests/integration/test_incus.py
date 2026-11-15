@@ -32,7 +32,7 @@ def box():
 
 def test_put_file_contents_and_mode(box):
     box.put_file("/tmp/it-x", b"x", "0755")
-    out = box.root_argv(["sh", "-c", "cat /tmp/it-x; stat -c %a /tmp/it-x"])
+    out = box.root_argv(["sh", "-c", "cat /tmp/it-x; echo; stat -c %a /tmp/it-x"])
     assert out.stdout.decode().split() == ["x", "755"]
     assert box.root_argv(["ls", "/tmp"]).stdout.decode().count("it-x.tmp") == 0
 
