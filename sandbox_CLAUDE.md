@@ -291,7 +291,7 @@ protection settings; it doesn't tell you.
   fetch origin && git rebase origin/HEAD` (or `git merge-tree --write-tree
   origin/HEAD HEAD` to look first). Resolve any conflicts now, re-run the
   checks and push: nobody can fix them once the container is gone and the PR
-  exists. Do this for every branch you push, including stacked ones.
+  exists. Do this for every branch you push. A clean rebase isn't proof: another merged PR can break your tests or its own without a textual conflict, so re-run the whole suite after rebasing. `sandbox-check` warns while you're behind.
 - After rebasing a branch you already pushed, update it with `git push
   --force-with-lease`. That is allowed **only on your own `$prefix` branches**.
   Never force-push anything else, and don't rewrite commits that came from
