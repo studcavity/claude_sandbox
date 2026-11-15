@@ -1,0 +1,186 @@
+"""Tests for sandbox_deps: schema validation, cache key, archives, downloads."""
+import hashlib
+import io
+import os
+import tarfile
+import zipfile
+
+import pytest
+
+import sandbox_deps as d
+from sandbox_deps import DepsError
+
+SHA = "a" * 64
+
+
+def test_sample_file_in_repo_is_valid(repo_root):
+    with open(os.path.join(repo_root, d.DEPS_FILE), "rb") as f:
+        deps = d.parse(f.read())
+    assert deps["apt"] == ["shfmt"]
+    assert deps["binaries"][0]["name"] == "shellcheck"
+    assert deps["last_generated"].startswith("2026-")
+
+
+@pytest.mark.parametrize("raw", [b"", "", "# only a comment\n"])
+def test_empty_file_is_empty_deps(raw):
+    deps = d.parse(raw)
+    assert deps["apt"] == deps["scripts"] == deps["binaries"] == []
+    assert d.cache_key(deps) is None
+    assert d.summary(deps) == []
+
+
+def test_full_document_parses():
+    deps = d.parse(f"""
+apt: [git, libssl-dev=3.0.13-0ubuntu3]
+scripts:
+  - name: tool
+    url: https://example.com/i.sh
+    sha256: {SHA}
+    args: [--yes]
+    env: {{BINDIR: /usr/local/bin, N: 3}}
+binaries:
+  - name: bin
+    url: https://example.com/b.tgz
+    sha256: {SHA}
+    archive_path: dir/bin
+last_generated: 2026-11-15T00:40:00Z
+""")
+    assert deps["apt"] == ["git", "libssl-dev=3.0.13-0ubuntu3"]
+    assert deps["scripts"][0]["env"] == {"BINDIR": "/usr/local/bin", "N": "3"}
+    assert deps["binaries"][0]["archive_path"] == "dir/bin"
+    # unquoted YAML timestamps are normalised to a string
+    assert isinstance(deps["last_generated"], str)
+
+
+@pytest.mark.parametrize("doc, msg", [
+    ("bogus: 1", "unknown key"),
+    ("[1, 2]", "expected a mapping"),
+    ("apt: git", "expected a list"),
+    ("apt: ['-o=evil']", "invalid package"),
+    ("apt: ['Git']", "invalid package"),
+    ("binaries: [{name: b, url: 'https://x/b'}]", "missing key"),
+    (f"binaries: [{{name: b, url: 'http://x/b', sha256: {SHA}}}]", "https"),
+    (f"binaries: [{{name: b, url: 'https://u:p@x/b', sha256: {SHA}}}]", "credentials"),
+    ("binaries: [{name: b, url: 'https://x/b', sha256: abc}]", "invalid sha256"),
+    (f"binaries: [{{name: ../b, url: 'https://x/b', sha256: {SHA}}}]", "invalid name"),
+    (f"binaries: [{{name: b, url: 'https://x/1', sha256: {SHA}}},"
+     f" {{name: b, url: 'https://x/2', sha256: {SHA}}}]", "duplicate"),
+    ("scripts: [{name: s, url: 'https://x/s', env: {PATH: /tmp}}]", "not allowed"),
+    ("scripts: [{name: s, url: 'https://x/s', env: {LD_PRELOAD: x}}]", "not allowed"),
+    ("scripts: [{name: s, url: 'https://x/s', env: {A: [1]}}]", "plain scalar"),
+    ("scripts: [{name: s, url: 'https://x/s', args: x}]", "list of strings"),
+    ("last_generated: yesterday", "ISO 8601"),
+    ("platform: \"a\\x01b\"", "control characters"),
+    ("apt: [", "invalid YAML"),
+])
+def test_invalid_documents_are_rejected(doc, msg):
+    with pytest.raises(DepsError, match=msg):
+        d.parse(doc)
+
+
+def test_oversized_and_non_utf8_rejected():
+    with pytest.raises(DepsError, match="larger than"):
+        d.parse(b"#" * (d.MAX_DEPS_FILE + 1))
+    with pytest.raises(DepsError, match="UTF-8"):
+        d.parse(b"\xff\xfe")
+
+
+def test_cache_key_ignores_metadata_and_key_order():
+    a = d.parse("apt: [git]\nlast_generated: '2026-01-01'")
+    b = d.parse("platform: x\napt: [git]")
+    assert d.cache_key(a) == d.cache_key(b) is not None
+    assert d.cache_key(d.parse("apt: [curl]")) != d.cache_key(a)
+
+
+def test_cache_key_none_for_unpinned_script():
+    deps = d.parse("scripts: [{name: s, url: 'https://x/s'}]")
+    assert d.cache_key(deps) is None
+    pinned = d.parse(f"scripts: [{{name: s, url: 'https://x/s', sha256: {SHA}}}]")
+    assert d.cache_key(pinned) is not None
+
+
+def test_summary_lists_each_section():
+    deps = d.parse(f"apt: [git]\nbinaries: [{{name: b, url: 'https://x/b', sha256: {SHA}}}]")
+    assert d.summary(deps) == ["apt: `git`", "binaries: `b` (/usr/local/bin)"]
+
+
+# --------------------------------------------------------------------------- #
+# archives
+# --------------------------------------------------------------------------- #
+def _tar(files, mode="w:gz"):
+    bio = io.BytesIO()
+    with tarfile.open(fileobj=bio, mode=mode) as tf:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return bio.getvalue()
+
+
+def _zip(files):
+    bio = io.BytesIO()
+    with zipfile.ZipFile(bio, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return bio.getvalue()
+
+
+@pytest.mark.parametrize("pack", [_tar, lambda f: _tar(f, "w:xz"), _zip])
+def test_extract_member(pack):
+    data = pack({"dir/bin": b"ELF", "other": b"x"})
+    assert d.extract_member(data, "dir/bin") == b"ELF"
+    with pytest.raises(DepsError, match="no member"):
+        d.extract_member(data, "missing")
+
+
+def test_extract_member_rejects_non_archive_and_oversize():
+    with pytest.raises(DepsError, match="not a tar or zip"):
+        d.extract_member(b"plain bytes", "x")
+    with pytest.raises(DepsError, match="acceptable size"):
+        d.extract_member(_tar({"big": b"12345"}), "big", max_bytes=4)
+
+
+# --------------------------------------------------------------------------- #
+# downloads (network mocked)
+# --------------------------------------------------------------------------- #
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+
+@pytest.fixture
+def serve(monkeypatch):
+    def _serve(body):
+        monkeypatch.setattr(d._opener, "open", lambda req, timeout: _Resp(body))
+    return _serve
+
+
+def test_fetch_verifies_sha(serve):
+    serve(b"hello")
+    good = hashlib.sha256(b"hello").hexdigest()
+    assert d.fetch("https://x/f", 100, good) == b"hello"
+    with pytest.raises(DepsError, match="sha256 mismatch"):
+        d.fetch("https://x/f", 100, SHA)
+
+
+def test_fetch_enforces_size_cap(serve):
+    serve(b"x" * 10)
+    with pytest.raises(DepsError, match="larger than"):
+        d.fetch("https://x/f", 5)
+
+
+def test_fetch_wraps_network_errors(monkeypatch):
+    def boom(req, timeout):
+        raise OSError("no route")
+    monkeypatch.setattr(d._opener, "open", boom)
+    with pytest.raises(DepsError, match="download failed"):
+        d.fetch("https://x/f", 5)
+
+
+def test_redirect_to_http_is_refused():
+    h = d._HttpsOnly()
+    with pytest.raises(DepsError, match="non-https"):
+        h.redirect_request(None, None, 302, "", {}, "http://evil/x")
