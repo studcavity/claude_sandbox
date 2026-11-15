@@ -116,7 +116,7 @@ def synopsis_section(rec):
         sha = "?"
     out = ["### Proposed synopsis", "",
            f"_Proposed by the session in commit `{sha}`; untrusted like "
-           "everything below. The PR title above is the launcher's, not this._",
+           "everything below. Its title is this PR's title._",
            "", f"**Proposed title:** {safe_line(title, 120)}", ""]
     out.extend(f"- {safe_line(s, 200)}" for s in summary[:MAX_SUMMARY_LINES])
     return "\n".join(out) + "\n"
@@ -141,11 +141,17 @@ def label_pr(repo, pr, session):
 
 def pr_text(session, branch, subjects, record=None):
     """(title, body) for a session branch from its commit subjects (and, if
-    given, the Record of what its commits say about themselves)."""
+    given, the Record of what its commits say about themselves). The title is
+    the session's proposed one plus ` [session]` when it proposed one, else
+    built from the subjects."""
     tail = branch.split("/", 2)[-1]
     first = clean_text(subjects[0], 80) if subjects else tail
     title = f"[{session}] " + (first if len(subjects) == 1 else
                                f"{clean_text(tail, 40)} ({len(subjects)} commits)")
+    if record is not None and record.synopsis:
+        # The session's own title, sanitised; the session name goes last so
+        # it is the launcher, not the session, that says whose PR this is.
+        title = f"{safe_line(record.synopsis[1], 100)} [{session}]"
     shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
     body = sandbox_templates.render(

@@ -133,8 +133,16 @@ def test_body_shows_the_synopsis_as_untrusted_and_sanitised():
     assert GH not in b and "[withheld: appears to contain GitHub token]" in b
     assert "\x1b" not in b
     t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], r)
-    assert t == "[sess] feat: one"          # the launcher keeps its own title
+    assert t.endswith(" [sess]") and "@octocat" not in t and "`" not in t
+    assert t.startswith("ping @\u200boctocat")
 
 
 def test_no_synopsis_section_without_a_synopsis():
     assert "Proposed synopsis" not in body(rec(("aaaaaaa", "feat: x")))
+
+
+def test_title_is_the_proposed_one_with_the_session_appended():
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one", "feat: two"], rec(("aaaaaaa", SYN)))
+    assert t == "Add the thing [sess]"
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], rec(("aaaaaaa", "feat: x")))
+    assert t == "[sess] feat: one"          # no proposal: built from the subjects

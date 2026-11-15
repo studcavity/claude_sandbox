@@ -134,8 +134,8 @@ verify or do (and why), and follow-ups someone must action later.
 - **Propose a PR synopsis in your last commit** of each branch: one
   `PR-Title: <what the branch does, under 80 chars>` line and a few
   `PR-Summary: <point>` lines (what and why; one line each) in the message
-  body. The launcher copies them, sanitised and marked untrusted, into the PR
-  description; a later commit's synopsis replaces an earlier one.
+  body. The launcher uses the title as the PR title (appending `[$session]`)
+  and copies both, sanitised and marked untrusted, into the PR description; a later commit's synopsis replaces an earlier one.
 - **Run `sandbox-check`** (no arguments) before you finish. It lints your
   commits since the default branch the way CI does (action ids, briefs, no
   `fixup!` or merge commits, no credential-shaped text, a `Verified` or `Not
