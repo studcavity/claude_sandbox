@@ -1,6 +1,6 @@
 # Spec 02: one place per request (the `todo/` file is the request)
 
-Source: `docs/plans/simplification.md` item 3. Status: open. Do this before
+Source: `docs/plans/simplification.md` item 3. Status: implemented, option A. Settled: a request is the commit that ADDS the file (path + adding commit), edits are ignored, deleting closes nothing; see `sandbox_todo.py`. Do this before
 spec 03, which reads the format this spec defines.
 
 ## Problem

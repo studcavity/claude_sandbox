@@ -1,7 +1,7 @@
 # Spec 07: make "nothing trusted runs before review" checkable, and offer to apply it
 
 Source: a review discussion of specs 05 and 06, not
-`docs/plans/simplification.md`. Status: open.
+`docs/plans/simplification.md`. Status: implemented, except the deploy-key workflow-push experiment, which needs a scratch repo and a host (see `todo/verify-deploy-key-workflow-push.md`; the README says it is unverified).
 
 ## The principle
 
