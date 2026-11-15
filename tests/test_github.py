@@ -96,6 +96,18 @@ def test_gh_missing_is_a_clear_error(gh):
         g.github_login()
 
 
+def test_not_logged_in_hint_does_not_depend_on_gh_wording(gh):
+    """Under GitHub Actions gh words this differently; exit status 4 is what
+    we key on."""
+    _, replies = gh
+    replies.append(Result(stderr="gh: To use GitHub CLI in a GitHub Actions "
+                                 "workflow, set the GH_TOKEN environment "
+                                 "variable.", exited=4))
+    with pytest.raises(g.GitHubError, match="gh auth login") as e:
+        g.github_login()
+    assert "GH_TOKEN" in str(e.value) and e.value.code == 0
+
+
 def test_not_logged_in_error_is_surfaced(gh):
     _, replies = gh
     replies.append(Result(stderr="To get started with GitHub CLI, please run:  "

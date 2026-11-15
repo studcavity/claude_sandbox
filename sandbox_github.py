@@ -58,6 +58,11 @@ def _fail(args, r):
         raise GitHubError("the GitHub CLI `gh` is not installed on the host; "
                           "install it and run `gh auth login`", 0)
     text = (r.stderr.strip() or r.stdout.strip())[:500]
+    if r.exited == 4:  # gh's documented "authentication required" status
+        # Our own wording: gh's text varies (e.g. it differs under GitHub
+        # Actions), but the exit status is stable.
+        raise GitHubError("gh is not logged in: run `gh auth login` (or set "
+                          f"GH_TOKEN) and retry. gh said: {text}", 0)
     m = _HTTP_RE.search(r.stderr)
     raise GitHubError(f"gh {' '.join(args[:3])} failed: {text}",
                       int(m.group(1)) if m else 0)
