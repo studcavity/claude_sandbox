@@ -26,6 +26,17 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 `<github_user>/<repository>`. Any extra flags go to `claude_sandbox.py`
 (see `python3 claude_sandbox.py --help`).
 
+## model
+Sessions use Sonnet 5.5 (`claude-sonnet-5-5`) by default. Choose another with
+`--model` (an alias such as `opus`, `sonnet`, `haiku`, or a full model ID):
+```
+./run.sh <repository> --model claude-opus-5-5
+```
+Set `CLAUDE_SANDBOX_MODEL` on the host to change the default for every launch;
+`--model` overrides it. `--model default` omits the flag so Claude Code picks
+its own default. It's passed as `claude --model <MODEL>`, so you can still
+switch with `/model` inside the session. Ignored with `--shell`.
+
 ## Claude login
 Run this once to avoid `/login` in every session:
 ```

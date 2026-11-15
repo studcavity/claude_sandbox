@@ -37,6 +37,7 @@ Secrets are piped into the container over stdin, never put on a command line.
 Examples:
   ./claude_sandbox.py --repo myuser/myproject      # deploy key + clone
   ./claude_sandbox.py                              # account-wide key
+  ./claude_sandbox.py --repo me/proj --model opus  # pick the session model
   ./claude_sandbox.py --cli incus --image images:ubuntu/24.04 --repo me/proj
 """
 import argparse
@@ -114,6 +115,7 @@ BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
                    # Debian/Ubuntu ship fd as fdfind
                    "ln -sf /usr/bin/fdfind /usr/local/bin/fd && "
                    + BASE_APT_CLEAN)
+DEFAULT_MODEL = "claude-sonnet-5-5"
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
 # Reset per-instance identity so every container launched from the image
 # gets its own.
@@ -646,6 +648,8 @@ class Sandbox:
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
         load_secrets = self.push_secrets()
         prog = "bash -l" if self.args.shell else "claude"
+        if not self.args.shell and self.args.model.lower() != "default":
+            prog += f" --model {shlex.quote(self.args.model)}"
         if self.args.tmux:
             # tmux sets its own TERM/TERM_PROGRAM, giving Claude Code a
             # well-known terminal; scroll with the mouse or prefix-[ .
@@ -738,6 +742,13 @@ def main():
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
                    help="rebuild the cached image when older than this "
                         "(default: 7)")
+    p.add_argument("--model", metavar="MODEL",
+                   default=os.environ.get("CLAUDE_SANDBOX_MODEL")
+                   or DEFAULT_MODEL,
+                   help="model for the Claude Code session: an alias "
+                        "(opus, sonnet, haiku) or a full model ID "
+                        f"(default: $CLAUDE_SANDBOX_MODEL or {DEFAULT_MODEL}); "
+                        "'default' leaves the choice to Claude Code")
     p.add_argument("--no-deps", action="store_true",
                    help=f"don't install the repo's {sandbox_deps.DEPS_FILE}")
     p.add_argument("--claude-md", metavar="PATH",
