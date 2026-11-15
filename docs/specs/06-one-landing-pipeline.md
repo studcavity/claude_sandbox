@@ -1,11 +1,12 @@
-# Spec 06: one landing pipeline (and a hold that depends on how you launched)
+# Spec 06: one landing pipeline (and a review hold that depends on how you launched)
 
 Source: not in `docs/plans/simplification.md`. Found while checking that
 plan's item 5 against the code; it also absorbs that item's "PR record
 section" and "fold `sandbox_labels` / `sandbox_templates`" cuts. Status: open.
-**The first part is a security bug: fix it first, as its own PR.**
+The first part is an inconsistency in a review safeguard. It is small and
+worth its own PR, but it is not an execution hole (see below).
 
-## Problem 1 (bug): whether `setup:` scripts are held depends on how the launcher was run
+## Problem 1: whether `setup:` scripts are held depends on how the launcher was run
 
 `sandbox_land.land(repo, session, extra_sensitive)` holds a branch (opens no
 PR) when it touches a privileged path. `extra_sensitive` is the repo's
@@ -24,9 +25,15 @@ in every future sandbox. The launcher computes that list from `self.deps`
   (`deps if lines else None`). Check whether a file with only `setup:`
   entries produces summary lines. If it doesn't, that case is affected too.
 
-This matters because the hold is the only thing that keeps a session from
-getting a privileged script change into a PR that looks normal. The
-`.github/`-held path doesn't depend on launch flags; this one does.
+**How serious this is.** Opening the PR runs nothing. `setup:` scripts run
+only in `Sandbox.run_setup`, at a later launch, from a clone of the default
+branch. So a changed script runs only after a human has merged it. The
+`.github/` hold prevents execution, because pushing or opening a PR would run
+workflow code. The `setup:` hold makes the review explicit: a change that
+will later run with the deploy key doesn't arrive as an ordinary-looking PR
+that gets approved without a close look. Skipping it under some flags is
+inconsistent and weakens that safeguard. It does not let unreviewed code
+run.
 
 **Done when:** the held set doesn't depend on launch flags or on which code
 path lands. One way to get there: `land` reads `setup:` paths from the
