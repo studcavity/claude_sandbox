@@ -112,19 +112,63 @@ Add an "Actions hardening" check to the launcher, built the same way as
    read: a list of the repo's weak points is a map for a prompt-injected
    session. The session gets only the rule in "Session-side rule" below,
    which is the same whatever the repo's state.
-   - Related, for the implementer to decide: `protection_note` already
-     tells the session about the default branch's protection state
-     ("Default-branch protection and required status checks" in
-     `sandbox_CLAUDE.md`), including when a ruleset is missing. Consider
-     whether the same rule applies there: keep what a session needs to
-     act correctly ("PRs are required"), and move statements about gaps
-     to host-side warnings.
+   - The same applies to branch protection (decided): see "Branch
+     protection gaps move to the host" below.
 
 Settings could live as declarative JSON, as `rulesets/*.json` do, so a
 repo can see and pin what gets applied. Or they could stay in code, since
 there are only two fields. Whoever implements this decides; the
 `validate_repo_ruleset`-style allowlist applies if repos can supply their
 own.
+
+## Branch protection gaps move to the host
+
+This one is decided, not optional. Today `claude_sandbox.protection_note`
+(rendered as `$protection` under "Default-branch protection and required
+status checks" in `sandbox_CLAUDE.md`) tells the session about the repo's
+gaps. Depending on the state it says:
+
+- `unprotected`: "`main` does **not** require pull requests: no ruleset is
+  enforcing the branch workflow, so it is only a convention here";
+- `unknown`: "whether `main` is protected could not be verified";
+- `applied`: that the launcher applied the ruleset *this session*, which
+  implies the branch was unprotected until a moment ago;
+- "Required status checks: none known", which says no CI job blocks a merge.
+
+The same section then asks the session to act on those gaps: "or the note
+above says no checks are required while CI exists, say so in your final
+message". That puts finding gaps on the session.
+
+Change it so that:
+
+- **The session sees text that doesn't depend on the protection state.**
+  It keeps only what a session needs to behave correctly: changes reach
+  the default branch through PRs, never push to it, and treat CI job
+  names as possibly required (warn the user before renaming or removing
+  one). What it does with that text is the same in every repo. The
+  rendered sandbox `CLAUDE.md` must be byte-identical across the
+  `protected`, `applied`, `unprotected` and `unknown` states, and across
+  "some required checks" against "none", and a test should say so.
+  - One judgement call for the implementer: listing the *names* of
+    required checks is useful (it stops a session renaming one), and it
+    isn't a gap as such. But listing them only when there are some reveals
+    the case where there are none. Prefer the generic wording above,
+    unless you find a way to give the names without the empty case
+    standing out.
+- **The gaps become host-side warnings at launch and in the exit
+  summary.** These are: not protected, unknown, no required checks, and
+  required checks missing for CI jobs that exist. `check_protection`
+  already logs a warning at launch, and the exit summary needs one too.
+  `sandbox_protect.discover_checks` already finds the check names that
+  passed on the default branch's head, so the launcher can suggest
+  required checks itself (the "say so in your final message" job the
+  session does today), as a host-side message with the `gh api` command.
+- The offer to apply a ruleset (`offer_protection`) is unchanged: it was
+  always host-side.
+- `tests/test_protect.py` asserts on the current `protection_note`
+  wording, so those tests change with it. Assert on the host warnings and
+  on the state-independent session text instead.
+- README describes where protection state is reported now.
 
 ## Session-side rule (`sandbox_CLAUDE.md`)
 
@@ -169,6 +213,8 @@ focused test that the rule is present, so a later trim (plan item 5's
   sandbox `CLAUDE.md` is identical whether the verdict passes or fails).
 - `sandbox_CLAUDE.md` states the boundary rule above, and a test keeps it
   there.
+- Branch-protection gaps are host-side warnings at launch and at exit. The
+  sandbox `CLAUDE.md` is the same whatever the protection state (test).
 - The deploy-key workflow-push result is recorded. If such pushes are
   accepted, that is fixed before this spec counts as done.
 - README replaces "set it by hand" with what the launcher offers. It
