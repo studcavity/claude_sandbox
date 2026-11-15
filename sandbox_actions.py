@@ -21,8 +21,18 @@ An action is one git-trailer line in the LAST paragraph of a commit message
 The value is ONE line of a JSON object. Envelope, stable forever:
   v     int, the schema version of this action type's payload (required)
   type  str, what to do (required)
-  id    str matching [A-Za-z0-9._-]{1,40}, unique within the commit (required);
-        with the commit sha it names the action, so re-running is idempotent
+  id    str matching [A-Za-z0-9._-]{1,100} (required); with the commit sha it
+        names the action, so re-running is idempotent. CI requires the shape
+        <slug>-<YYYYMMDD>-<session>-<4 random chars>, e.g.
+        smoke-20261115-frosty-volta-a3f9, so ids don't collide across commits
+        (they name todo/<id>.md); the parser itself accepts any valid id.
+
+Every commit from a session also carries `Sandbox-Session: <session>` in the
+same trailer block. CI (`sandbox_check.py`, via `lint_commit`) checks that it
+matches the branch (`sbx/<session>/...`) and the session inside each id, and
+that every `issue` action has todo/<id>.md in the same commit. At run time the
+launcher ignores a commit whose trailer names a different session than the
+branch it is on.
 Everything else is the payload, owned by (type, v). Unknown keys are ignored.
 
 Anything that does not conform is a NO-OP, never an error: lines outside the
@@ -39,23 +49,27 @@ Types today
                earlier one is skipped, so only unaddressed items are filed.
                (An issue that was already filed is left for a human to close.)
 
-Convention (instruction to sessions, not enforced or consumed here yet): an
-`issue` action's full description lives in the same commit at `todo/<id>.md`,
-written so a fresh agent with no context could pick the item up. It may later
-become the issue body; today the launcher ignores it.
+Convention: an `issue` action's full description lives in the same commit at
+`todo/<id>.md`, written so a fresh agent with no context could pick the item
+up (CI checks the file exists). It may later become the issue body; today the
+launcher doesn't read it.
 
 Trust: everything here is text written by an AI session. It is bounded
 (MAX_*), stripped of control characters and live @-mentions, and labelled
 untrusted. Handlers only ever do narrow, reversible, non-merging things.
 """
 import collections
+import datetime
 import json
 import re
 import urllib.parse
 
 TRAILER = "Sandbox-Action"
-ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
-REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,40})$")
+SESSION_TRAILER = "Sandbox-Session"
+ID_MAX = 100          # was 40; ids now carry date + session + random suffix
+ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,%d}$" % ID_MAX)
+REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,%d})$" % ID_MAX)
+SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")  # = sandbox_sessions
 MAX_ACTIONS = 25      # executed per run, across all commits
 MAX_LINE = 8000       # a trailer line longer than this is ignored
 MAX_TITLE = 120
@@ -74,28 +88,121 @@ def _trailer_lines(message):
     return paras[-1].splitlines() if len(paras) > 1 else []
 
 
-def parse_message(sha, message):
-    """Actions requested by one commit message; nonconforming lines are
-    dropped. Duplicate ids within the commit: the first one wins."""
+def scan_message(sha, message):
+    """-> (actions, problems). Actions are what the launcher will act on (a
+    nonconforming line is simply absent). Problems say why each line that
+    starts with the trailer key was dropped, for `lint_commit`; the launcher
+    ignores them. Duplicate ids within the commit: the first one wins."""
     prefix = TRAILER.lower() + ":"
-    seen, out = set(), []
+    seen, out, problems = set(), [], []
     for line in _trailer_lines(message):
-        if not line.lower().startswith(prefix) or len(line) > MAX_LINE:
+        if not line.lower().startswith(prefix):
+            continue
+        if len(line) > MAX_LINE:
+            problems.append(f"{TRAILER} line longer than {MAX_LINE} chars")
             continue
         try:
             data = json.loads(line[len(prefix):])
         except ValueError:
+            problems.append(f"{TRAILER} value is not one line of JSON")
             continue
         if not isinstance(data, dict):
+            problems.append(f"{TRAILER} value is not a JSON object")
             continue
         v, typ, aid = data.get("v"), data.get("type"), data.get("id")
         if (type(v) is not int or not isinstance(typ, str)
-                or not isinstance(aid, str) or not ID_RE.match(aid)
-                or aid in seen):
+                or not isinstance(aid, str) or not ID_RE.match(aid)):
+            problems.append(f"{TRAILER} needs int v, str type and an id "
+                            f"matching {ID_RE.pattern}")
+            continue
+        if aid in seen:
+            problems.append(f"duplicate action id {aid!r}")
             continue
         seen.add(aid)
         out.append(Action(sha, aid, typ, v, data))
-    return out
+    return out, problems
+
+
+def parse_message(sha, message):
+    """Actions requested by one commit message; nonconforming lines dropped."""
+    return scan_message(sha, message)[0]
+
+
+def session_trailers(message):
+    """Every `Sandbox-Session:` value (stripped) in the last paragraph."""
+    prefix = SESSION_TRAILER.lower() + ":"
+    return [ln[len(prefix):].strip() for ln in _trailer_lines(message)
+            if ln.lower().startswith(prefix)]
+
+
+def message_session(message):
+    """The session a commit says it came from, or None if it doesn't say
+    (or says something invalid or contradictory)."""
+    vals = session_trailers(message)
+    return vals[0] if len(vals) == 1 and SESSION_RE.match(vals[0]) else None
+
+
+def id_problem(action_id, session):
+    """Why an id isn't `<slug>-<YYYYMMDD>-<session>-<4 chars>`, or None.
+    Required by `lint_commit` for new commits; the parser stays lenient
+    (old commits are immutable)."""
+    m = re.match(r"^[A-Za-z0-9._-]+?-(\d{8})-" + re.escape(session)
+                 + r"-[a-z0-9]{4}$", action_id)
+    if not m:
+        return (f"id {action_id!r} must look like "
+                f"<slug>-<YYYYMMDD>-{session}-<4 random [a-z0-9]>")
+    try:
+        datetime.datetime.strptime(m.group(1), "%Y%m%d")
+    except ValueError:
+        return f"id {action_id!r} has an impossible date {m.group(1)}"
+    return None
+
+
+def todo_path(action_id):
+    return f"todo/{action_id}.md"
+
+
+def lint_commit(message, files, branch_session=None):
+    """Everything wrong with one commit's follow-up metadata -> [str].
+
+    `files`: paths this commit adds or modifies. `branch_session`: the session
+    the branch name (`sbx/<session>/...`) belongs to, if it is a session
+    branch. Rules, all cross-references of the session name:
+      - on a session branch the commit MUST say `Sandbox-Session: <that
+        session>`; elsewhere it may, and then must be valid;
+      - never more than one Sandbox-Session trailer;
+      - every Sandbox-Action line must conform, be a known (type, v), and have
+        an id ending in -<date>-<that session>-<4 chars>;
+      - every `issue` action needs todo/<id>.md in this same commit.
+    """
+    actions, problems = scan_message("", message)
+    problems = list(problems)
+    vals = session_trailers(message)
+    session = None
+    if len(vals) > 1:
+        problems.append(f"{len(vals)} {SESSION_TRAILER} trailers (want one)")
+    elif vals and not SESSION_RE.match(vals[0]):
+        problems.append(f"invalid {SESSION_TRAILER} {vals[0]!r}")
+    elif vals:
+        session = vals[0]
+    if branch_session and session != branch_session:
+        problems.append(
+            f"branch belongs to session {branch_session!r} but the commit "
+            f"says {SESSION_TRAILER}: {session!r}" if session else
+            f"missing '{SESSION_TRAILER}: {branch_session}' trailer")
+    for a in actions:
+        if (a.type, a.v) not in HANDLERS and (a.type, a.v) not in DIRECTIVES:
+            problems.append(f"action {a.id!r}: unknown type/version "
+                            f"{a.type!r} v{a.v} (it would be ignored)")
+        if not session:
+            problems.append(f"action {a.id!r} needs a valid "
+                            f"{SESSION_TRAILER} trailer in the same commit")
+        elif id_problem(a.id, session):
+            problems.append(id_problem(a.id, session))
+        if a.type == "issue" and todo_path(a.id) not in files:
+            problems.append(f"action {a.id!r}: {todo_path(a.id)} is not "
+                            "added or changed in this commit")
+    return problems
 
 
 def parse_commits(commits):
@@ -190,7 +297,8 @@ def plan(actions):
 
 
 # --- idempotency ledger: a marker comment on the commit -------------------- #
-_DONE_RE = re.compile(r"<!-- " + MARKER + r"-done id=([A-Za-z0-9._-]{1,40}) -->")
+_DONE_RE = re.compile(r"<!-- " + MARKER + r"-done id=([A-Za-z0-9._-]{1,%d}) -->"
+                      % ID_MAX)
 
 
 def done_ids(api, repo, sha):
@@ -237,9 +345,14 @@ def session_commits(api, repo, default, branches):
         return urllib.parse.quote(s, safe="/")
     out = []
     for b in branches:
+        mine = b.split("/")[1] if b.count("/") >= 2 else None
         cmp_ = api("GET", f"/repos/{repo}/compare/{q(default)}...{q(b)}") or {}
-        out.extend((c["sha"], c["commit"]["message"])
-                   for c in cmp_.get("commits") or [])
+        for c in cmp_.get("commits") or []:
+            claimed = message_session(c["commit"]["message"])
+            # A commit that claims a different session than its branch is
+            # misattributed (or forged): no-op. No claim at all is allowed.
+            if claimed in (None, mine):
+                out.append((c["sha"], c["commit"]["message"]))
     return out
 
 

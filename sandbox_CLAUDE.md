@@ -202,17 +202,26 @@ later. Put it there rather than in a stray notes file or only in chat.
   follow-up is done, say so in the commit that does it (`Resolves follow-up
   from <short-sha>: ...`). Never rewrite pushed history to edit one; add a new
   commit instead.
+- **Session trailer on EVERY commit.** End each commit message with
+  `Sandbox-Session: $session` in the last paragraph (with `Co-Authored-By:`).
+  It says which sandbox the commit came from; CI checks it against the branch
+  name, and the launcher ignores commits whose trailer names another session.
 - **Structured follow-ups.** To have the launcher file a GitHub issue for a
   follow-up when the session ends, add a trailer to the LAST paragraph of the
-  commit message (alongside `Co-Authored-By:`), one line of JSON:
-  `Sandbox-Action: {"v": 1, "type": "issue", "id": "smoke", "title": "Run ./smoke.sh on a host", "body": "why it was blocked"}`
-  `id` is `[A-Za-z0-9._-]{1,40}`, unique in that commit. Say a later commit
-  addressed one with `{"v": 1, "type": "resolve", "id": "r1", "ref": "<sha7+>:<id>"}`
-  and it won't be filed. Anything malformed or unknown is silently ignored, so
-  keep the plain `Follow-up:` prose line too. Full spec: `sandbox_actions.py`.
+  commit message, one line of JSON:
+  `Sandbox-Action: {"v": 1, "type": "issue", "id": "smoke-20261115-$session-a3f9", "title": "Run ./smoke.sh on a host", "body": "why it was blocked"}`
+  The `id` is `<slug>-<YYYYMMDD>-$session-<4 random [a-z0-9]>` (max 100 chars,
+  only `[A-Za-z0-9._-]`), so it can't collide with another commit's. Generate
+  the suffix, don't invent it:
+  `python3 -c "import datetime,secrets; print('smoke-%s-$session-%s' % (datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d'), secrets.token_hex(2)))"`
+  Say a later commit addressed one with
+  `{"v": 1, "type": "resolve", "id": "<new id, same shape>", "ref": "<sha7+>:<id>"}`
+  and it won't be filed. Anything malformed or unknown is silently ignored by
+  the launcher (and fails CI), so keep the plain `Follow-up:` prose line too.
+  Full spec: `sandbox_actions.py`.
 - **Every `issue` action gets a brief file, in the same commit, at
-  `todo/<id>.md`** (so pick an `id` unique across the repo, not just the
-  commit: the path is how the item is found later). Write it for a fresh agent
+  `todo/<id>.md`** (CI fails without it; the path is how the item is found
+  later). Write it for a fresh agent
   with no context from this session, who must be able to pick the item up from
   that file alone: what the problem is and why it matters; what you already
   tried or ruled out; the exact files, functions, commands and error text
