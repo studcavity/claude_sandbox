@@ -16,6 +16,10 @@ the code-layout table.
   way: no logic, no subshells or external commands (a test enforces this).
 - `sandbox_images.py`: cached base and deps images, `apply_deps`.
 - `sandbox_containers.py`: `Container`, a thin `lxc`/`incus` wrapper.
+- `sandbox_claude_config.py`: pure seed for `~/.claude.json` and
+  `settings.json` (onboarding, dark colorblind theme, API-key approval, folder
+  trust only when the repo owner is the authenticated user) + the in-container
+  merge script.
 - `sandbox_github.py`: GitHub access through the host's `gh` CLI (run with
   invoke), `validate_repo`, `resolve_repo`.
 - `sandbox_ghclient.py`: typed GitHub operations through PyGithub, returning
