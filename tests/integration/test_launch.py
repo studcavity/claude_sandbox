@@ -1,7 +1,8 @@
 """Smoke test: the launcher's own lifecycle in a REAL container.
 
 Runs Sandbox.launch, provision_key, clone, write_claude_md, session and
-teardown unmodified against real incus. Only GitHub is faked (`gh_api`), and
+teardown unmodified against real incus, for the GitHub backend and for
+--local (whose bundle in, export and import then run for real too). Only GitHub is faked (`gh_api`), and
 the clone is pointed at a local bare repo inside the container with a git
 `insteadOf` rule, so the real `git clone git@github.com:o/r.git` path runs
 without network access to GitHub or a real deploy key.
@@ -22,6 +23,7 @@ import uuid
 import pytest
 
 import claude_sandbox as cs
+import sandbox_backend_github as bg
 
 pytestmark = [pytest.mark.incus, pytest.mark.smoke]
 
@@ -70,7 +72,7 @@ def box(tmp_path, monkeypatch):
         if method == "POST" and path.endswith("/keys"):
             return {"id": 1}
         return None  # DELETE
-    monkeypatch.setattr(cs, "gh_api", fake_gh)
+    monkeypatch.setattr(bg, "gh_api", fake_gh)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", FAKE_TOKEN)
 
     sb = cs.Sandbox(args)
@@ -146,4 +148,80 @@ def test_full_lifecycle_in_a_real_container(box, monkeypatch):
     box.teardown()
     assert ("DELETE", "/repos/o/r/keys/1") in box.gh_calls
     gone = subprocess.run([CLI, "info", box.name], capture_output=True)
+    assert gone.returncode != 0, "container should have been destroyed"
+
+
+# --------------------------------------------------------------------------- #
+# --local: no GitHub at all; the base goes in and the work comes out as bundles
+# --------------------------------------------------------------------------- #
+LOCAL_PROBE = """\
+echo "branch=$(git rev-parse --abbrev-ref HEAD)"
+echo "base=$(git rev-parse origin/HEAD)"
+echo "key=$(test -e ~/.ssh/id_ed25519 && echo present || echo none)"
+echo smoke >> smoke.txt && git add smoke.txt && git commit -qm "smoke commit" && echo committed=yes
+git branch -f main HEAD    # a session moving its own main must not reach the host
+exit
+"""
+
+
+def test_local_lifecycle_in_a_real_container(tmp_path, monkeypatch, capfd):
+    for k, v in dict(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e.invalid",
+                     GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e.invalid").items():
+        monkeypatch.setenv(k, v)
+    primary = tmp_path / "proj"
+    subprocess.run(["git", "init", "-q", "-b", "main", str(primary)], check=True)
+    (primary / "README").write_text("hello\n")
+    subprocess.run(["git", "-C", str(primary), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(primary), "commit", "-qm", "init"], check=True)
+    main_before = subprocess.run(["git", "-C", str(primary), "rev-parse", "main"],
+                                 check=True, capture_output=True, text=True).stdout
+
+    name = f"cs-smoke-{uuid.uuid4().hex[:6]}"
+    args = cs.build_parser().parse_args([
+        "--local", str(primary), "--name", name, "--shell", "--cli", CLI,
+        "--no-update-check", "--no-usb", "--no-deps", "--disk-size", "0",
+        "--token-file", str(tmp_path / "tok"), "--usb-allow", str(tmp_path / "allow")])
+    cs.normalize_args(args)
+    sb = cs.Sandbox(args)
+    try:
+        assert sb.backend.check_host() is None
+        sb.launch(IMAGE)
+        sb.install_deps()
+        sb.provision_key()
+        workdir = sb.clone()
+        sb.write_claude_md(workdir)
+        md = sb.box.user("cat ~/.claude/CLAUDE.md", capture=True).stdout
+        assert "<!--" not in md and "deploy key" not in md
+
+        real_run, seen = subprocess.run, {}
+
+        def run(cmd, **kw):
+            if kw:
+                return real_run(cmd, **kw)
+            seen["p"] = real_run(cmd, input=LOCAL_PROBE, text=True,
+                                 capture_output=True)
+            return seen["p"]
+        monkeypatch.setattr(cs.subprocess, "run", run)
+        sb.session(workdir)
+        monkeypatch.setattr(cs.subprocess, "run", real_run)
+        facts = kv(seen["p"].stdout)
+        assert facts["branch"] == f"sbx/{name}/work"
+        assert facts["base"] == main_before.strip()
+        assert facts["key"] == "none"            # no network credential at all
+        assert facts["committed"] == "yes", seen["p"].stderr
+
+        sb.export()
+        assert sb.backend.exported, "export produced no bundle"
+    finally:
+        sb.teardown()
+    sb.land()
+
+    git = lambda *a: real_run(["git", "-C", str(primary), *a], check=True,  # noqa: E731
+                              capture_output=True, text=True).stdout
+    assert git("rev-parse", "main") == main_before          # untouched
+    assert git("show", f"sbx/{name}/work:smoke.txt") == "smoke\n"
+    err = capfd.readouterr().err
+    assert f"branches imported from session {name}" in err
+    assert "signed by session" in err                       # provenance checked
+    gone = subprocess.run([CLI, "info", name], capture_output=True)
     assert gone.returncode != 0, "container should have been destroyed"

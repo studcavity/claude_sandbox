@@ -1,6 +1,8 @@
 # Spec 08: a local-repo backend (bundle in, bundle out)
 
-Source: user request (session gentle-germain). Status: in progress. Settled
+Source: user request (session gentle-germain). Status: implemented (steps
+1-7); not yet verified against real incus (see
+`todo/nested-incus-fails-in-sandbox.md`). Settled
 with the user: option B for the workspace (incus volume, bundles in and out),
 branches imported as `sbx/<session>/*`, networking unchanged.
 

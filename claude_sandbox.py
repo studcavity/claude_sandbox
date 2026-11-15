@@ -49,6 +49,7 @@ Examples:
   ./claude_sandbox.py myproject                    # deploy key + clone of <github-user>/myproject
   ./claude_sandbox.py other-user/proj              # a repo under another owner
   ./claude_sandbox.py proj --model opus            # pick the session model
+  ./claude_sandbox.py --local ~/src/proj           # a git repo on this machine, no GitHub
   ./claude_sandbox.py --account-key                # no repo: account-wide key
   ./claude_sandbox.py --setup-token                # one-time Claude login token
 """
