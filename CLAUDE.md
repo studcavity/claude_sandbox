@@ -58,8 +58,9 @@ The test suite uses **pytest** and lives in `tests/`, one file per module
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest               # all tests (hermetic gh contract tests need gh + openssl)
+python -m pytest               # all tests (~3s; includes a mypy run) (hermetic gh contract tests need gh + openssl)
 python -m pyflakes *.py tests/ # lint
+python -m mypy *.py            # types; mypy.ini sets check_untyped_defs (see below)
 shellcheck run.sh smoke.sh .githooks/*   # shell lint (shellcheck is in claude_sandbox_deps.yaml)
 ```
 
@@ -71,12 +72,28 @@ anywhere. An end-to-end launch still needs a real host with incus and `gh`.
 Do that by hand when changing container or image behaviour, and say so in
 the commit message.
 
-CI (`.github/workflows/tests.yml`) runs pyflakes, shellcheck and pytest on
+CI (`.github/workflows/tests.yml`) runs pyflakes, mypy, shellcheck and pytest on
 Python 3.10, 3.12 and 3.13. It runs on every push to `main` and on PRs from
 branches in this repo. PRs from forks are skipped.
 A second job, `integration`, installs incus on the runner and runs
 `tests/integration` for real (it fails if they are skipped), so
 container-behaviour regressions are caught in CI even without a nested sandbox.
+It also runs `tests/integration/test_launch.py` as its own "Smoke" step: the
+launcher's real lifecycle (launch, key, clone, CLAUDE.md, session, teardown)
+in a real Ubuntu container with only GitHub faked.
+
+### Safety nets (don't weaken these)
+Each was added after a bug got through without it; `tests/test_ci_config.py`
+fails if one is dropped.
+- `mypy.ini` has `check_untyped_defs = True`. Without it mypy skips unannotated
+  bodies and misses `self.x = ...` shadowing a method (it crashed every launch).
+- Every shell script starts with `set -euo pipefail`, and CI's default shell is
+  `bash -euo pipefail {0}` (GitHub's default has no pipefail, so
+  `pytest | tee out` would pass on a failing pytest). Never pipe into `grep -q`
+  under pipefail; the pre-push hook shows the safe pattern.
+- `tests/test_lifecycle.py` runs the real `main()` with only I/O faked; extend
+  it when you add a launch step.
+- A bug fix needs a test that fails without it; revert the fix to prove it.
 
 ### Real-container checks
 Unit tests fake `subprocess`, so they can't catch bugs in how incus actually
@@ -116,7 +133,10 @@ exec/stdin path fails immediately with a clear error.
   which fails on any unsubstituted placeholder.
 - **Validate inline, and everything must pass before committing.**
   - Lint synchronously for all code you changed. Here the whole-repo lint
-    (`pyflakes`, `shellcheck`) takes well under 4s, so just lint everything.
+    (`pyflakes`, `mypy`, `shellcheck`) takes a few seconds, so just lint
+    everything. Judge a run by its exit status, not the tail of its output:
+    `pytest | tail` hides a failure, so use `set -o pipefail` or check
+    PIPESTATUS.
   - Run the specific tests that cover your change. The whole unit suite is
     also fast here (about a second or less), so running all of it inline is
     fine. If it ever becomes slow enough to hurt interactivity, go back to

@@ -288,7 +288,8 @@ def plan(actions):
     (capped at MAX_ACTIONS) and those skipped because a later commit
     resolved them."""
     resolved = _resolved_refs(actions)
-    run, skipped = [], []
+    run: list = []
+    skipped: list = []
     for a in actions:
         if (a.type, a.v) not in HANDLERS:
             continue

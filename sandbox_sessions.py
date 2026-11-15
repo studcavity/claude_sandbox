@@ -19,6 +19,7 @@ launcher beyond sandbox_github.
 import random
 import re
 import socket
+from typing import Optional
 import urllib.parse
 
 from sandbox_github import GitHubError, gh_api
@@ -163,6 +164,7 @@ def check_protection(repo):
         rule_types = {r.get("type") for r in rules}
     except GitHubError:
         rule_types = None
+    classic: Optional[bool]
     try:
         prot = gh_api("GET", f"/repos/{repo}/branches/{quoted}/protection")
         classic = "required_pull_request_reviews" in (prot or {})

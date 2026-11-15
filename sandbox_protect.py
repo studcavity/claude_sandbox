@@ -109,7 +109,8 @@ def validate_repo_ruleset(data):
         raise ValueError("`bypass_actors` must be empty")
     cond = data.get("conditions")
     ref = cond.get("ref_name") if isinstance(cond, dict) else None
-    if (not isinstance(ref, dict) or set(cond) != {"ref_name"}
+    if (not isinstance(cond, dict) or not isinstance(ref, dict)
+            or set(cond) != {"ref_name"}
             or ref.get("include") != ["~DEFAULT_BRANCH"]
             or ref.get("exclude") != []):
         raise ValueError("`conditions` must be exactly ref_name including "

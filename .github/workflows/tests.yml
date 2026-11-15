@@ -14,6 +14,13 @@ on:
 permissions:
   contents: read
 
+# GitHub's default for `run:` is `bash -e {0}`: no pipefail, so
+# `pytest | tee out` "passes" even when pytest fails. Every step here runs
+# strict instead. tests/test_ci_config.py keeps this in place.
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
@@ -41,6 +48,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Lint (pyflakes)
         run: python -m pyflakes *.py tests/
+      - name: Types (mypy)
+        run: python -m mypy *.py
       - name: Lint (shellcheck)
         run: shellcheck run.sh smoke.sh .githooks/*
       - name: Run tests
@@ -90,8 +99,20 @@ jobs:
           CS_GH_LIVE: "1"
           GH_TOKEN: ${{ github.token }}
         run: |
-          python -m pytest -m "incus or gh" tests/integration -rs | tee pytest.out
+          python -m pytest -m "(incus or gh) and not smoke" tests/integration -rs | tee pytest.out
           if grep -q SKIPPED pytest.out; then
             echo "integration tests were skipped" >&2
+            exit 1
+          fi
+      # A real container driven through the launcher's own lifecycle methods
+      # (launch, key, clone, CLAUDE.md, session, teardown) with only GitHub
+      # faked. Catches bugs that live between the pieces, in a real container.
+      - name: Smoke - real launch lifecycle (must not be skipped)
+        env:
+          CS_INTEGRATION: "1"
+        run: |
+          python -m pytest -m smoke tests/integration/test_launch.py -rs | tee pytest.out
+          if grep -q SKIPPED pytest.out; then
+            echo "smoke test was skipped" >&2
             exit 1
           fi
