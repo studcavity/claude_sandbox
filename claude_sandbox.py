@@ -460,6 +460,21 @@ def setup_paths(deps):
     return [s["path"] for s in (deps or {}).get("setup") or []]
 
 
+def confirm_held(branch, detail):
+    """Ask whether to open a PR for a branch held for touching privileged
+    files. Default no; no answer (EOF) is no. Both strings are session text,
+    so they are sanitised before they reach the terminal."""
+    print(f"\n\u26a0 {sandbox_land.clean_text(branch, 120)} touches "
+          f"{sandbox_land.clean_text(detail, 300)}\nThese run with extra "
+          "privilege once merged or on CI; review the diff first.",
+          file=sys.stderr)
+    try:
+        return input("Open a PR for it anyway? [y/N] ").strip().lower() in (
+            "y", "yes")
+    except EOFError:
+        return False
+
+
 def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
     print("\n" + sandbox_land.format_landing(
@@ -1115,7 +1130,8 @@ class Sandbox:
         if not a.no_pr:
             try:
                 landed = sandbox_land.land(
-                    a.repo, self.session_id, setup_paths(self.deps))
+                    a.repo, self.session_id, setup_paths(self.deps),
+                    confirm_held if sys.stdin.isatty() else None)
                 report_landing(landed, self.session_id)
             except Exception as e:
                 log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
@@ -1405,7 +1421,8 @@ def _launch(args):
                 if bad:
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
-            landed = sandbox_land.land(args.repo)
+            landed = sandbox_land.land(
+                args.repo, confirm=confirm_held if sys.stdin.isatty() else None)
             report_landing(landed)
             if landed and not args.no_check_status:
                 report_statuses(sandbox_check.post_session_statuses(

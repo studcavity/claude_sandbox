@@ -802,8 +802,13 @@ def test_land_passes_session_and_setup_scripts(make_args, monkeypatch):
     box.key_id, box.deps = 1, {"setup": [{"path": "t/setup.sh"}]}
     got = []
     monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: got.append(a) or [])
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.land()
-    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"])]
+    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], None)]  # no prompt
+    got.clear()
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
+    box.land()
+    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], cs.confirm_held)]
 
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
@@ -1098,3 +1103,18 @@ def test_the_real_tar_binary_extracts_the_archive_to_the_right_places(repo_root,
         f = root / path.lstrip("/")
         assert f.read_bytes() == data
         assert oct(f.stat().st_mode & 0o777) == oct(int(mode, 8))
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("y", True), ("YES", True), ("", False), ("n", False), ("maybe", False)])
+def test_confirm_held_defaults_to_no(monkeypatch, capsys, answer, expected):
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+    assert cs.confirm_held("sbx/s/\x1b[31mw", ".github/x") is expected
+    assert "\x1b" not in capsys.readouterr().err
+
+
+def test_confirm_held_treats_eof_as_no(monkeypatch):
+    def eof(prompt=""):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", eof)
+    assert cs.confirm_held("sbx/s/w", ".github/x") is False
