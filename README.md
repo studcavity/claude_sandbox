@@ -37,6 +37,15 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
+## tests
+```
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest
+```
+CI runs the suite (plus pyflakes and shellcheck) on pushes to `main` and on
+PRs from branches in this repo. See `CLAUDE.md` for testing conventions.
+
 ## model
 Sessions use Sonnet 5.5 (`claude-sonnet-5-5`) by default. Choose another with
 `--model` (an alias such as `opus`, `sonnet`, `haiku`, or a full model ID):

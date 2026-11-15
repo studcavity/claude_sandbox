@@ -82,6 +82,33 @@ Rules:
   use official upstream URLs, keep entries minimal, and call out each change
   in the commit message and to the user.
 
+## Testing: part of the repo, not just the session
+Work should always come with automated tests that **live in the repo** and
+become part of its development lifecycle. A one-off check you run in this
+session is lost when the sandbox ends, and it protects nobody afterwards.
+- Find the repo's existing test framework and conventions (its CLAUDE.md,
+  README, CI config, `tests/` directory) and follow them. If there is none,
+  propose a lightweight, idiomatic one for the language (for example pytest
+  for Python), add it, and document how to run it in the repo's CLAUDE.md or
+  README.
+- Write tests for your changes whenever feasible: new behaviour gets a test,
+  and a bug fix gets a test that fails without the fix. Commit them alongside
+  the code they cover.
+- Run the full test suite, and any linters the repo uses, before every
+  commit. All tests must pass. Don't commit failing tests, and don't weaken or
+  delete tests just to get them passing. If a failure isn't yours, tell the
+  user rather than hiding it.
+- If the repo has CI, make sure new tests run there too. If it has none and
+  the user agrees, add a workflow so the tests keep running after this session.
+- Be pragmatic, not exhaustive: cover the logic that can actually break
+  (edge cases, validation, error handling, security-relevant code) and skip
+  trivial glue. A few meaningful tests beat many brittle ones.
+- When something can't be tested automatically here (hardware, external
+  services, interactive UIs), isolate the logic that can be tested, and tell
+  the user what still needs manual verification.
+- Record test tooling the repo needs in `$deps_file` or the repo's own
+  dependency files (e.g. `requirements-dev.txt`), not just in this container.
+
 ## Missing sandbox capabilities
 If the task needs something this sandbox doesn't provide (access to a device,
 a permission or capability the container lacks, a host service, nested
