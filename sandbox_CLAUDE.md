@@ -94,10 +94,15 @@ session is lost when the sandbox ends, and it protects nobody afterwards.
 - Write tests for your changes whenever feasible: new behaviour gets a test,
   and a bug fix gets a test that fails without the fix. Commit them alongside
   the code they cover.
-- Run the full test suite, and any linters the repo uses, before every
-  commit. All tests must pass. Don't commit failing tests, and don't weaken or
-  delete tests just to get them passing. If a failure isn't yours, tell the
-  user rather than hiding it.
+- Validate new code inline, in this session, before committing: run the
+  specific tests that exercise what you changed (the new tests, plus the
+  existing tests for the code you touched) and the linters for the files you
+  edited. Don't run the whole suite synchronously unless it is cheap or you
+  have a real reason to think the change reaches beyond those tests (shared
+  fixtures, a core helper, a refactor); CI covers the whole picture (see
+  "CI after every push"). Passing tests are a requirement: don't commit
+  failing tests, and don't weaken or delete tests just to get them passing. If
+  a failure isn't yours, tell the user rather than hiding it.
 - If the repo has CI, make sure new tests run there too. If it has none and
   the user agrees, add a workflow so the tests keep running after this session.
   Unless the user's launcher token has the `workflow` scope, GitHub rejects
@@ -112,6 +117,35 @@ session is lost when the sandbox ends, and it protects nobody afterwards.
   the user what still needs manual verification.
 - Record test tooling the repo needs in `$deps_file` or the repo's own
   dependency files (e.g. `requirements-dev.txt`), not just in this container.
+
+## CI after every push
+If the repo has CI (for example `.github/workflows/`), start a background
+watcher on the run for each commit you push, and don't wait on it: keep
+working and handle the result when it arrives. Local, targeted tests (above)
+are what validate your change; the watcher is only for the whole picture
+(full suite, other Python versions, integration jobs, anything you didn't run).
+- Start it right after the push, with the Bash tool's `run_in_background`, so
+  you are notified when it exits. Poll the public API with `curl` and
+  `jq`; there is no `gh` CLI or token here. Find the repo with
+  `git remote get-url origin` and the commit with `git rev-parse HEAD`:
+  `https://api.github.com/repos/OWNER/REPO/actions/runs?head_sha=SHA`.
+  Runs can take a few seconds to appear, so retry for a minute before giving
+  up. Then poll `.../actions/runs/RUN_ID` every 20-30 seconds until `status` is
+  `completed`, with an overall timeout, and print `conclusion` and the
+  failing jobs and steps from `.../actions/runs/RUN_ID/jobs`.
+- Downloading job logs needs a token, so a failure tells you which job and
+  step failed, not why. Reproduce it locally by running that step's command
+  (see the workflow file), then fix it.
+- When a run fails, fix the cause as a new commit (don't rewrite pushed
+  history), validate it inline with the specific tests, push, and start a new
+  watcher for the new commit. Repeat until CI is green. If a failure isn't
+  yours (a flaky test, an outage, a problem on the runner), say so instead of
+  papering over it.
+- The unauthenticated API only works for public repos and is rate limited. If
+  it returns 404, 401/403 or a rate-limit error, say plainly that you can't
+  watch CI from here and ask the user to check it; never report CI as passing
+  when you couldn't see it.
+- Pushes that only touch docs, or a branch with no CI, don't need a watcher.
 
 ## Missing sandbox capabilities
 If the task needs something this sandbox doesn't provide (access to a device,
