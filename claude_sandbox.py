@@ -81,6 +81,7 @@ import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
 import sandbox_backend_github
+import sandbox_backend_local
 import sandbox_github
 from sandbox_backend_github import GitHubBackend, access_lines
 from sandbox_backend_local import LocalBackend, resolve_local
@@ -500,6 +501,14 @@ def refresh_argv(args, python, script):
     if args.no_deps:
         cmd.append("--no-deps")
     return cmd
+
+
+def recovery_image(args):
+    """The image for --recover's helper container: the cached base image
+    (it has git), built if needed."""
+    return ensure_base_image(args.cli, args.image or DEFAULT_IMAGE,
+                             args.max_age, False, args.disk_size,
+                             hard_max_age_days=args.hard_max_age)
 
 
 def refresh_log_path():
@@ -1054,6 +1063,10 @@ def build_parser():
     p.add_argument("--base", metavar="BRANCH",
                    help="with --local: the branch to start from (default: "
                         "the repository's checked-out branch)")
+    p.add_argument("--recover", action="store_true",
+                   help="with --local: import the work that crashed launches "
+                        "left on kept volumes (each is mounted read-only in a "
+                        "throwaway container to export it), then exit")
     p.add_argument("--account-key", action="store_true",
                    help="no repo: register the key on your whole GitHub "
                         "account instead (needs admin:public_key; the "
@@ -1214,6 +1227,8 @@ def normalize_args(args):
         raise ValueError("give the repository once: either REPOSITORY or --repo")
     if args.base and not args.local:
         raise ValueError("--base only applies with --local")
+    if args.recover and not args.local:
+        raise ValueError("--recover only applies with --local")
     if args.local:
         clash = [f for f, on in (("a repository", args.repository or args.repo),
                                  ("--account-key", args.account_key),
@@ -1280,6 +1295,8 @@ def _launch(args):
 
     if args.land_all:
         return sandbox_backend_github.land_all(args)
+    if args.recover:
+        return sandbox_backend_local.recover(args, lambda: recovery_image(args))
 
     box = Sandbox(args)
     sandbox_github.start_prefetch(box.backend.prefetch_plan())

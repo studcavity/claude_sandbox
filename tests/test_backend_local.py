@@ -5,6 +5,7 @@ import them into a scratch "primary" repo, so the trust boundary (only
 refs/heads/sbx/<session>/* can be created) is checked against git itself.
 """
 import io
+import json
 import os
 import pathlib
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 import claude_sandbox as cs
 import sandbox_backend_local as lb
 import sandbox_provenance
+import sandbox_volumes
 
 S = "quirky-hopper"
 SHA = "a" * 40
@@ -468,3 +470,82 @@ def test_sandbox_releases_kept_volumes_only_when_the_backend_says_so(make_args):
         assert Vols.released == 0            # not beside the background delete
         sb.wait_volumes()
         assert Vols.released == n
+
+
+# --------------------------------------------------------------------------- #
+# --recover
+# --------------------------------------------------------------------------- #
+META = sandbox_volumes.META_PREFIX
+
+
+def _kv(name="claude-sandbox-keep-c-work", used_by=(), **cfg):
+    base = {"source": "/p", "session": S, "base": SHA, "workdir": "/home/ubuntu/p"}
+    base.update(cfg)
+    return {"name": name, "type": "custom", "used_by": list(used_by),
+            "config": {META + k: v for k, v in base.items()}}
+
+
+def test_kept_volumes_selects_this_repos_valid_volumes():
+    vols = [_kv(), _kv(source="/other"), _kv(name="claude-sandbox-vol-c-work"),
+            _kv(session="a/b"), _kv(base="HEAD"), _kv(workdir="/etc"),
+            _kv(workdir="/home/ubuntu/../x"), _kv(name="claude-sandbox-keep-d", used_by=["x"])]
+    got = lb.kept_volumes(json.dumps(vols), "/p")
+    assert [(v["name"], v["used_by"]) for v in got] == [
+        ("claude-sandbox-keep-c-work", []), ("claude-sandbox-keep-d", ["x"])]
+
+
+def test_recover_mounts_read_only_imports_and_deletes(local, monkeypatch, capsys):
+    """The whole --recover loop with incus faked: the helper container is
+    our LocalBox, so the export and import run against real git."""
+    be, box = local
+    wd = be.populate(box, S)   # what the crashed session left on its volume
+    commit(pathlib.Path(wd), "w.txt", f"sbx/{S}/work")
+    cli = []
+
+    def fake_run(cmd, check=True, capture=False, input=None):
+        cli.append(cmd)
+        out = ""
+        if cmd[1:3] == ["profile", "device"]:
+            out = "default\n"
+        if cmd[1:4] == ["storage", "volume", "list"]:
+            out = json.dumps([_kv(source=be.primary, base=be.base_sha,
+                                  workdir=wd)])
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+    monkeypatch.setattr(lb, "run", fake_run)
+    monkeypatch.setattr(sandbox_volumes, "run", fake_run)
+
+    class Helper(LocalBox):
+        def __init__(self, cli_, name):
+            super().__init__(box.home)
+            self.name = name
+
+        def launch(self, image, ephemeral):
+            cli.append(["launch", image, self.name])
+
+        def delete(self):
+            cli.append(["delete", self.name])
+    monkeypatch.setattr(lb, "Container", Helper)
+    assert lb.recover(be.args, lambda: "img", be.environ) == 0
+    assert ["incus", "config", "device", "add", f"cs-recover-{S}", "cs-work", "disk",
+            "pool=default", "source=claude-sandbox-keep-c-work", f"path={wd}",
+            "readonly=true"] in cli
+    assert ["delete", f"cs-recover-{S}"] in cli
+    assert ["incus", "storage", "volume", "delete", "default",
+            "claude-sandbox-keep-c-work"] in cli
+    assert git("show", f"sbx/{S}/work:w.txt", cwd=be.primary, text=True).stdout == "w.txt"
+
+
+def test_recover_never_touches_a_volume_in_use(local, monkeypatch, capsys):
+    be, _ = local
+    monkeypatch.setattr(sandbox_volumes, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, "default\n", ""))
+    monkeypatch.setattr(lb, "run", lambda cmd, **k: subprocess.CompletedProcess(
+        cmd, 0, json.dumps([_kv(source=be.primary, used_by=["/1.0/instances/x"])]), ""))
+    monkeypatch.setattr(lb, "Container", lambda *a: pytest.fail("launched"))
+    assert lb.recover(be.args, lambda: pytest.fail("image"), be.environ) == 1
+    assert "still in use" in capsys.readouterr().err
+
+
+def test_recover_needs_local():
+    with pytest.raises(ValueError, match="--recover"):
+        cs.normalize_args(cs.build_parser().parse_args(["o/r", "--recover"]))
