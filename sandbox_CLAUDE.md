@@ -246,6 +246,45 @@ session is lost when the sandbox ends, and it protects nobody afterwards.
 - Record test tooling the repo needs in `$deps_file` or the repo's own
   dependency files (e.g. `requirements-dev.txt`), not just in this container.
 
+## Quality gates to aspire to in every repo
+These are goals, not requirements. Each one exists because a real bug got
+through without it: a launch-crashing bug (an instance attribute shadowing a
+method) shipped with green CI, and a `pytest | tail` chain hid a failing test.
+In any repo you work in, notice which are missing and mention them in your
+final message. Don't add them all unasked: propose each as its own small
+branch (stacking is fine), keep them out of unrelated changes, and never weaken
+a gate that already exists. Changes under `.github/` are held back by the
+launcher for manual review, so say so when you make one.
+1. **Nothing reaches the default branch without a PR and passing CI.** A ruleset
+   requiring PRs, plus `required_status_checks` listing *every* CI job (see
+   "Default-branch protection and required status checks"). A gate that doesn't
+   require CI only enforces review, not correctness.
+2. **A type checker that reads unannotated code.** Most code has no
+   annotations, and checkers skip such bodies by default. Turn on the strict
+   option (mypy: `check_untyped_defs = True`; pyright: basic or strict;
+   TypeScript: `strict`) and run it in CI and in the test suite. It flags
+   whole classes of mistake with no test, such as assigning over a method.
+3. **A lifecycle test of the real entry point.** Unit tests that stub the parts
+   can't see how the parts fit. Keep at least one test that runs the real
+   `main` with only the edges faked (network, containers, subprocess), plus
+   cheap structural guards for known bug classes.
+4. **A smoke test in a real environment, run in CI.** For anything that talks to
+   infrastructure (containers, databases, cloud), run the real lifecycle in CI
+   as its own named step, and fail the step if it was skipped.
+5. **Every bug fix has a test that fails without the fix.** Prove it: revert the
+   fix, watch the test fail, restore it.
+6. **Strict shell, everywhere.** Start scripts with `set -euo pipefail` and set
+   CI's default shell to a strict one (GitHub's default `bash -e {0}` has no
+   pipefail, so `cmd | tee out` passes even when `cmd` fails). Pitfalls: never
+   pipe into `grep -q` under pipefail (it exits early, the producer gets
+   SIGPIPE and the pipeline "fails" on a match; capture output, then search it
+   with a here-string); a hook that must never block needs an explicit
+   `trap 'exit 0' ERR`.
+7. **Check exit statuses yourself too.** In your own shell commands, don't judge
+   a run by the tail of its output: use `set -o pipefail`, or read bash's
+   PIPESTATUS array, or redirect to a file and check `$$?`. Never commit or
+   report "tests pass" without having seen a zero exit status.
+
 ## CI
 CI normally runs on the pull request the launcher opens **after** you exit, so
 you usually can't watch it. Your validation is local: lint and run the tests

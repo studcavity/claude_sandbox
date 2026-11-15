@@ -305,7 +305,10 @@ def extract_member(data, member, max_bytes=MAX_BINARY):
             if not m.isfile() or m.size > max_bytes:
                 raise DepsError(f"archive member {member!r} is not a regular "
                                 f"file of acceptable size")
-            return tf.extractfile(m).read()
+            f = tf.extractfile(m)
+            if f is None:  # not a regular file (already ruled out above)
+                raise DepsError(f"archive member {member!r} is not readable")
+            return f.read()
     except tarfile.ReadError:
         pass
     except KeyError:

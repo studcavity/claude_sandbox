@@ -2,13 +2,22 @@
 # Warns (never blocks) when pushed commits touch container/image/deps code but
 # no commit message says "Verified: ./smoke.sh". Enable with:
 #   git config core.hooksPath .githooks
+#
+# Strict mode, but the hook must never block a push: the ERR trap turns any
+# unexpected failure into a clean exit 0. Nothing here pipes into `grep -q`:
+# under pipefail, grep exiting early SIGPIPEs the producer and the pipeline
+# "fails" even on a match, so captured output is searched with a here-string.
+set -euo pipefail
+trap 'exit 0' ERR
 zero=0000000000000000000000000000000000000000
 watched='^(sandbox_containers|sandbox_images|sandbox_deps)\.py$'
 while read -r _ local_sha _ remote_sha; do
   [ "$local_sha" = "$zero" ] && continue
   range="$local_sha"; [ "$remote_sha" != "$zero" ] && range="$remote_sha..$local_sha"
-  git diff --name-only "$range" 2>/dev/null | grep -Eq "$watched" || continue
-  git log --format=%B "$range" | grep -q 'Verified: ./smoke.sh' && continue
+  files=$(git diff --name-only "$range" 2>/dev/null || true)
+  grep -Eq "$watched" <<<"$files" || continue
+  msgs=$(git log --format=%B "$range" 2>/dev/null || true)
+  grep -q 'Verified: ./smoke.sh' <<<"$msgs" && continue
   echo "[pre-push] WARNING: container/image/deps code changed but no commit" >&2
   echo "[pre-push] says 'Verified: ./smoke.sh'. Run ./smoke.sh on a host with incus." >&2
 done
