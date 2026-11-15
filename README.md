@@ -46,7 +46,7 @@ On every launch the program:
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |
 | `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
 | `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
-| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments, labels); auth is still your `gh` login |
+| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments); auth is still your `gh` login |
 | `sandbox_claude_config.py` | pre-answers Claude Code's first-run dialogs (theme, onboarding, API key, trust for repos you own) |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
@@ -56,7 +56,7 @@ On every launch the program:
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
 | `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
 | `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
-| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--post-status` (the `sandbox/check` merge gate, `--override` to break glass), `--file-issues` (post-merge filer) |
+| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--file-issues` (post-merge filer) |
 | `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
 | `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
 | `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
@@ -176,20 +176,23 @@ repo and answer yes, or `gh api -X POST ... --input rulesets/<file>`):
 - `require-commit-metadata.json` requires the `commit-metadata` check (see
   `.github/workflows/commit-metadata.yml`), pinned to GitHub Actions
   (`integration_id` 15368) so no other app or token can satisfy it with a
-  status of the same name.
-- `require-sandbox-check.json` requires the `sandbox/check` commit *status*,
-  posted by `sandbox_check.py --post-status OWNER/REPO --pr N`. The launcher
-  posts it for each PR a session opens, but only in a repo whose default-branch
-  rules require it (`--no-check-status` skips it), so applying the ruleset is
-  what turns the gate on. Once on, **every** PR into the default branch needs
-  the status, including ones the launcher didn't open: post it with the command
-  above. To get past a wrong failure, rerun it with `--override "reason"` (one
-  commit only; it comments on the PR), or have an admin set the ruleset's
-  `enforcement` to `disabled` and back to `active`.
+  status of the same name. This is the **one merge gate for the commit
+  checker**. It re-runs on every push to the PR and takes its checker from the
+  PR's base, so a branch can't weaken the rules it is judged by. To get past a
+  wrong failure, use GitHub's own break-glass: an admin bypass, or temporarily
+  setting the ruleset's `enforcement` to `disabled` (the audit log records
+  it). A repo without the workflow isn't gated by the checker.
 - `require-sandbox-provenance.json`: see "Provenance" below.
 
+There used to be a second gate, a host-posted `sandbox/check` status
+(`require-sandbox-check.json`). It is gone. If you applied that ruleset, every
+PR is now blocked by a context that never reports: delete it.
+`gh api repos/OWNER/REPO/rulesets` lists the rulesets (note the id of
+`require-sandbox-check`), then
+`gh api -X DELETE repos/OWNER/REPO/rulesets/<id>`.
+
 A test keeps every required check name equal to a real CI job name, except
-`sandbox/check` and `sandbox/provenance`, which are commit statuses.
+`sandbox/provenance`, which is a commit status.
 
 Each session's CLAUDE.md states this repo's protection status and required
 checks, and tells the session to name the checks to require whenever it adds,

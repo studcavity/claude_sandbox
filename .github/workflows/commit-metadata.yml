@@ -1,9 +1,10 @@
 name: commit-metadata
 
-# Lints the follow-up metadata of every commit a PR adds (see
-# sandbox_actions.py): Sandbox-Session matches the branch and the ids, ids have
-# the <slug>-<date>-<session>-<rand> shape, and each `issue` action has
-# todo/<id>.md in the same commit.
+# Lints the work record of every commit a PR adds (see sandbox_check.py):
+# conventional subjects, no merge or fixup commits, a Verified / Not verified
+# line where a change needs a real run, no credential-shaped text, and the
+# follow-up metadata rules in sandbox_actions.py. This job is the one merge
+# gate for the checker.
 on:
   pull_request:
     branches: [main]

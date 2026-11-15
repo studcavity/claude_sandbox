@@ -118,26 +118,3 @@ class GhClient:
     def comment(self, repo, number, body):
         with _mapped():
             self._repo(repo).get_issue(int(number)).create_comment(body)
-
-    def ensure_label(self, repo, name, color, description):
-        """Create a label; an existing one (422) is fine, a refusal is not
-        fatal to callers (they treat labels as best effort)."""
-        try:
-            with _mapped():
-                self._repo(repo).create_label(name, color, description)
-        except GitHubError as e:
-            if e.code != 422:
-                raise
-
-    def add_label(self, repo, number, name):
-        with _mapped():
-            self._repo(repo).get_issue(int(number)).add_to_labels(name)
-
-    def remove_label(self, repo, number, name):
-        """Remove a label if present (absent is fine)."""
-        try:
-            with _mapped():
-                self._repo(repo).get_issue(int(number)).remove_from_labels(name)
-        except GitHubError as e:
-            if e.code != 404:
-                raise

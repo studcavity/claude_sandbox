@@ -75,7 +75,6 @@ import sandbox_host
 import sandbox_pool
 import sandbox_volumes
 import sandbox_actions
-import sandbox_check
 import sandbox_land
 import sandbox_protect
 import sandbox_provenance
@@ -556,13 +555,6 @@ def refresh_images(args):
 def action_limits(args):
     """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
     return {"actions": args.max_actions, "issues": args.max_issues}
-
-
-def report_statuses(outcomes):
-    """Print the exit summary of `sandbox/check` statuses (to stderr)."""
-    text = sandbox_check.format_status_outcomes(outcomes)
-    if text:
-        print("\n" + text, file=sys.stderr)
 
 
 def report_provenance(outcomes):
@@ -1131,13 +1123,6 @@ class Sandbox:
                 log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
                     "push state is on GitHub under "
                     f"{sandbox_sessions.branch_prefix(self.session_id)}")
-        if landed and not a.no_check_status:
-            try:
-                report_statuses(sandbox_check.post_session_statuses(
-                    a.repo, landed))
-            except Exception as e:
-                log(f"warning: couldn't post {sandbox_check.STATUS_CONTEXT} "
-                    f"for {self.session_id}: {e}")
         if landed and not a.no_provenance:
             try:
                 report_provenance(sandbox_provenance.post_session(
@@ -1217,10 +1202,6 @@ def build_parser():
     p.add_argument("--timings-json", metavar="PATH",
                    help="also write the timings as JSON (implies --timings), "
                         "to compare runs")
-    p.add_argument("--no-check-status", action="store_true",
-                   help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
-                        "status on the session's PRs (it is only posted where "
-                        "the repo's ruleset requires it)")
     p.add_argument("--no-provenance", action="store_true",
                    help=f"don't post the `{sandbox_provenance.CONTEXT}` commit "
                         "status (every commit signed by the session's own key "
@@ -1418,9 +1399,6 @@ def _launch(args):
             landed = sandbox_land.land(
                 args.repo, confirm=confirm_held if sys.stdin.isatty() else None)
             report_landing(landed)
-            if landed and not args.no_check_status:
-                report_statuses(sandbox_check.post_session_statuses(
-                    args.repo, landed))
             if landed and not args.no_provenance:
                 report_provenance(sandbox_provenance.post_session(
                     args.repo, landed))
