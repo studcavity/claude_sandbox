@@ -1,13 +1,17 @@
-"""Tests for sandbox_protect and the launcher's protection prompt."""
+"""Tests for protect and the launcher's protection prompt."""
 import json
 import os
 
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox import render
+from claude_sandbox import sandbox
 from claude_sandbox.backends import github as bg
 from claude_sandbox.github import protect as sp
 from claude_sandbox.github.gh import GitHubError
+from claude_sandbox import sessions
+from claude_sandbox.github import protect
 
 
 @pytest.fixture
@@ -59,26 +63,26 @@ def flow(make_args, monkeypatch):
     st = {"state": "unprotected", "applied": [], "asked": [], "answers": [],
           "existing": set(), "checks": [], "repo_rulesets": ([], []),
           "fetch_args": []}
-    box = cs.Sandbox(make_args(repo="o/r", no_protect_prompt=False))
+    box = sandbox.Sandbox(make_args(repo="o/r", no_protect_prompt=False))
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cs.sandbox_sessions, "check_protection",
+    monkeypatch.setattr(sessions, "check_protection",
                         lambda repo: ("main", "WARN" if st["state"] !=
                                       "protected" else None, st["state"]))
-    monkeypatch.setattr(bg.sandbox_protect, "existing_ruleset_names",
+    monkeypatch.setattr(protect, "existing_ruleset_names",
                         lambda r: st["existing"])
-    monkeypatch.setattr(bg.sandbox_protect, "fetch_repo_rulesets",
+    monkeypatch.setattr(protect, "fetch_repo_rulesets",
                         lambda r, b: st["fetch_args"].append((r, b))
                         or st["repo_rulesets"])
-    monkeypatch.setattr(bg.sandbox_protect, "discover_checks",
+    monkeypatch.setattr(protect, "discover_checks",
                         lambda r, b: st["checks"])
     st.setdefault("required", {"ci"})   # satisfied by default: no gap
-    monkeypatch.setattr(bg.sandbox_protect, "required_on",
+    monkeypatch.setattr(protect, "required_on",
                         lambda r, b: st["required"])
     def apply(r, rs):
         st["applied"].append(rs)
         st["required"] = set(st.get("required", ())) | set(sp.required_checks(rs))
         return 1
-    monkeypatch.setattr(bg.sandbox_protect, "apply_ruleset", apply)
+    monkeypatch.setattr(protect, "apply_ruleset", apply)
 
     def answer(*a):
         st["asked"].append(a)
@@ -166,7 +170,7 @@ def test_apply_failure_never_aborts_and_note_stays_honest(flow, monkeypatch):
 
     def boom(r, rs):
         raise GitHubError("403 plan has no rulesets", 403)
-    monkeypatch.setattr(bg.sandbox_protect, "apply_ruleset", boom)
+    monkeypatch.setattr(protect, "apply_ruleset", boom)
     box.backend.protect_default_branch()  # must not raise
     assert "does not require pull requests" in warned(box)
 
@@ -244,7 +248,7 @@ STATES = [("protected", set(), []), ("protected", {"lint"}, ["lint"]),
 
 def _render(repo_root, box):
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
-    return cs.render_claude_md(
+    return render.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
         "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
 
@@ -270,13 +274,13 @@ def test_the_sessions_claude_md_is_the_same_whatever_the_protection_state(
 
 def test_render_claude_md_takes_no_protection_input():
     import inspect
-    assert "protection_note" not in inspect.signature(cs.render_claude_md).parameters
+    assert "protection_note" not in inspect.signature(render.render_claude_md).parameters
     assert not hasattr(cs, "protection_note")
 
 
 def test_template_covers_branches_and_status_checks(repo_root):
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
-    md = cs.render_claude_md(
+    md = render.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
         "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
     assert "stack" not in md.lower()  # spec 05: every PR targets the default
@@ -466,10 +470,10 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
     for path in glob.glob(os.path.join(repo_root, "rulesets", "*.json")):
         rs = sp.validate_repo_ruleset(sp.load_ruleset(path))
         required.update(sp.required_checks(rs))
-    from claude_sandbox import provenance as sandbox_provenance
+    from claude_sandbox import provenance as provenance
     assert "commit-metadata" in required
     # sandbox/provenance is a commit STATUS the launcher posts, not a CI job
-    statuses = {sandbox_provenance.CONTEXT}
+    statuses = {provenance.CONTEXT}
     assert statuses <= required
     assert required - statuses <= jobs
 

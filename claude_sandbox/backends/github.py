@@ -7,7 +7,7 @@ branches. After teardown the launcher opens a PR for each and posts their
 tightens) the repo's protection and Actions settings; what it finds is told to
 the user only (`host_warnings`), never to the session.
 
-Every GitHub call goes through the host's `gh` login (sandbox_github).
+Every GitHub call goes through the host's `gh` login (gh).
 """
 import functools
 import os
@@ -15,15 +15,15 @@ import shlex
 import subprocess
 import sys
 
-from claude_sandbox import claude_config as sandbox_claude_config
+from claude_sandbox import claude_config
+from claude_sandbox import provenance
+from claude_sandbox import sessions
+from claude_sandbox.container import deps
+from claude_sandbox.container import host
+from claude_sandbox.github import hardening
+from claude_sandbox.github import land as github_land
+from claude_sandbox.github import protect
 from claude_sandbox import paths
-from claude_sandbox.container import deps as sandbox_deps
-from claude_sandbox.github import hardening as sandbox_hardening
-from claude_sandbox.container import host as sandbox_host
-from claude_sandbox.github import land as sandbox_land
-from claude_sandbox.github import protect as sandbox_protect
-from claude_sandbox import provenance as sandbox_provenance
-from claude_sandbox import sessions as sandbox_sessions
 from claude_sandbox.backends.base import Backend
 from claude_sandbox.container.incus import HOME
 from claude_sandbox.github.gh import (GitHubError, gh_api, github_login, repo_owner,
@@ -71,16 +71,16 @@ def check_expected_user(login, expected):
 
 def prefetch_plan(args):
     """The independent GitHub reads a launch makes, to start together (see
-    sandbox_github.start_prefetch). Mirrors what the launch will actually ask
+    gh.start_prefetch). Mirrors what the launch will actually ask
     for, so nothing is fetched that a flag turns off."""
     if not args.repo or args.setup_token or args.land_all or args.no_prefetch:
         return []
     repo = args.repo
     specs: list = [("login",)]
     if not args.no_deps:
-        specs.append(("api", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}", True))
+        specs.append(("api", f"/repos/{repo}/contents/{deps.DEPS_FILE}", True))
     if not args.no_usb:
-        specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
+        specs.append(("api", f"/repos/{repo}/contents/{host.HOST_FILE}", True))
     if not args.read_only:
         specs += [("scopes",), ("api", f"/repos/{repo}", False),
                   ("api", f"/repos/{repo}/keys?per_page=100", False),
@@ -95,7 +95,7 @@ def ask_hardening(repo, cond):
     """Interactive yes/no (default no) to change one Actions setting, showing
     the exact call it would make."""
     print(f"\n{repo}: {cond.text}.\nThe fix would make this call:\n  "
-          f"{sandbox_hardening.describe_fix(cond.fix)}", file=sys.stderr)
+          f"{hardening.describe_fix(cond.fix)}", file=sys.stderr)
     try:
         return input("Apply it? [y/N] ").strip().lower() in ("y", "yes")
     except EOFError:
@@ -149,8 +149,8 @@ def confirm_held(branch, detail):
     """Ask whether to open a PR for a branch held for touching privileged
     files. Default no; no answer (EOF) is no. Both strings are session text,
     so they are sanitised before they reach the terminal."""
-    print(f"\n⚠ {sandbox_land.clean_text(branch, 120)} touches "
-          f"{sandbox_land.clean_text(detail, 300)}\nThese run with extra "
+    print(f"\n⚠ {github_land.clean_text(branch, 120)} touches "
+          f"{github_land.clean_text(detail, 300)}\nThese run with extra "
           "privilege once merged or on CI; review the diff first.",
           file=sys.stderr)
     try:
@@ -162,13 +162,13 @@ def confirm_held(branch, detail):
 
 def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
-    print("\n" + sandbox_land.format_landing(
+    print("\n" + github_land.format_landing(
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
 
 
 def report_provenance(outcomes):
     """Print the exit summary of `sandbox/provenance` statuses (to stderr)."""
-    text = sandbox_provenance.format_outcomes(outcomes)
+    text = provenance.format_outcomes(outcomes)
     if text:
         print("\n" + text, file=sys.stderr)
 
@@ -182,19 +182,19 @@ def land_and_report(args, session=None, open_prs=True):
     landed, ok = [], True
     if open_prs:
         try:
-            landed = sandbox_land.land(
+            landed = github_land.land(
                 args.repo, session, confirm_held if sys.stdin.isatty() else None)
             report_landing(landed, session)
         except Exception as e:
             ok = False
             log(f"warning: couldn't open PRs for {who}: {e}"
                 + (f"; push state is on GitHub under "
-                   f"{sandbox_sessions.branch_prefix(session)}" if session else ""))
+                   f"{sessions.branch_prefix(session)}" if session else ""))
     if landed and not args.no_provenance:
         try:
-            report_provenance(sandbox_provenance.post_session(args.repo, landed))
+            report_provenance(provenance.post_session(args.repo, landed))
         except Exception as e:
-            log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
+            log(f"warning: couldn't post {provenance.CONTEXT} "
                 f"for {who}: {e}")
     return landed, ok
 
@@ -299,8 +299,8 @@ class GitHubBackend(Backend):
         self.protect_default_branch()
         self.harden_actions()
         try:
-            gone = sandbox_sessions.reap_stale_keys(
-                a.repo, sandbox_sessions.host_id(), live_names() | {own_name})
+            gone = sessions.reap_stale_keys(
+                a.repo, sessions.host_id(), live_names() | {own_name})
             for key_id in gone:
                 log(f"removed stale deploy key {key_id} (its container is gone)")
         except (GitHubError, subprocess.CalledProcessError, OSError) as e:
@@ -316,7 +316,7 @@ class GitHubBackend(Backend):
         a = self.args
         branch, state = "the default branch", "unknown"
         try:
-            branch, warn, state = sandbox_sessions.check_protection(a.repo)
+            branch, warn, state = sessions.check_protection(a.repo)
             if (state in ("unprotected", "protected")
                     and not a.no_protect_prompt and sys.stdin.isatty()):
                 state, _ = self.offer_protection(branch, state)
@@ -324,31 +324,31 @@ class GitHubBackend(Backend):
             log(f"warning: couldn't check or apply branch protection: {e}")
         required = ci = None
         if state in ("protected", "applied"):
-            required = sandbox_protect.required_on(a.repo, branch)
-            ci = sandbox_protect.discover_checks(a.repo, branch)
-        self.add_host_warnings(sandbox_protect.gap_warnings(
+            required = protect.required_on(a.repo, branch)
+            ci = protect.discover_checks(a.repo, branch)
+        self.add_host_warnings(protect.gap_warnings(
             a.repo, branch, state, required, ci or []))
 
     def harden_actions(self):
         """Report whether the repo's Actions settings keep session code's CI
         runs untrusted (read-only token, Actions can't approve PRs, no secrets
         to reach) and, on a terminal and after a yes each, fix the settable
-        ones (see sandbox_hardening). Advice only: never blocks the launch;
+        ones (see hardening). Advice only: never blocks the launch;
         what is still unmet becomes host-side warnings, never session text."""
         a = self.args
         ask = None
         if not a.no_hardening_prompt and sys.stdin.isatty():
             ask = lambda cond: ask_hardening(a.repo, cond)  # noqa: E731
         try:
-            found, notes = sandbox_hardening.harden(a.repo, gh_api, ask)
+            found, notes = hardening.harden(a.repo, gh_api, ask)
         except (GitHubError, OSError, ValueError) as e:
             log(f"warning: couldn't check the repo's Actions settings: {e}")
             return
         log("Actions settings (no same-repo approval setting exists on "
             "GitHub; these keep session code's CI runs untrusted):")
-        for line in notes + sandbox_hardening.summary_lines(found):
+        for line in notes + hardening.summary_lines(found):
             log(f"  {line}")
-        self.add_host_warnings(sandbox_hardening.warnings(found, bool(ask)),
+        self.add_host_warnings(hardening.warnings(found, bool(ask)),
                                show=False)
 
     def add_host_warnings(self, warnings, show=True):
@@ -367,29 +367,29 @@ class GitHubBackend(Backend):
         the branch is already protected (they may add e.g. a required check).
         """
         a = self.args
-        repo_rs, problems = sandbox_protect.fetch_repo_rulesets(a.repo, branch)
+        repo_rs, problems = protect.fetch_repo_rulesets(a.repo, branch)
         for p in problems:
             log(f"warning: ignoring {p}")
-        existing = sandbox_protect.existing_ruleset_names(a.repo)
+        existing = protect.existing_ruleset_names(a.repo)
         if repo_rs:
             return self.offer_repo_rulesets(
-                branch, state, sandbox_protect.pending(repo_rs, existing))
+                branch, state, protect.pending(repo_rs, existing))
         if state != "unprotected":
             return state, []
-        ruleset = sandbox_protect.load_ruleset(
+        ruleset = protect.load_ruleset(
             os.path.join(paths.RULESETS, "protect-main.json"))
         if ruleset["name"] in existing:
             log(f"ruleset {ruleset['name']!r} already exists but doesn't "
                 "require PRs on the default branch; fix it in Settings -> Rules")
             return "unprotected", []
-        if not ask_protect(a.repo, branch, sandbox_protect.describe(ruleset,
+        if not ask_protect(a.repo, branch, protect.describe(ruleset,
                                                                     branch)):
             return "unprotected", []
-        checks = sandbox_protect.discover_checks(a.repo, branch)
+        checks = protect.discover_checks(a.repo, branch)
         if checks and not ask_checks(branch, checks):
             checks = []
-        sandbox_protect.apply_ruleset(
-            a.repo, sandbox_protect.with_checks(ruleset, checks))
+        protect.apply_ruleset(
+            a.repo, protect.with_checks(ruleset, checks))
         log(f"applied ruleset {ruleset['name']!r} to {a.repo}"
             + (f", requiring: {', '.join(checks)}" if checks else
                " (no required status checks)"))
@@ -402,10 +402,10 @@ class GitHubBackend(Backend):
         checks = set()
         for rs in todo:
             if not ask_ruleset(a.repo, rs["name"],
-                               sandbox_protect.describe_rules(rs, branch)):
+                               protect.describe_rules(rs, branch)):
                 continue
-            sandbox_protect.apply_ruleset(a.repo, rs)
-            checks.update(sandbox_protect.required_checks(rs))
+            protect.apply_ruleset(a.repo, rs)
+            checks.update(protect.required_checks(rs))
             log(f"applied ruleset {rs['name']!r} to {a.repo}")
             if state == "unprotected" and any(
                     r["type"] == "pull_request" for r in rs["rules"]):
@@ -430,7 +430,7 @@ class GitHubBackend(Backend):
         meta = gh_api("GET", "/meta")
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
 
-        title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
+        title = sessions.key_title(sessions.host_id(),
                                            session_id)
         if self.args.repo:
             log(f"adding deploy key to {self.args.repo}")
@@ -455,7 +455,7 @@ class GitHubBackend(Backend):
             # Never work on the default branch: concurrent sessions each get
             # their own branch under sbx/<session>/ and land through PRs.
             box.user(f"git -C {shlex.quote(repo_dir)} checkout -q -b "
-                     + shlex.quote(sandbox_sessions.work_branch(session_id)))
+                     + shlex.quote(sessions.work_branch(session_id)))
         return repo_dir
 
     def access_lines(self, workdir, branch):
@@ -466,7 +466,7 @@ class GitHubBackend(Backend):
         if not self.args.repo:
             return False
         try:
-            trusted, note = sandbox_claude_config.trust_decision(
+            trusted, note = claude_config.trust_decision(
                 repo_owner(self.args.repo), self.login)
         except (GitHubError, KeyError, TypeError) as e:
             trusted, note = False, f"couldn't check the repo owner ({e})"

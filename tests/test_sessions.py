@@ -1,4 +1,4 @@
-"""Tests for sandbox_sessions: session ids, key reaping, protection advice."""
+"""Tests for sessions: session ids, key reaping, protection advice."""
 import random
 
 import pytest

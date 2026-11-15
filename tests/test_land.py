@@ -1,4 +1,4 @@
-"""Tests for sandbox_land: sensitive-path holds, untrusted text, PR flow."""
+"""Tests for land: sensitive-path holds, untrusted text, PR flow."""
 import threading
 
 import pytest

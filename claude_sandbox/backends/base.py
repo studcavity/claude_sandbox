@@ -12,8 +12,8 @@ supplies only the parts that differ:
 - the text in the session's CLAUDE.md that describes all of this;
 - landing: what happens to the session's branches once it is gone.
 
-Implementations: `sandbox_backend_github.GitHubBackend` (deploy key, clone
-over SSH, PRs) and `sandbox_backend_local.LocalBackend` (a git repo on the
+Implementations: `backends_github.GitHubBackend` (deploy key, clone
+over SSH, PRs) and `backends_local.LocalBackend` (a git repo on the
 host, bundles in and out, branches imported into it).
 """
 import abc
@@ -43,12 +43,12 @@ class Backend(abc.ABC):
     @property
     def key_repo(self) -> Optional[str]:
         """`owner/name` id under which the session's public signing key is
-        recorded (see sandbox_provenance), or None when nothing is signed."""
+        recorded (see provenance), or None when nothing is signed."""
         return None
 
     @property
     def key_root(self) -> Optional[str]:
-        """Key-store root for key_repo (None: sandbox_provenance's default)."""
+        """Key-store root for key_repo (None: provenance's default)."""
         return None
 
     @property
@@ -86,7 +86,7 @@ class Backend(abc.ABC):
         return None
 
     def prefetch_plan(self) -> list:
-        """Independent remote reads to start early (sandbox_github.start_prefetch)."""
+        """Independent remote reads to start early (gh.start_prefetch)."""
         return []
 
     @abc.abstractmethod

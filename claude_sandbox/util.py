@@ -5,13 +5,13 @@ import subprocess
 import sys
 import time
 
-from claude_sandbox import timing as sandbox_timing
+from claude_sandbox import timing
 def log(msg):
     print(f"\033[1;36m[sandbox]\033[0m {msg}", file=sys.stderr)
 
 
 def run(cmd, check=True, capture=False, input=None):
-    if sandbox_timing.ACTIVE is None:
+    if timing.ACTIVE is None:
         return subprocess.run(cmd, check=check, text=True,
                               capture_output=capture, input=input)
     start = time.perf_counter()
@@ -19,7 +19,7 @@ def run(cmd, check=True, capture=False, input=None):
         return subprocess.run(cmd, check=check, text=True,
                               capture_output=capture, input=input)
     finally:
-        sandbox_timing.count(sandbox_timing.label_for(cmd),
+        timing.count(timing.label_for(cmd),
                              time.perf_counter() - start)
 
 

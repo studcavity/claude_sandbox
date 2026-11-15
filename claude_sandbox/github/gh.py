@@ -12,7 +12,7 @@ from typing import Any, Callable
 from invoke import Context
 from invoke.exceptions import CommandTimedOut
 
-from claude_sandbox import timing as sandbox_timing
+from claude_sandbox import timing
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 TIMEOUT = 60
@@ -50,7 +50,7 @@ class GitHubError(RuntimeError):
 # module holds no token and no HTTP client to maintain.
 def _gh(args, body=None):
     """Run `gh <args>` locally (no shell parsing of our strings) -> Result."""
-    start = time.perf_counter() if sandbox_timing.ACTIVE else None
+    start = time.perf_counter() if timing.ACTIVE else None
     try:
         return Context().run(
             shlex.join(["gh", *args]), hide=True, warn=True, env=GH_ENV,
@@ -60,7 +60,7 @@ def _gh(args, body=None):
         raise GitHubError(f"gh {args[0]} timed out after {TIMEOUT}s", 0) from None
     finally:
         if start is not None:
-            sandbox_timing.count("gh", time.perf_counter() - start)
+            timing.count("gh", time.perf_counter() - start)
 
 
 def _fail(args, r):

@@ -1,4 +1,4 @@
-"""Tests for sandbox_deps: schema validation, cache key, archives, downloads."""
+"""Tests for container_deps: schema validation, cache key, archives, downloads."""
 import hashlib
 import io
 import os

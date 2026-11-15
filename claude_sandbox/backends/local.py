@@ -28,14 +28,14 @@ import sys
 import tempfile
 import threading
 
-from claude_sandbox.portable import check as sandbox_check
-from claude_sandbox.container import deps as sandbox_deps
-from claude_sandbox.github import land as sandbox_land
-from claude_sandbox.portable import names as sandbox_names
-from claude_sandbox import provenance as sandbox_provenance
-from claude_sandbox import sessions as sandbox_sessions
-from claude_sandbox.portable import untrusted as sandbox_untrusted
-from claude_sandbox.container import volumes as sandbox_volumes
+from claude_sandbox import provenance as provenance_mod
+from claude_sandbox import sessions
+from claude_sandbox.container import deps
+from claude_sandbox.container import volumes
+from claude_sandbox.github import land as github_land
+from claude_sandbox.portable import check as portable_check
+from claude_sandbox.portable import names
+from claude_sandbox.portable import untrusted
 from claude_sandbox.backends.base import Backend
 from claude_sandbox.container.incus import HOME, Container
 from claude_sandbox.util import log, run
@@ -59,7 +59,7 @@ class LocalError(RuntimeError):
 def repo_id(path):
     """Stable `local/<name>-<hash>` id for the repo at `path` (already a
     realpath): the basename for people, a hash of the full path so two repos
-    with one name don't share signing keys. Fits sandbox_provenance's
+    with one name don't share signing keys. Fits provenance_mod's
     `owner/name` rule (no `..`, limited alphabet)."""
     base = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(path.rstrip("/")))
     base = re.sub(r"\.{2,}", ".", base).strip(".-")[:60] or "repo"
@@ -70,7 +70,7 @@ def repo_id(path):
 def key_root(environ=None):
     """Signing keys of local sessions live beside GitHub's, under their own
     root, so `local/<x>` can never collide with a GitHub owner called local."""
-    return os.path.join(os.path.dirname(sandbox_provenance.store_root(environ)),
+    return os.path.join(os.path.dirname(provenance_mod.store_root(environ)),
                         "signing-local")
 
 
@@ -80,8 +80,8 @@ def key_root(environ=None):
 def acceptable_ref(ref, session):
     """Whether `ref` (full name) may be imported for `session`: only
     refs/heads/sbx/<session>/<name>, every component of <name> plain."""
-    prefix = "refs/heads/" + sandbox_names.BRANCH_ROOT + f"/{session}/"
-    if not sandbox_names.SESSION_RE.match(session or "") or not ref.startswith(prefix):
+    prefix = "refs/heads/" + names.BRANCH_ROOT + f"/{session}/"
+    if not names.SESSION_RE.match(session or "") or not ref.startswith(prefix):
         return False
     parts = ref[len(prefix):].split("/")
     return (0 < len(parts) <= MAX_REF_DEPTH
@@ -133,10 +133,10 @@ def bundle_out_argv(workdir, session, base_sha):
     already has (the base commit), to stdout."""
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_sha or ""):
         raise ValueError(f"not a commit id: {base_sha!r}")
-    if not sandbox_names.SESSION_RE.match(session or ""):
+    if not names.SESSION_RE.match(session or ""):
         raise ValueError(f"bad session name {session!r}")
     return ["git", "-C", workdir, "bundle", "create", "-",
-            f"--branches={sandbox_names.BRANCH_ROOT}/{session}/*", f"^{base_sha}"]
+            f"--branches={names.BRANCH_ROOT}/{session}/*", f"^{base_sha}"]
 
 
 def bundle_in_argv(primary, branch):
@@ -212,7 +212,7 @@ def resolve_base(primary, wanted):
 
 def state_dir(environ=None):
     """Where bundles on their way out are kept (beside the key store)."""
-    return os.path.join(os.path.dirname(sandbox_provenance.store_root(environ)),
+    return os.path.join(os.path.dirname(provenance_mod.store_root(environ)),
                         "local")
 
 
@@ -366,7 +366,7 @@ class LocalBackend(Backend):
              'git clone -q -b "$1" -- "$2" "$3" && cd "$3" && '
              'git checkout -q -b "$4" && git remote set-head origin "$1"',
              "sh", self.base, bundle, workdir,
-             sandbox_sessions.work_branch(session_id)], capture=True)
+             sessions.work_branch(session_id)], capture=True)
         return workdir
 
     def access_lines(self, workdir, branch):
@@ -379,7 +379,7 @@ class LocalBackend(Backend):
             "- There is **no remote you can push to** and no credential for "
             "GitHub or any other service. When the session ends, the "
             "launcher copies your committed branches under "
-            f"`{sandbox_sessions.branch_prefix(self.session_id)}` into the "
+            f"`{sessions.branch_prefix(self.session_id)}` into the "
             "user's repository for review; nothing else leaves.",
             f"- `{workdir}` is a volume that outlives this container: if the "
             "container dies, the user can still recover your committed "
@@ -405,7 +405,7 @@ class LocalBackend(Backend):
                 log(f"exported the session's branches ({os.path.getsize(dest)} "
                     "bytes)")
             elif "empty bundle" in err:
-                log(f"no new commits on {sandbox_sessions.branch_prefix(session_id)}"
+                log(f"no new commits on {sessions.branch_prefix(session_id)}"
                     "*: nothing to import")
             else:
                 self.export_failed = True
@@ -434,7 +434,7 @@ class LocalBackend(Backend):
         try:
             print("\n" + report(self.primary, self.base, self.base_sha,
                                 session_id, imported,
-                                key=sandbox_provenance.load_key(
+                                key=provenance_mod.load_key(
                                     self.id, session_id, self.key_root)),
                   file=sys.stderr)
         except Exception as e:
@@ -458,7 +458,7 @@ def import_bundle(primary, bundle, session):
     accepted, rejected = parse_heads(heads, session)
     for r in rejected:
         log(f"warning: ignored a ref in the session's bundle: "
-            f"{sandbox_untrusted.one_line(r, 200)}")
+            f"{untrusted.one_line(r, 200)}")
     if not accepted:
         return []
     host_git("bundle", "verify", "-q", bundle, cwd=primary)
@@ -488,13 +488,13 @@ def accepted_refs_after(primary, accepted):
 def setup_paths(primary, base_sha):
     """`setup:` script paths in the base's deps file ([] if none or invalid:
     an invalid file aborts every launch, so nothing in it would run)."""
-    r = host_git("cat-file", "blob", f"{base_sha}:{sandbox_deps.DEPS_FILE}",
+    r = host_git("cat-file", "blob", f"{base_sha}:{deps.DEPS_FILE}",
                  cwd=primary, check=False, text=False)
     if r.returncode != 0:
         return []
     try:
-        return [x["path"] for x in sandbox_deps.parse(r.stdout).get("setup") or []]
-    except sandbox_deps.DepsError:
+        return [x["path"] for x in deps.parse(r.stdout).get("setup") or []]
+    except deps.DepsError:
         return []
 
 
@@ -505,11 +505,11 @@ def provenance(primary, base_sha, tip, key, session):
     with tempfile.TemporaryDirectory() as tmp:
         signers = os.path.join(tmp, "allowed_signers")
         with open(signers, "w") as f:
-            f.write(sandbox_provenance.allowed_signers([key]))
-        commits = sandbox_provenance.read_commits(base_sha, tip, signers, primary)
-    problems = sandbox_provenance.judge(
-        commits, {sandbox_provenance.fingerprint(key): key})
-    return not problems, sandbox_provenance.describe(commits, problems, session)
+            f.write(provenance_mod.allowed_signers([key]))
+        commits = provenance_mod.read_commits(base_sha, tip, signers, primary)
+    problems = provenance_mod.judge(
+        commits, {provenance_mod.fingerprint(key): key})
+    return not problems, provenance_mod.describe(commits, problems, session)
 
 
 def branch_facts(primary, base_sha, session, ref, tip, key, setup=()):
@@ -523,27 +523,27 @@ def branch_facts(primary, base_sha, session, ref, tip, key, setup=()):
                      cwd=primary).stdout.split("\0")
     try:
         prov_ok, prov = provenance(primary, base_sha, tip, key, session)
-    except (sandbox_provenance.ProvenanceError, subprocess.SubprocessError,
+    except (provenance_mod.ProvenanceError, subprocess.SubprocessError,
             OSError) as e:
         prov_ok, prov = False, f"couldn't check: {e}"
     try:
-        found = sandbox_check.check_findings(base_sha, tip, cwd=primary)
-        errors = sum(1 for f in found if f.severity == sandbox_check.ERROR)
+        found = portable_check.check_findings(base_sha, tip, cwd=primary)
+        errors = sum(1 for f in found if f.severity == portable_check.ERROR)
     except Exception as e:  # advisory only
         errors = -1
         log(f"warning: the commit checker failed on {ref}: {e}")
     return dict(branch=ref.removeprefix("refs/heads/"), commits=len(msgs),
                 provenance_ok=prov_ok, provenance=prov, checker_errors=errors,
-                sensitive=sandbox_land.sensitive_paths(
+                sensitive=github_land.sensitive_paths(
                     [f for f in files if f], extra=setup),
-                synopsis=sandbox_land.synopsis(msgs),
-                not_verified=sandbox_land.not_verified_lines(msgs))
+                synopsis=github_land.synopsis(msgs),
+                not_verified=github_land.not_verified_lines(msgs))
 
 
 def format_report(primary, base, session, rows):
     """The exit summary of an import (pure). Every piece of session text is
     sanitised; branch names were validated before the import."""
-    clean = sandbox_land.safe_line
+    clean = github_land.safe_line
     out = [f"\u250c branches imported from session {session} into {primary}"]
     for r in rows:
         mark = "\u2714" if r["provenance_ok"] and r["checker_errors"] == 0 else "\u26a0"
@@ -562,7 +562,7 @@ def format_report(primary, base, session, rows):
                        "error(s); run scripts/sandbox_check.py in the repo for details")
         elif r["checker_errors"] < 0:
             out.append("\u2502     \u26a0 commit checker couldn't run")
-        for sha, line in r["not_verified"][:sandbox_land.MAX_CAVEATS]:
+        for sha, line in r["not_verified"][:github_land.MAX_CAVEATS]:
             out.append(f"\u2502     {clean(sha, 12)}: {clean(line, 160)}")
     if not rows:
         out.append("\u2502 nothing imported")
@@ -588,7 +588,7 @@ def kept_volumes(volumes_json, primary):
     """Kept work volumes of `primary` from `storage volume list --format
     json` -> [dict(name, session, base, workdir, used_by)]. Entries whose
     labels don't validate are skipped: they decide paths and refs."""
-    meta = sandbox_volumes.META_PREFIX
+    meta = volumes.META_PREFIX
     out = []
     for v in json.loads(volumes_json or "[]"):
         cfg = v.get("config") or {}
@@ -596,9 +596,9 @@ def kept_volumes(volumes_json, primary):
         session, base = cfg.get(meta + "session", ""), cfg.get(meta + "base", "")
         workdir = cfg.get(meta + "workdir", "")
         if (v.get("type") != "custom"
-                or not name.startswith(sandbox_volumes.KEEP_PREFIX)
+                or not name.startswith(volumes.KEEP_PREFIX)
                 or cfg.get(meta + "source") != primary
-                or not sandbox_names.SESSION_RE.match(session)
+                or not names.SESSION_RE.match(session)
                 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base)
                 or not re.fullmatch(r"(/[A-Za-z0-9._-]+){2,}", workdir)
                 or os.path.normpath(workdir) != workdir or ".." in workdir):
@@ -614,7 +614,7 @@ def recover(args, make_image, environ=None):
     out there (the host never runs git on the volume), import them, and
     delete the volume once that worked. -> exit status."""
     cli, primary = args.cli, args.local
-    pool = sandbox_volumes.default_pool(cli)
+    pool = volumes.default_pool(cli)
     found = kept_volumes(run([cli, "storage", "volume", "list", pool,
                               "--format", "json"], capture=True).stdout, primary)
     if not found:

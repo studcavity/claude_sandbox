@@ -1,10 +1,10 @@
-"""Tests for sandbox_images: aliases, freshness, pruning, build orchestration."""
+"""Tests for images: aliases, freshness, pruning, build orchestration."""
 import datetime
 import json
 
 import pytest
 
-from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.container import deps as container_deps
 from claude_sandbox.container import images as im
 DAY = datetime.timedelta(days=1)
 SHA = "b" * 64
@@ -105,7 +105,7 @@ def test_ensure_base_image_bounds_old_bases(monkeypatch, builds, cli_calls):
 
 
 def test_ensure_deps_image_skips_unpinned_scripts(builds):
-    deps = sandbox_deps.parse("scripts: [{name: s, url: 'https://x/s'}]")
+    deps = container_deps.parse("scripts: [{name: s, url: 'https://x/s'}]")
     assert im.ensure_deps_image("incus", "base", deps, 7, False) is None
     assert builds == []
 
@@ -114,9 +114,9 @@ def test_ensure_deps_image_builds_when_missing(monkeypatch, tmp_path, builds,
                                                cli_calls):
     monkeypatch.setattr(im, "LOCK_DIR", str(tmp_path))
     monkeypatch.setattr(im, "cached_images", lambda cli, prefix=None: {})
-    deps = sandbox_deps.parse("apt: [git]")
+    deps = container_deps.parse("apt: [git]")
     alias = im.ensure_deps_image("incus", "base", deps, 7, False)
-    assert alias == im.deps_alias("base", sandbox_deps.cache_key(deps))
+    assert alias == im.deps_alias("base", container_deps.cache_key(deps))
     assert builds == [("base", alias, False)]
 
 
@@ -124,13 +124,13 @@ def test_ensure_deps_image_builds_when_missing(monkeypatch, tmp_path, builds,
 # apply_deps
 # --------------------------------------------------------------------------- #
 def test_apply_deps_order_and_targets(monkeypatch, fake_box):
-    deps = sandbox_deps.parse(f"""
+    deps = container_deps.parse(f"""
 apt: [git]
 binaries: [{{name: tool, url: 'https://x/t', sha256: {SHA}}}]
 scripts: [{{name: inst, url: 'https://x/i.sh', args: [-y], env: {{A: b}}}}]
 """)
     fetched = []
-    monkeypatch.setattr(sandbox_deps, "fetch",
+    monkeypatch.setattr(container_deps, "fetch",
                         lambda url, cap, sha=None: fetched.append(url) or b"X")
     im.apply_deps(fake_box, deps)
 
@@ -147,12 +147,12 @@ scripts: [{{name: inst, url: 'https://x/i.sh', args: [-y], env: {{A: b}}}}]
 
 
 def test_apply_deps_cleans_scratch_on_failure(monkeypatch, fake_box):
-    deps = sandbox_deps.parse("scripts: [{name: s, url: 'https://x/s'}]")
+    deps = container_deps.parse("scripts: [{name: s, url: 'https://x/s'}]")
 
     def fail(*a, **k):
-        raise sandbox_deps.DepsError("boom")
-    monkeypatch.setattr(sandbox_deps, "fetch", fail)
-    with pytest.raises(sandbox_deps.DepsError):
+        raise container_deps.DepsError("boom")
+    monkeypatch.setattr(container_deps, "fetch", fail)
+    with pytest.raises(container_deps.DepsError):
         im.apply_deps(fake_box, deps)
     assert fake_box.calls[-1][1][:2] == ["rm", "-rf"]
 

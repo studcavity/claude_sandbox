@@ -1,4 +1,4 @@
-"""Tests for sandbox_pool: parsing, thresholds, advisory behaviour."""
+"""Tests for pool: parsing, thresholds, advisory behaviour."""
 import subprocess
 
 import pytest

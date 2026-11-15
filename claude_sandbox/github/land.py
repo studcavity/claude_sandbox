@@ -24,11 +24,11 @@ import concurrent.futures
 import re
 import urllib.parse
 
-from claude_sandbox.container import deps as sandbox_deps
-from claude_sandbox.container import host as sandbox_host
-from claude_sandbox.github import labels as sandbox_labels
-from claude_sandbox.github import templates as sandbox_templates
-from claude_sandbox.portable import untrusted as sandbox_untrusted
+from claude_sandbox.container import deps as container_deps
+from claude_sandbox.container import host
+from claude_sandbox.github import labels
+from claude_sandbox.github import templates
+from claude_sandbox.portable import untrusted
 from claude_sandbox.github.gh import GitHubError, gh_api
 from claude_sandbox.sessions import BRANCH_ROOT, branch_prefix
 
@@ -38,7 +38,7 @@ from claude_sandbox.sessions import BRANCH_ROOT, branch_prefix
 Landed = collections.namedtuple("Landed", "branch base outcome detail commits")
 
 SENSITIVE_DIRS = (".github/", ".githooks/")
-SENSITIVE_FILES = (sandbox_deps.DEPS_FILE, sandbox_host.HOST_FILE)
+SENSITIVE_FILES = (container_deps.DEPS_FILE, host.HOST_FILE)
 MAX_SUBJECTS = 20
 
 
@@ -57,7 +57,7 @@ def sensitive_paths(files, extra=()):
 def clean_text(text, limit):
     """Make untrusted text safe to paste into a PR: one line, no control
     characters, no backticks (the body fences it), and no live @-mentions."""
-    return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
+    return untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
 MAX_CAVEATS = 10
@@ -72,7 +72,7 @@ def safe_line(text, limit):
     """clean_text, but a line that looks like it holds a credential is replaced
     by a note: commit messages are already in the repo, a PR body is a second
     place to leak the same thing."""
-    hits = sandbox_untrusted.find_secrets(text)
+    hits = untrusted.find_secrets(text)
     if hits:
         return f"[withheld: appears to contain {', '.join(hits)}]"
     return clean_text(text, limit)
@@ -150,13 +150,13 @@ def label_pr(repo, pr, session):
     PR without labels is still a PR."""
     tail = (pr.get("html_url") or "").rstrip("/").rsplit("/", 1)[-1]
     number = pr.get("number") or (tail if tail.isdigit() else None)
-    names = [sandbox_labels.SANDBOX]
-    if sandbox_labels.session_label(session):
-        names.append(sandbox_labels.session_label(session))
+    names = [labels.SANDBOX]
+    if labels.session_label(session):
+        names.append(labels.session_label(session))
     if not number:
         return
     try:
-        sandbox_labels.ensure(gh_api, repo, names)
+        labels.ensure(gh_api, repo, names)
         gh_api("POST", f"/repos/{repo}/issues/{number}/labels", {"labels": names})
     except RuntimeError:
         pass
@@ -177,7 +177,7 @@ def pr_text(session, branch, subjects, caveats=None, syn=None):
         title = f"{safe_line(syn[1], 100)} [{session}]"
     shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
-    body = sandbox_templates.render(
+    body = templates.render(
         "pr.md", session=session, branch=clean_text(branch, 120),
         caveats=((synopsis_section(syn) + "\n" if syn else "")
                  + (caveats_section(caveats) + "\n" if caveats is not None else "")),
@@ -304,14 +304,14 @@ def setup_script_paths(repo, default):
     anyway. No file, or one that doesn't parse, means no scripts: an invalid
     file aborts every launch, so nothing in it would run."""
     try:
-        raw = gh_api("GET", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}"
+        raw = gh_api("GET", f"/repos/{repo}/contents/{container_deps.DEPS_FILE}"
                             f"?ref={_q(default)}", raw=True)
-        deps = sandbox_deps.parse(raw)
+        deps = container_deps.parse(raw)
     except GitHubError as e:
         if e.code != 404:
             raise
         return []
-    except sandbox_deps.DepsError:
+    except container_deps.DepsError:
         return []
     return [s["path"] for s in deps.get("setup") or []]
 

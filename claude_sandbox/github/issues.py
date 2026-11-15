@@ -4,7 +4,7 @@
 
 A sandboxed session can't touch GitHub beyond pushing, but it can say "someone
 outside should do X" by adding `todo/<name>.md` to a commit (the format, and
-why the path is the identity, is in `sandbox_todo`). This module files an
+why the path is the identity, is in `todo`). This module files an
 issue for each such file, and it only ever does so for commits that are
 ALREADY ON THE DEFAULT BRANCH: a human has reviewed that text before it is
 published, and nothing from an unmerged branch is filed. (A request whose PR
@@ -49,10 +49,10 @@ import subprocess
 import sys
 import urllib.parse
 
-from claude_sandbox.github import labels as sandbox_labels
-from claude_sandbox.github import templates as sandbox_templates
-from claude_sandbox.portable import todo as sandbox_todo
-from claude_sandbox.portable import untrusted as sandbox_untrusted
+from claude_sandbox.github import labels as github_labels
+from claude_sandbox.github import templates
+from claude_sandbox.portable import todo
+from claude_sandbox.portable import untrusted
 MAX_PER_RUN = 25          # requests filed in one run (--max)
 MAX_TITLE = 120
 MAX_BODY = 6000
@@ -110,13 +110,13 @@ def read_requests(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
         names = git("diff-tree", "-r", "-z", "--no-commit-id", "--name-only",
                     "--diff-filter=A", "--no-renames", "--root", sha, cwd=cwd)
         for path in sorted(n for n in names.split("\0") if n):
-            if not sandbox_todo.request_name(path):
+            if not todo.request_name(path):
                 continue
             ref = f"{sha}:{path}"
             try:
                 size = int(git("cat-file", "-s", ref, cwd=cwd))
                 text = (git("show", ref, cwd=cwd)
-                        if size <= sandbox_todo.MAX_BYTES else None)
+                        if size <= todo.MAX_BYTES else None)
             except subprocess.CalledProcessError:
                 continue    # a symlink or submodule, not a file
             out.append(Request(sha, path, text))
@@ -126,7 +126,7 @@ def read_requests(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
 def clean_block(text, limit):
     """Untrusted multi-line text made safe to paste into GitHub: no control
     characters (newlines kept), no live @-mentions, bounded."""
-    return sandbox_untrusted.block(text, limit)
+    return untrusted.block(text, limit)
 
 
 def clean_line(text, limit):
@@ -146,7 +146,7 @@ def known_issues(api, repo):
     found: dict = {}
     for page in range(1, MAX_LEDGER_PAGES + 1):
         items = api("GET", f"/repos/{repo}/issues?labels="
-                    f"{sandbox_labels.FOLLOW_UP}&state=all&per_page=100"
+                    f"{github_labels.FOLLOW_UP}&state=all&per_page=100"
                     f"&page={page}") or []
         for it in items:
             if "pull_request" in it:
@@ -161,25 +161,25 @@ def known_issues(api, repo):
 
 def file_issue(api, repo, req, known, labels_done):
     """File one request -> the issue URL (a Reused one if it exists)."""
-    name = sandbox_todo.request_name(req.path)
+    name = todo.request_name(req.path)
     if req.text is None:
         raise PolicyRejected(f"not filed: {req.path} is over "
-                             f"{sandbox_todo.MAX_BYTES} bytes")
-    title = sandbox_todo.title(req.text)
+                             f"{todo.MAX_BYTES} bytes")
+    title = todo.title(req.text)
     if not title or not clean_line(title, MAX_TITLE):
         raise Rejected("a request needs a heading")
-    hits = sandbox_untrusted.find_secrets(req.text)
+    hits = untrusted.find_secrets(req.text)
     if hits:
         raise PolicyRejected(f"not filed: {req.path} appears to contain "
                              + ", ".join(hits))
     if (req.sha, name) in known:
         return Reused(known[(req.sha, name)])
-    labels = [sandbox_labels.SANDBOX, sandbox_labels.FOLLOW_UP]
-    sandbox_labels.ensure(api, repo, labels, labels_done)
+    labels = [github_labels.SANDBOX, github_labels.FOLLOW_UP]
+    github_labels.ensure(api, repo, labels, labels_done)
     body = (f"{_defang(clean_block(req.text, MAX_BODY))}\n\n"
             f"[`{req.path}` at that commit](https://github.com/{repo}"
             f"/blob/{req.sha}/{urllib.parse.quote(req.path)})")
-    text = (sandbox_templates.render("issue.md", commit=req.sha, item=name,
+    text = (templates.render("issue.md", commit=req.sha, item=name,
                                      body=body)
             + f"\n<!-- {MARKER} sha={req.sha} id={name} -->")
     issue = api("POST", f"/repos/{repo}/issues",
@@ -240,9 +240,9 @@ def run(repo, since=None, last=DEFAULT_LAST, dry_run=False, api=None, cwd=None,
         out=print, limit=MAX_PER_RUN):
     """Scan commits for added `todo/` requests and file them -> exit code
     (0 ok, 1 if any item failed)."""
-    from claude_sandbox.github import gh as sandbox_github
-    sandbox_github.validate_repo(repo)
-    api = api or sandbox_github.gh_api
+    from claude_sandbox.github import gh as gh
+    gh.validate_repo(repo)
+    api = api or gh.gh_api
     if dry_run:
         api = DryRunApi(api)
     outcomes = execute(api, repo, read_requests(since, last, cwd=cwd), limit)

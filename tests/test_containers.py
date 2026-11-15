@@ -1,4 +1,4 @@
-"""Tests for sandbox_containers.Container: the CLI commands it builds."""
+"""Tests for incus.Container: the CLI commands it builds."""
 import subprocess
 
 import pytest

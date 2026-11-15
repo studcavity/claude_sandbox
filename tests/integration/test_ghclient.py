@@ -1,4 +1,4 @@
-"""sandbox_ghclient against REAL PyGithub, over TLS, with no GitHub involved.
+"""ghclient against REAL PyGithub, over TLS, with no GitHub involved.
 
 A throwaway local HTTPS server stands in for the API (the same trick as
 test_gh.py), so these check what the unit tests can't: the actual requests
@@ -189,11 +189,11 @@ def test_http_errors_become_githuberror_with_the_status(client, srv, code):
 
 def test_gh_token_comes_from_the_gh_login_and_is_never_in_an_error(monkeypatch):
     import types
-    from claude_sandbox.github import gh as sandbox_github
-    monkeypatch.setattr(sandbox_github, "_gh", lambda args, body=None: types.SimpleNamespace(
+    from claude_sandbox.github import gh as github_gh
+    monkeypatch.setattr(github_gh, "_gh", lambda args, body=None: types.SimpleNamespace(
         failed=False, stdout="ghp_secretvalue\n", stderr=""))
     assert gc.gh_token() == "ghp_secretvalue"
-    monkeypatch.setattr(sandbox_github, "_gh", lambda args, body=None: types.SimpleNamespace(
+    monkeypatch.setattr(github_gh, "_gh", lambda args, body=None: types.SimpleNamespace(
         failed=True, stdout="", stderr="gh: not logged in ghp_secretvalue"))
     with pytest.raises(GitHubError) as e:
         gc.gh_token()

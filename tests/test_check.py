@@ -1,4 +1,4 @@
-"""Tests for sandbox_check against a real throwaway git repository (local
+"""Tests for check against a real throwaway git repository (local
 only: no network, no GitHub)."""
 import os
 import subprocess
@@ -103,19 +103,19 @@ def test_checker_imports_without_third_party_dependencies():
 
 
 def test_session_and_branch_rules_have_one_definition():
-    from claude_sandbox.portable import names as sandbox_names
-    from claude_sandbox import sessions as sandbox_sessions
-    assert sandbox_sessions.SESSION_RE is sandbox_names.SESSION_RE
-    assert sandbox_sessions.BRANCH_ROOT == sandbox_names.BRANCH_ROOT == "sbx"
+    from claude_sandbox.portable import names as names
+    from claude_sandbox import sessions as sessions
+    assert sessions.SESSION_RE is names.SESSION_RE
+    assert sessions.BRANCH_ROOT == names.BRANCH_ROOT == "sbx"
 
 
 def test_branch_session_parsing():
-    from claude_sandbox.portable import names as sandbox_names
+    from claude_sandbox.portable import names as names
     s = "quirky-hopper"
-    assert sandbox_names.branch_session(f"sbx/{s}/work") == s
-    assert sandbox_names.branch_session(f"refs/heads/sbx/{s}/a/b") == s
+    assert names.branch_session(f"sbx/{s}/work") == s
+    assert names.branch_session(f"refs/heads/sbx/{s}/a/b") == s
     for ref in (None, "", "main", "sbx/x", "feature/sbx/x/y"):
-        assert sandbox_names.branch_session(ref) is None
+        assert names.branch_session(ref) is None
 
 
 def test_behind_finding_warns_when_head_lacks_base_commits(repo, tmp_path):

@@ -1,4 +1,4 @@
-"""Tests for sandbox_update against real throwaway git repos (no network)."""
+"""Tests for update against real throwaway git repos (no network)."""
 import os
 import subprocess
 
