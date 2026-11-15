@@ -903,7 +903,7 @@ class Sandbox:
             # their own branch under sbx/<session>/ and land through PRs.
             self.box.user(f"git -C {shlex.quote(repo_dir)} checkout -q -b "
                           + shlex.quote(sandbox_sessions.work_branch(
-                              self.session_id, self.args.task)))
+                              self.session_id)))
         return repo_dir
 
     def install_session_tools(self):
@@ -1284,10 +1284,6 @@ def build_parser():
                    or DEFAULT_GIT_EMAIL,
                    help="git user.email inside the sandbox (default: "
                         f"$CLAUDE_SANDBOX_GIT_EMAIL or {DEFAULT_GIT_EMAIL})")
-    p.add_argument("--task", metavar="TEXT",
-                   help="short description of the change; its slug names the "
-                        "session branch (sbx/<id>/<slug> instead of "
-                        "sbx/<id>/work)")
     p.add_argument("--shell", action="store_true",
                    help="open a login shell instead of launching claude")
     p.add_argument("--tmux", action="store_true",
