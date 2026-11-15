@@ -1056,7 +1056,9 @@ class Sandbox:
 
     def land(self):
         """Open PRs for this session's pushed branches (host-side, with the
-        user's gh login). Never raises: teardown must still run."""
+        user's gh login). Runs AFTER teardown (the session's key is revoked
+        and its container gone), so its branches can't move under the
+        checks. Never raises."""
         a = self.args
         if not a.repo or a.read_only or self.key_id is None:
             return
@@ -1445,10 +1447,16 @@ def _launch(args):
                   else err, file=sys.stderr)
         return 1
     finally:
-        with sandbox_timing.stage("land: PRs, statuses, actions"):
-            box.land()  # host-side, uses the user's gh; before the key is revoked
-        with sandbox_timing.stage("teardown"):
-            box.teardown()
+        # Teardown FIRST: revoke the key and destroy the container, so nothing
+        # the session left running (a nohup'd loop, a tmux pane) can push
+        # between the landing's checks and the PRs it opens. Landing needs
+        # only the user's gh login, never the key or the container.
+        try:
+            with sandbox_timing.stage("teardown"):
+                box.teardown()
+        finally:
+            with sandbox_timing.stage("land: PRs, statuses, actions"):
+                box.land()
     return 0
 
 

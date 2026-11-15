@@ -129,6 +129,15 @@ Any number of sandboxes can run on one repo at once. What keeps them apart:
   launcher says so and you review the branch by hand. Those files run with
   extra privilege (CI with Actions secrets; root and the deploy key in every
   future sandbox), so they are how an injected session would persist.
+- **Landing happens after teardown.** The session's key is revoked and its
+  container destroyed *before* the launcher checks branches and opens PRs, so
+  nothing the session left running can push in between. Each PR is pinned to
+  the commit that was checked: if the branch moved anyway (another live
+  session's key can push to any branch), the PR is closed and reported HELD.
+  What this can't stop: a live sibling session pushing to a PR *after* it
+  was opened. Deploy keys aren't branch-scoped, so treat every push to an
+  open sandbox PR as unreviewed, and don't run concurrent sessions on repos
+  whose CI exposes secrets to same-repo PRs.
 - **Merging is yours.** The launcher never merges and there is no auto-merge:
   a PR that merges itself would let one injected session change `main`.
   Merge each PR with GitHub's rebase or squash button (history stays linear).

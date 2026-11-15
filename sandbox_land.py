@@ -178,6 +178,10 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
     if hits:
         return Landed(branch, default, "held", ", ".join(hits[:5])
                       + (" ..." if len(hits) > 5 else ""), cum["ahead_by"])
+    tip = checked_tip(cum)
+    if not tip:
+        return Landed(branch, default, "held", "couldn't pin the branch tip "
+                      "(250+ commits?)", cum["ahead_by"])
 
     candidates = []
     for sib in sorted(b for b in siblings if b != branch)[:MAX_SIBLINGS]:
@@ -205,8 +209,41 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
     pr = gh_api("POST", f"/repos/{repo}/pulls",
                 {"title": title, "head": branch, "base": base, "body": body,
                  "maintainer_can_modify": False})
+    moved = head_moved(pr, tip)
+    if moved:
+        # Another key (a sibling session's) pushed between the check and the
+        # PR: what was checked is not what the PR would merge. Close it.
+        try:
+            gh_api("PATCH", f"/repos/{repo}/pulls/{int(pr['number'])}",
+                   {"state": "closed"})
+            moved += "; the PR was closed"
+        except (RuntimeError, KeyError, TypeError, ValueError):
+            moved += f"; CLOSE IT BY HAND: {pr.get('html_url', '?')}"
+        return Landed(branch, base, "held", moved, inc["ahead_by"])
     label_pr(repo, pr, session)
     return Landed(branch, base, "opened", pr["html_url"], inc["ahead_by"])
+
+
+def checked_tip(cmp_):
+    """The head commit a `default...branch` compare examined, or None when the
+    compare doesn't list every commit (it stops at 250) and so can't say."""
+    commits = cmp_.get("commits") or []
+    total = cmp_.get("total_commits", len(commits))
+    sha = (commits[-1].get("sha") or "") if commits else ""
+    if len(commits) < total or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None
+    return sha
+
+
+def head_moved(pr, tip):
+    """Why the PR GitHub just opened doesn't point at the commit we checked
+    (its head is a branch name, so a push in between moves it), or None.
+    Fails closed: no head sha in the response counts as moved."""
+    head = (pr.get("head") or {}).get("sha") or ""
+    if head == tip:
+        return None
+    return (f"branch moved while landing (checked {tip[:7]}, the PR got "
+            f"{head[:7] or 'an unknown head'})")
 
 
 def land(repo, session=None, extra_sensitive=()):
