@@ -7,7 +7,8 @@ modules used to carry their own near-copies of the cleaning code
 the primitives here so a fix lands once. Stdlib only (the checker imports it).
 
 Two jobs:
-  * make text safe to paste: no control characters, no live @-mentions, bounded;
+  * make text safe to paste: no control characters, no live @-mentions or
+    issue references (`#12`, `owner/repo#12`, `GH-12`), bounded;
   * refuse to publish text that looks like it contains a credential.
 
 The secret scan is a tripwire for accidents (a token pasted into a commit
@@ -32,13 +33,29 @@ def defang_mentions(text):
     return text.replace("@", "@" + ZWSP)
 
 
+# `#12`, `owner/repo#12` and `GH-12` autolink. In a PR or issue body written
+# under the user's identity that means a cross-reference event on someone
+# else's issue (other repos included), and in a PR body "closes #12" closes
+# #12 when the PR merges. A zero-width space before the number stops both.
+_REFERENCE = re.compile(r"(#|\bGH-)(?=\d)", re.IGNORECASE)
+
+
+def defang_references(text):
+    return _REFERENCE.sub(lambda m: m.group(1) + ZWSP, text)
+
+
+def defang(text):
+    """Everything that would make GitHub act on the text: mentions, refs."""
+    return defang_references(defang_mentions(text))
+
+
 def truncate(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
 def block(text, limit):
     """Multi-line text safe to paste: newlines kept, `\\r` dropped."""
-    t = defang_mentions(printable(text.replace("\r", ""), keep_newlines=True))
+    t = defang(printable(text.replace("\r", ""), keep_newlines=True))
     return truncate(t.strip(), limit)
 
 
@@ -48,7 +65,7 @@ def one_line(text, limit, backticks_to_quotes=False):
     t = " ".join(printable(text).split())
     if backticks_to_quotes:
         t = t.replace("`", "'")
-    return truncate(defang_mentions(t), limit)
+    return truncate(defang(t), limit)
 
 
 # --- secret scan ----------------------------------------------------------- #
