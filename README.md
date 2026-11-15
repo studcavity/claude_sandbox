@@ -69,8 +69,10 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest
 ```
-CI runs the suite (plus pyflakes and shellcheck) on pushes to `main` and on
-PRs from branches in this repo. See `CLAUDE.md` for testing conventions.
+CI runs the suite (plus pyflakes, mypy and shellcheck) on pushes to `main` and
+on PRs from branches in this repo, and a real-container smoke test of the whole
+launch lifecycle (`tests/integration/test_launch.py`; run it on a host with
+`./smoke.sh`). See `CLAUDE.md` for testing conventions.
 
 ## concurrent sessions
 Any number of sandboxes can run on one repo at once. What keeps them apart:
