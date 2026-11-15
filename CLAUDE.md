@@ -45,6 +45,9 @@ the commit message.
 CI (`.github/workflows/tests.yml`) runs pyflakes, shellcheck and pytest on
 Python 3.10, 3.12 and 3.13. It runs on every push to `main` and on PRs from
 branches in this repo. PRs from forks are skipped.
+A second job, `integration`, installs incus on the runner and runs
+`tests/integration` for real (it fails if they are skipped), so
+container-behaviour regressions are caught in CI even without a nested sandbox.
 
 ### Real-container checks
 Unit tests fake `subprocess`, so they can't catch bugs in how incus actually

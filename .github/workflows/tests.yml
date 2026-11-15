@@ -42,3 +42,41 @@ jobs:
         run: shellcheck run.sh
       - name: Run tests
         run: python -m pytest -rs
+
+  # Real-container tests (tests/integration). GitHub's ubuntu runners are VMs,
+  # so incus runs natively here; no nesting needed. Same trigger rules as above.
+  integration:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install incus
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq incus
+          sudo incus admin init --minimal
+          # The runner is throwaway: let this user talk to the daemon.
+          sudo chmod 0666 /var/lib/incus/unix.socket
+          # Docker's firewall rules otherwise block incus's bridge traffic.
+          sudo iptables -I DOCKER-USER -j ACCEPT || true
+          sudo ip6tables -I DOCKER-USER -j ACCEPT || true
+          incus version
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run integration tests (must not be skipped)
+        env:
+          CS_INTEGRATION: "1"
+        run: |
+          python -m pytest -m incus tests/integration -rs | tee pytest.out
+          if grep -q SKIPPED pytest.out; then
+            echo "integration tests were skipped" >&2
+            exit 1
+          fi
