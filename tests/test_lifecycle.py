@@ -6,6 +6,7 @@ passes them all. These tests run the real main() and real Sandbox methods
 against a recording container, a scripted GitHub and a captured subprocess.
 """
 import json
+import os
 import types
 
 import pytest
@@ -436,3 +437,90 @@ def test_no_final_check_flag_goes_straight_to_teardown(world, monkeypatch):
     monkeypatch.setattr(cs, "run_streaming",
                         lambda *a, **k: pytest.fail("ran the check"))
     assert cs.main(argv(world, "--no-final-check")) == 0
+
+
+# --------------------------------------------------------------------------- #
+# --local: the same real main(), with real git on the host side
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def local_world(monkeypatch, tmp_path):
+    """A primary repo, a 'session clone' standing in for the container's
+    work directory, and every GitHub call made fatal: local mode must never
+    reach GitHub."""
+    import subprocess as sp
+    import sandbox_backend_local as lb
+    for k, v in dict(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                     GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                     GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e").items():
+        monkeypatch.setenv(k, v)
+    git = lambda *a, cwd=None: sp.run(["git", *a], cwd=cwd, check=True,  # noqa: E731
+                                      capture_output=True, text=True).stdout
+    primary, clone = tmp_path / "proj", tmp_path / "session-clone"
+    git("init", "-q", "-b", "main", str(primary))
+    (primary / "a.txt").write_text("1")
+    git("add", "-A", cwd=primary)
+    git("commit", "-q", "-m", "base", cwd=primary)
+    git("clone", "-q", str(primary), str(clone))
+    git("switch", "-q", "-c", "sbx/quirky-hopper/work", cwd=clone)
+    (clone / "w.txt").write_text("w")
+    git("add", "-A", cwd=clone)
+    git("commit", "-q", "-m", "feat: w", cwd=clone)
+
+    def no_github(*a, **k):
+        raise AssertionError(f"local mode called GitHub: {a}")
+    FakeContainer.instances = []
+    events, ran = [], []
+    monkeypatch.setattr(cs, "Container", FakeContainer)
+    for mod in (bg, sandbox_sessions, sandbox_land, sandbox_github):
+        monkeypatch.setattr(mod, "gh_api", no_github)
+    monkeypatch.setattr(sandbox_github, "github_login", no_github)
+    monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
+    monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
+    monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
+    real_run = sp.run
+
+    def run(cmd, **k):  # only the container side is fake
+        if cmd[0] != "fake-exec":
+            return real_run(cmd, **k)
+        ran.append(cmd)
+        if k.get("stdin") is not None:
+            k["stdin"].read()   # drain, as the container's `cat` would
+        return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+    monkeypatch.setattr(cs.subprocess, "run", run)
+
+    def stream_out(producer, dest, limit, timeout=0):
+        events.append("export")
+        box = FakeContainer.instances[-1]
+        assert ("delete", ()) not in box.calls      # the container is still up
+        with open(dest, "wb") as f:
+            f.write(real_run(lb.bundle_out_argv(str(clone), "quirky-hopper",
+                                                git("rev-parse", "main", cwd=primary).strip()),
+                             check=True, capture_output=True).stdout)
+        return 0, ""
+    monkeypatch.setattr(lb, "stream_out", stream_out)
+    real_import = lb.import_bundle
+
+    def import_bundle(*a):
+        events.append("import")
+        assert ("delete", ()) in FakeContainer.instances[-1].calls   # after teardown
+        return real_import(*a)
+    monkeypatch.setattr(lb, "import_bundle", import_bundle)
+    return types.SimpleNamespace(primary=primary, ran=ran, events=events,
+                                 git=git, tmp=tmp_path)
+
+
+def test_local_launch_exports_tears_down_then_imports(local_world, capsys):
+    w = local_world
+    assert cs.main(["--local", str(w.primary), "--no-update-check",
+                    "--name", "quirky-hopper", "--token-file", str(w.tmp / "tok"),
+                    "--usb-allow", str(w.tmp / "allow")]) == 0
+    assert w.events == ["export", "import"]
+    assert any("claude" in c for cmd in w.ran for c in cmd)   # the session ran
+    assert w.git("show", "sbx/quirky-hopper/work:w.txt", cwd=w.primary) == "w"
+    assert w.git("branch", "--show-current", cwd=w.primary).strip() == "main"
+    box = FakeContainer.instances[-1]
+    scripts = " ".join(str(c) for _, c in box.calls)
+    assert "insteadOf" not in scripts and "id_ed25519 " not in scripts  # no GitHub key
+    assert "commit.gpgsign true" in scripts                            # still signed
+    err = capsys.readouterr().err
+    assert "branches imported from session quirky-hopper" in err
