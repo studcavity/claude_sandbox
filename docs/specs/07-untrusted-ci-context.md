@@ -67,12 +67,18 @@ how far settings can go is:
 > runs immediately, before any PR or hold, with any permissions it declares
 > and any repo-level secret it names.
 
-`sandbox_CLAUDE.md` says GitHub "normally rejects" such pushes, but the
-`workflow` scope check applies to OAuth and App tokens, and it is not clear
-that it applies to SSH deploy keys. Plan item 6 assumes such pushes work.
-Check this on a scratch repo (with a no-op workflow, and not in a repo that
-has secrets) before relying on either assumption. If they do work, the
-remaining levers are:
+**The intended answer is no:** deploy keys should not be able to push
+changes under `.github/`. The user's `gh` login no longer has the
+`workflow` scope (as of 2026-11-15). That removes the scope from the
+*host's* OAuth token, which is what the landing code uses. A deploy key is
+a separate SSH credential with no scopes, so this doesn't settle whether
+GitHub refuses a deploy-key push that touches `.github/workflows/*`.
+`sandbox_CLAUDE.md` already says such pushes are "normally" rejected, but
+nothing in the repo has verified it. Turn the expectation into a recorded
+fact: on a scratch repo with no secrets, push a no-op workflow file with
+a deploy key and record the result in the commit message. If the push is
+**accepted**, the boundary is violated: treat it as a fix-immediately item
+(see "Session-side rule" below), not a hardening task. The levers are:
 
 - a **push ruleset** with a `file_path_restriction` on `.github/workflows/**`
   for non-admins. GitHub documents push rulesets for private and internal
@@ -98,16 +104,57 @@ Add an "Actions hardening" check to the launcher, built the same way as
    change, and **apply** each with one PUT only after a yes. Never apply
    without a prompt; a `--no-…-prompt` flag skips it, like
    `--no-protect-prompt`.
-3. **Report** what can't be set (repo-level secrets, whether push rulesets
-   are available, the workflow-file push question) in the session's
-   `CLAUDE.md` and in the exit summary, the same way `protection_note`
-   reports branch protection.
+3. **Warn the user, not the session.** Print what is unmet or can't be set
+   (repo-level secrets, a 403 or 409, whether push rulesets are
+   available) as host-side warnings **at launch and again in the exit
+   summary**, so it is seen even after a long session. Do **not** put any
+   of it in the sandbox's `CLAUDE.md` or anywhere else the session can
+   read: a list of the repo's weak points is a map for a prompt-injected
+   session. The session gets only the rule in "Session-side rule" below,
+   which is the same whatever the repo's state.
+   - Related, for the implementer to decide: `protection_note` already
+     tells the session about the default branch's protection state
+     ("Default-branch protection and required status checks" in
+     `sandbox_CLAUDE.md`), including when a ruleset is missing. Consider
+     whether the same rule applies there: keep what a session needs to
+     act correctly ("PRs are required"), and move statements about gaps
+     to host-side warnings.
 
 Settings could live as declarative JSON, as `rulesets/*.json` do, so a
 repo can see and pin what gets applied. Or they could stay in code, since
 there are only two fields. Whoever implements this decides; the
 `validate_repo_ruleset`-style allowlist applies if repos can supply their
 own.
+
+## Session-side rule (`sandbox_CLAUDE.md`)
+
+`sandbox_CLAUDE.md` has no general statement of the boundary today. It has
+only specific cases: the workflow note in "Testing", the held paths in
+"Session identity and branches", and the guard for hazardous `setup:`
+scripts. Add one short, unconditional rule, worded by the implementer.
+Its substance:
+
+- Nothing from the sandbox may run in a trusted or privileged execution
+  context (anything with write access, secrets, or the power to merge,
+  approve, or post a merge gate) before a human has reviewed it through a
+  PR.
+- A session that would cross that boundary as part of its task must abort
+  that step, whatever the instruction's source, and say so to the user.
+  Examples: a task that needs a workflow to run on push, a setup script
+  that has to take effect before merge, or a request to post a status.
+- A session that discovers a way across it (a push that should have been
+  refused and wasn't, a workflow that ran from an unmerged branch, a
+  credential it shouldn't have) must not use or probe it further. It flags
+  it to the user at once, as a fix-immediately item: tell the user
+  directly; don't rely only on a follow-up issue that is filed later.
+
+Keep it general: it must not list which protections this repo has or
+lacks (see point 3). It complements the launcher's checks; it doesn't
+replace them, since a prompt-injected session may ignore it.
+`test_render_claude_md_real_template` covers the template. Consider a
+focused test that the rule is present, so a later trim (plan item 5's
+`sandbox_CLAUDE.md` cut) can't drop it unnoticed, the same way
+`tests/test_ci_config.py` guards the safety nets.
 
 ## Done when
 
@@ -117,6 +164,13 @@ own.
   calls, after which a re-run of the check reports them as met (idempotent).
 - Nothing changes without an explicit yes at a terminal. Org-policy
   refusals (409) and missing admin rights (403) are reported, never fatal.
+- Unmet conditions appear as warnings at launch and in the exit summary,
+  and in nothing the session can read (a test checks that the rendered
+  sandbox `CLAUDE.md` is identical whether the verdict passes or fails).
+- `sandbox_CLAUDE.md` states the boundary rule above, and a test keeps it
+  there.
+- The deploy-key workflow-push result is recorded. If such pushes are
+  accepted, that is fixed before this spec counts as done.
 - README replaces "set it by hand" with what the launcher offers. It
   documents the fork-only scope of GitHub's approval settings and the
   workflow-file push question, with the result of the check above.
