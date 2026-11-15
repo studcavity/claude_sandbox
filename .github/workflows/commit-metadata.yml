@@ -1,0 +1,41 @@
+name: commit-metadata
+
+# Lints the follow-up metadata of every commit a PR adds (see
+# sandbox_actions.py): Sandbox-Session matches the branch and the ids, ids have
+# the <slug>-<date>-<session>-<rand> shape, and each `issue` action has
+# todo/<id>.md in the same commit.
+on:
+  pull_request:
+    branches: [main]
+
+# Read-only, no secrets. This runs the PR branch's own copy of the checker;
+# the launcher holds any branch that edits .github/ for human review.
+permissions:
+  contents: read
+
+concurrency:
+  group: commit-metadata-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-metadata:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - name: Check commit metadata
+        env:
+          # Branch names are attacker-controlled text: pass through env, never
+          # interpolate into the script.
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python sandbox_check.py "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
