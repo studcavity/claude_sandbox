@@ -159,10 +159,12 @@ def test_a_failing_pr_gets_a_failure_status_and_annotations(pr):
     assert any(l.startswith("::error::") and "fixup" in l for l in lines)
 
 
-def test_branch_comes_from_the_pr_so_session_trailers_are_enforced(pr):
-    api, url, _ = pr(["feat: no trailer"], ref="sbx/quirky-hopper/work")
+def test_branch_comes_from_the_pr_so_ids_must_name_its_session(pr):
+    other = ('feat: x\n\nbody\n\nSandbox-Action: {"v": 1, "type": "resolve", '
+             '"id": "done-20261115-someone-else-a3f9", "ref": "abcdef1:x"}')
+    api, url, _ = pr([other], ref="sbx/quirky-hopper/work")
     rc, _ = go(api, url)
-    assert rc == 1 and api.status()["state"] == "failure"      # missing Sandbox-Session
+    assert rc == 1 and api.status()["state"] == "failure"      # id names another session
 
 
 def test_secret_added_by_the_pr_fails_the_gate_without_echoing_it(pr, tmp_path):

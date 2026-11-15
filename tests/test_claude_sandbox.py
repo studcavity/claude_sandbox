@@ -965,7 +965,7 @@ def test_the_installed_wrapper_really_lints_a_clones_commits(repo_root, tmp_path
     (clone / "b.txt").write_text("2")
     sh(*git, "-C", str(clone), "add", "-A")
     sh(*git, "-C", str(clone), "commit", "-q", "-m",
-       "feat: ok\n\nSandbox-Session: quirky-hopper")
+       "feat: ok")
     ok = sh("sh", str(wrapper), cwd=clone, env=env, check=False)
     assert ok.returncode == 0 and "0 error(s)" in ok.stdout, ok.stdout + ok.stderr
 

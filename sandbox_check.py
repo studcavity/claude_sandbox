@@ -8,8 +8,8 @@
 
 Prints GitHub annotations (`::error::`, `::warning::`, `::notice::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
-(with --strict, any warning too). If REF is `sbx/<session>/...` every commit
-must also carry a matching `Sandbox-Session` trailer. The follow-up-metadata
+(with --strict, any warning too). If REF is `sbx/<session>/...` every action
+id must name that session. The follow-up-metadata
 rules live in `sandbox_actions.lint_commit`; the rest are below. This file is
 git plumbing plus small pure rules, and is stdlib-only.
 
@@ -557,8 +557,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("base", nargs="?")
     ap.add_argument("head", nargs="?")
-    ap.add_argument("--branch", help="head branch name (decides whether "
-                    "Sandbox-Session is required)")
+    ap.add_argument("--branch", help="head branch name (action ids on "
+                    "sbx/<session>/... must name that session)")
     ap.add_argument("--strict", action="store_true",
                     help="treat warnings as errors")
     ap.add_argument("--post-status", metavar="OWNER/REPO",

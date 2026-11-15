@@ -101,9 +101,9 @@ Any number of sandboxes can run on one repo at once. What keeps them apart:
   Text from the session is sanitised (no live `@mentions`, labelled untrusted).
 - **Follow-up actions.** A commit message can end with
   `Sandbox-Action: {"v": 1, "type": "issue", "id": "<slug>-<YYYYMMDD>-<session>-<4 random>", "title": "..."}`
-  trailers (plus `Sandbox-Session: <session>` on every commit, and a
-  `todo/<id>.md` brief in the same commit; `sandbox_check.py` verifies all
-  three and is meant to run in CI on PRs). After the PRs, the launcher files an issue per unaddressed item
+  trailers (plus a `todo/<id>.md` brief in the same commit; `sandbox_check.py`
+  verifies both and runs in CI on PRs). Which session made a commit is shown
+  by its signature (see "Provenance"), not by its message. After the PRs, the launcher files an issue per unaddressed item
   and comments on the commit with the link (that comment is also the
   idempotency record, so re-running never duplicates). Messages that don't
   match the spec are ignored. New action types are new `(type, version)`
