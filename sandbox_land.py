@@ -22,6 +22,7 @@ import sandbox_deps
 import sandbox_host
 import sandbox_labels
 import sandbox_record
+import sandbox_templates
 import sandbox_untrusted
 from sandbox_github import gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
@@ -125,13 +126,11 @@ def pr_text(session, branch, subjects, record=None):
                                f"{clean_text(tail, 40)} ({len(subjects)} commits)")
     shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
-    body = (f"Opened by claude_sandbox when session `{session}` ended, from "
-            f"branch `{clean_text(branch, 120)}`.\n\n"
-            "Everything below was written by an AI session and is untrusted: "
-            "review the diff, not this text.\n\n"
-            + (record_section(record) + "\n" if record is not None else "")
-            + f"````\n{shown}\n````\n"
-            + (f"\n...and {more} more commits.\n" if more > 0 else ""))
+    body = sandbox_templates.render(
+        "pr.md", session=session, branch=clean_text(branch, 120),
+        record=(record_section(record) + "\n") if record is not None else "",
+        subjects=shown,
+        more=f"\n...and {more} more commits.\n" if more > 0 else "")
     return title, body
 
 

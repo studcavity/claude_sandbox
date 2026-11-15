@@ -77,6 +77,7 @@ import urllib.parse
 
 import sandbox_labels
 import sandbox_names
+import sandbox_templates
 import sandbox_untrusted
 
 TRAILER = "Sandbox-Action"
@@ -381,13 +382,10 @@ def _issue(ctx, a):
     labels = [sandbox_labels.SANDBOX, sandbox_labels.FOLLOW_UP] + (
         [sandbox_labels.session_label(session)] if session else [])
     ensure_labels(ctx, labels)
-    text = (
-        f"Follow-up requested by commit {a.sha} (session `{session or ctx.session}`), "
-        f"item `{a.id}`.\n\n"
-        f"{_defang(clean_block(body, MAX_BODY))}{brief_text}\n\n---\n"
-        "Filed by claude_sandbox from a `Sandbox-Action` trailer. The text "
-        "above was written by an AI session and is untrusted.\n"
-        f"<!-- {MARKER} sha={a.sha} id={a.id} -->")
+    text = (sandbox_templates.render(
+        "issue.md", commit=a.sha, session=session or ctx.session, item=a.id,
+        body=_defang(clean_block(body, MAX_BODY)), brief=brief_text)
+        + f"\n<!-- {MARKER} sha={a.sha} id={a.id} -->")
     issue = ctx.api("POST", f"/repos/{ctx.repo}/issues",
                     {"title": clean_line(title, MAX_TITLE), "body": text,
                      "labels": labels})
