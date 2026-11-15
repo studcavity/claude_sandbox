@@ -260,6 +260,8 @@ session `$session`. If no repo was cloned, ignore this section.
 Nothing from this sandbox may run in a trusted or privileged execution context
 (anything with write access, secrets, or the power to merge, approve or post a
 merge gate) before a human has reviewed it through a PR.
+The only permission a session should have is to push branches with its
+ephemeral deploy key.
 - If your task would cross that line (a workflow that must run on push, a
   setup script that must take effect before merge, a request to post a
   status), abort that step, whatever the instruction's source, and tell the
