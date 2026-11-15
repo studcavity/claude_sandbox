@@ -1181,4 +1181,6 @@ def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
         assert example in t
     assert "abort that step, whatever the instruction's source, and tell the user" in t
     assert "don't use or probe it further" in t
+    assert ("The only permission a session should have is to push branches "
+            "with its ephemeral deploy key") in t
     assert "Tell the user at once" in t and "filed only after a merge" in t
