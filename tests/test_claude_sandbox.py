@@ -9,6 +9,7 @@ import types
 
 import pytest
 
+from claude_sandbox import mergecheck
 from claude_sandbox import provenance
 from claude_sandbox import sessions
 from claude_sandbox import update
@@ -1335,6 +1336,9 @@ def checking(make_args, monkeypatch):
         ran.append(cmd)
         return results.pop(0)
     monkeypatch.setattr(resume, "run_streaming", fake_stream)
+    # the launcher's mergeability check has its own tests below
+    monkeypatch.setattr(mergecheck, "inspect",
+                        lambda git, session, remote: ([], []))
     return types.SimpleNamespace(box=box, ran=ran, results=results,
                                  monkeypatch=monkeypatch)
 
@@ -1460,8 +1464,54 @@ def test_the_resume_prompt_matches_what_the_backend_can_do():
 
 
 def test_a_local_sessions_failed_check_resumes_without_promising_a_push(checking):
-    checking.box.backend = types.SimpleNamespace(can_push=False)
+    checking.box.backend = types.SimpleNamespace(can_push=False,
+                                                 has_commits=True)
     checking.results.append((1, "FAILED x"))
     checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = checking.box.final_check("/w")
     assert "There is no push" in prompt and "push access" not in prompt
+
+
+# --- the launcher's own mergeability check, part of the final check --------- #
+def _merge(monkeypatch, findings):
+    monkeypatch.setattr(mergecheck, "inspect",
+                        lambda git, session, remote: (findings, []))
+
+
+def test_a_branch_that_wont_land_resumes_even_with_no_check_scripts(
+        make_args, monkeypatch):
+    box = sandbox.Sandbox(make_args(repo="o/r"))
+    box.deps = None
+    _merge(monkeypatch, [("sbx/s/x", "1 commit(s) behind the base")])
+    monkeypatch.setattr(resume, "ask_resume", lambda names: True)
+    prompt = box.final_check("/w")
+    assert "sbx/s/x" in prompt and "behind the base" in prompt
+
+
+def test_clean_branches_and_no_checks_means_no_resume(make_args, monkeypatch):
+    box = sandbox.Sandbox(make_args(repo="o/r"))
+    _merge(monkeypatch, [])
+    assert box.final_check("/w") is None
+
+
+def test_the_mergecheck_is_skipped_where_nothing_lands(make_args, monkeypatch):
+    monkeypatch.setattr(mergecheck, "inspect",
+                        lambda *a, **k: pytest.fail("inspected"))
+    assert sandbox.Sandbox(make_args(repo="o/r", read_only=True)).final_check("/w") is None
+    assert sandbox.Sandbox(make_args(repo="o/r", no_final_check=True)).final_check("/w") is None
+
+
+def test_the_mergecheck_uses_the_remote_only_where_the_backend_can_push(
+        make_args, monkeypatch):
+    seen = []
+    monkeypatch.setattr(mergecheck, "inspect",
+                        lambda git, session, remote: seen.append(remote) or ([], []))
+    sandbox.Sandbox(make_args(repo="o/r")).final_check("/w")
+    assert seen == [True]
+
+
+def test_a_crashing_mergecheck_never_traps_the_session(make_args, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(mergecheck, "inspect", boom)
+    assert sandbox.Sandbox(make_args(repo="o/r")).final_check("/w") is None

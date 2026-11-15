@@ -410,11 +410,6 @@ protection settings; it doesn't tell you.
   origin && git rebase origin/HEAD`) so its PR is a clean fast-forward.
 - If a push is rejected because the remote moved, rebase onto it
   (`git pull --rebase`), re-run the relevant checks, and push again.
-- **When wrapping up a task, check for conflicts with `origin/main`:** `git
-  fetch origin && git rebase origin/HEAD` (or `git merge-tree --write-tree
-  origin/HEAD HEAD` to look first). Resolve any conflicts now, re-run the
-  checks and push: nobody can fix them once the container is gone and the PR
-  exists. Do this for every branch you push. A clean rebase isn't proof: another merged PR can break your tests or its own without a textual conflict, so re-run the whole suite after rebasing. `sandbox-check` warns while you're behind.
 - After rebasing a branch you already pushed, update it with `git push
   --force-with-lease`. That is allowed **only on your own `$prefix` branches**.
   Never force-push anything else, and don't rewrite commits that came from
@@ -427,6 +422,9 @@ protection settings; it doesn't tell you.
 - Rewriting your own `$prefix` branches is fine. Don't rewrite commits that
   came from the base unless the user explicitly asks.
 <!-- end -->
+- When you exit, the launcher checks each of your branches for conflicts with,
+  or being behind, its base, and offers to reopen this session if any is: no
+  need to check yourself.
 - Never rewrite history at or beyond a fork boundary. If this repo is a fork
   (or otherwise contains commits that came from another repo, e.g. upstream
   commits pulled into a fork), only treat commits that we authored in this
