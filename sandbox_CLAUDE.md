@@ -224,7 +224,7 @@ silently work around it, fake it, or give up. Instead:
 ## Session identity and branches
 Other sessions may be working in this same repo **at the same time**. You are
 session `$session`. If no repo was cloned, ignore this section.
-- Work only on branches under `$prefix`. You start on `$prefix`work. For a
+- Work only on branches under `$prefix`. You start on your session branch (see Access). For a
   separate task, branch from the default branch: `git fetch origin && git
   switch -c $prefix<task> origin/HEAD`.
 - **Never push to the default branch, and never touch another session's

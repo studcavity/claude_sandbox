@@ -789,6 +789,15 @@ def test_clone_puts_session_on_its_own_branch(make_args, monkeypatch):
     assert "checkout -q -b sbx/quirky-hopper/work" in cmds[-1]
 
 
+def test_task_names_the_session_branch(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", name="quirky-hopper",
+                   task="Add a LocalBackend; drop $(rm -rf /)")
+    cmds = []
+    monkeypatch.setattr(box.box, "user", lambda s, **k: cmds.append(s))
+    box.clone()
+    assert "checkout -q -b sbx/quirky-hopper/add-a-localbackend-drop-rm-rf" in cmds[-1]
+
+
 def test_read_only_session_makes_no_branch(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch, repo="o/r", read_only=True)
     cmds = []

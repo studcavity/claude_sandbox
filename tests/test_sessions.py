@@ -35,6 +35,25 @@ def test_branch_names_use_sbx_not_claude():
     assert ss.work_branch("quirky-hopper") == "sbx/quirky-hopper/work"
 
 
+@pytest.mark.parametrize("task,slug", [
+    ("Add a LocalBackend", "add-a-localbackend"),
+    ("  Fix: the `foo/bar` bug!! ", "fix-the-foo-bar-bug"),
+    ("../../etc; rm -rf", "etc-rm-rf"),
+    ("", ""), (None, ""), ("!!!", ""),
+    ("x" * 100, "x" * 40),
+    ("implement a local backend instead of github one for repos",
+     "implement-a-local-backend-instead-of"),
+])
+def test_task_slug(task, slug):
+    assert ss.task_slug(task) == slug
+    assert len(slug) <= ss.TASK_SLUG_MAX
+
+
+def test_work_branch_uses_task_slug_or_falls_back():
+    assert ss.work_branch("s", "Add LocalBackend") == "sbx/s/add-localbackend"
+    assert ss.work_branch("s", "???") == "sbx/s/work"
+
+
 def test_host_id_is_key_title_safe():
     assert ss.host_id("my host_1!") == "my-host-1"
     assert ss.host_id("") != ""

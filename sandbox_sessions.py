@@ -78,8 +78,29 @@ def branch_prefix(session):
     return f"{BRANCH_ROOT}/{session}/"
 
 
-def work_branch(session):
-    return branch_prefix(session) + "work"
+TASK_SLUG_MAX = 40
+
+
+def task_slug(task, limit=TASK_SLUG_MAX):
+    """A short branch-safe slug of a task description ('' if nothing usable).
+
+    Lowercase ASCII words joined by hyphens, cut at a word boundary so it
+    never ends mid-word (unless one word alone exceeds `limit`).
+    """
+    words = re.findall(r"[a-z0-9]+", (task or "").lower())
+    slug = ""
+    for w in words:
+        nxt = f"{slug}-{w}" if slug else w
+        if len(nxt) > limit:
+            return slug or w[:limit]
+        slug = nxt
+    return slug
+
+
+def work_branch(session, task=None):
+    """The branch a session starts on: `sbx/<session>/<task slug>`, or
+    `sbx/<session>/work` when there is no task."""
+    return branch_prefix(session) + (task_slug(task) or "work")
 
 
 def host_id(hostname=None):
