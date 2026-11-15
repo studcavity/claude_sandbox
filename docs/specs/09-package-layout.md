@@ -7,7 +7,7 @@ the same lines, so the merge-conflict risk of parallel branches is high).
 Spec 05 says stacked PRs get no CI (the workflows run only for PRs based on
 `main`), so PR 2 is checked locally and re-based onto `main` once PR 1 merges. Settled with the user: grouped
 subpackages, `scripts/sandbox_check.py` beside the shell scripts, `rulesets/`
-under `config/`, a pure move first and the clean-up in a second PR.
+under `config/` (reversed in PR 2, below), a pure move first and the clean-up in a second PR.
 
 ## Problem
 
@@ -42,7 +42,8 @@ structure.
   thin command line, which finds the package by putting the repo root (the
   parent of its own directory) on `sys.path`. The sandbox gets all of
   `portable/`, so the old hand-kept copy list is gone.
-- **`config/rulesets/`** replaces `rulesets/`.
+- **`config/rulesets/`** replaces `rulesets/` (PR 1 only: PR 2 moved it back,
+  see the PR 2 log).
 - **`claude_sandbox/data/`** holds what the code reads at run time:
   `sandbox_CLAUDE.md`, `sandbox_ref_deps.md`, `templates/`. File names are
   unchanged. Paths come from one module, `claude_sandbox/paths.py`.
@@ -77,7 +78,7 @@ structure.
 | `sandbox_bootstrap`, `_claude_config`, `_sessions`, `_provenance`, `_timing`, `_update`, `_util` | `bootstrap.py`, `claude_config.py`, `sessions.py`, `provenance.py`, `timing.py`, `update.py`, `util.py` |
 | `sandbox_check.py` | `portable/check.py` + `scripts/sandbox_check.py` (entry) |
 | `smoke.sh`, `final-check.sh` | `scripts/` |
-| `rulesets/` | `config/rulesets/` |
+| `rulesets/` | `config/rulesets/` in PR 1; back to `rulesets/` in PR 2 |
 | `sandbox_CLAUDE.md`, `sandbox_ref_deps.md`, `templates/` | `claude_sandbox/data/` |
 
 ## Things this changes beyond file names
@@ -141,3 +142,13 @@ Record progress here, in the commit that does each item.
 8. Run `./smoke.sh` on a host with incus and record `Verified: ./smoke.sh`.
 9. Rewrite the README module table and `CLAUDE.md` file references for any
    names PR 2 changes.
+
+## PR 2 log (branch `sbx/agile-hamilton/package-cleanup`, stacked on PR 1)
+
+Done in this order, one commit each. Item numbers refer to the list above.
+
+- **Item 7, decided with the user: move the rulesets back.** All of
+  `rulesets/` returns to the repo root, which restores the old behaviour
+  exactly (launching against this repo offers its own rulesets again; the
+  launcher's `protect-main.json` was always one of them). `config/` is gone,
+  because it held nothing else. `paths.RULESETS` points at the root again.
