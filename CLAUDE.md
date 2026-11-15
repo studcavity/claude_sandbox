@@ -69,7 +69,7 @@ run both before every commit and judge them by exit status (`pytest | tail`
 hides a failure).
 
 CI (`.github/workflows/tests.yml`) runs pyflakes, mypy, shellcheck and pytest
-on Python 3.10, 3.12 and 3.13, on pushes to `main` and PRs from this repo (not
+on Python 3.12 and 3.14 (the versions in Ubuntu 24.04 and 26.04 LTS), on pushes to `main` and PRs from this repo (not
 forks). Its `integration` job installs incus and runs `tests/integration` for
 real (failing if they are skipped), including `test_launch.py` as a "Smoke"
 step: the real launch lifecycle in an Ubuntu container with only GitHub faked.
