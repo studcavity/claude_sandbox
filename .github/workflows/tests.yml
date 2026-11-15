@@ -41,7 +41,16 @@ jobs:
       - name: Lint (shellcheck)
         run: shellcheck run.sh smoke.sh .githooks/*
       - name: Run tests
-        run: python -m pytest -rs
+        run: |
+          set +e
+          python -m pytest -rs -rf 2>&1 | tee pytest.out
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            # Surface failures as annotations: visible in the checks UI and
+            # readable through the public API without a token.
+            grep -E '^(FAILED|ERROR) ' pytest.out | head -20 | sed 's/^/::error::/'
+          fi
+          exit "$rc"
 
   # Real-container tests (tests/integration). GitHub's ubuntu runners are VMs,
   # so incus runs natively here; no nesting needed. Same trigger rules as above.
