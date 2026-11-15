@@ -20,6 +20,7 @@ say the check itself can't be trusted (tip can't be pinned, branch moved) are
 never overridable.
 """
 import collections
+import concurrent.futures
 import re
 import urllib.parse
 
@@ -198,7 +199,18 @@ def session_branches(repo, session=None, api=None):
     return [n for n in names if n.startswith(prefix)]
 
 
-def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
+def _compare_path(repo, default, branch):
+    return f"/repos/{repo}/compare/{_q(default)}...{_q(branch)}"
+
+
+def _open_pr_path(repo, branch):
+    owner = repo.split("/")[0]
+    return (f"/repos/{repo}/pulls?state=open&per_page=1&head="
+            f"{urllib.parse.quote(owner + ':' + branch, safe='')}")
+
+
+def land_branch(repo, branch, default, extra_sensitive=(), confirm=None,
+                compare=None, open_prs=None):
     """Open a PR for one branch -> Landed. Outcomes: 'empty' (nothing ahead
     of the default branch), 'held' (privileged files), 'exists' (open PR url)
     or 'opened' (PR url).
@@ -208,9 +220,14 @@ def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
 
     `confirm(branch, detail) -> bool`, when given, is asked before a branch
     held for its files is opened anyway; None (non-interactive) keeps the hold.
+
+    `compare` and `open_prs` are optional zero-argument callables returning the
+    two read-only GitHub answers this needs (see `land`, which fetches them
+    concurrently); by default each is fetched here, when first needed.
     """
     session = branch.split("/")[1] if branch.count("/") >= 2 else "unknown"
-    cum = gh_api("GET", f"/repos/{repo}/compare/{_q(default)}...{_q(branch)}")
+    cum = (compare or (lambda: gh_api(
+        "GET", _compare_path(repo, default, branch))))()
     if not cum.get("ahead_by"):
         return Landed(branch, default, "empty", "", 0)
     files = [f["filename"] for f in cum.get("files") or []]
@@ -228,9 +245,7 @@ def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
         return Landed(branch, default, "held", "couldn't pin the branch tip "
                       "(250+ commits?)", cum["ahead_by"])
 
-    owner = repo.split("/")[0]
-    open_ = gh_api("GET", f"/repos/{repo}/pulls?state=open&per_page=1&head="
-                          f"{urllib.parse.quote(owner + ':' + branch, safe='')}")
+    open_ = (open_prs or (lambda: gh_api("GET", _open_pr_path(repo, branch))))()
     if open_:
         return Landed(branch, open_[0].get("base", {}).get("ref", default),
                       "exists", open_[0]["html_url"], cum["ahead_by"])
@@ -301,14 +316,31 @@ def setup_script_paths(repo, default):
     return [s["path"] for s in deps.get("setup") or []]
 
 
+MAX_PARALLEL_READS = 4   # polite to GitHub's secondary rate limits
+
+
 def land(repo, session=None, confirm=None):
     """Open PRs for a session's branches (all sessions' if session is None)
-    -> [Landed]. Each PR targets the default branch."""
-    default = gh_api("GET", f"/repos/{repo}")["default_branch"]
-    branches = session_branches(repo, session)
-    extra_sensitive = setup_script_paths(repo, default) if branches else []
-    return [land_branch(repo, b, default, extra_sensitive, confirm)
-            for b in branches]
+    -> [Landed]. Each PR targets the default branch.
+
+    The reads are independent, so they run concurrently: first the default
+    branch and the branch list, then the deps file and, per branch, its
+    compare and its open-PR check. Everything that writes, asks the user
+    (`confirm` may read stdin) or decides stays sequential on this thread, in
+    branch order. Callers revoke the session's key first, so the branches
+    can't move between these reads and the PRs (see head_moved)."""
+    with concurrent.futures.ThreadPoolExecutor(MAX_PARALLEL_READS) as pool:
+        default_f = pool.submit(gh_api, "GET", f"/repos/{repo}")
+        branches = session_branches(repo, session)
+        default = default_f.result()["default_branch"]
+        extra_f = pool.submit(setup_script_paths, repo, default) if branches else None
+        reads = [(pool.submit(gh_api, "GET", _compare_path(repo, default, b)),
+                  pool.submit(gh_api, "GET", _open_pr_path(repo, b)))
+                 for b in branches]
+        extra_sensitive = extra_f.result() if extra_f else []
+        return [land_branch(repo, b, default, extra_sensitive, confirm,
+                            compare=cmp_f.result, open_prs=open_f.result)
+                for b, (cmp_f, open_f) in zip(branches, reads)]
 
 
 def pr_number(url):

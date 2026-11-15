@@ -1,4 +1,6 @@
 """Tests for sandbox_land: sensitive-path holds, untrusted text, PR flow."""
+import threading
+
 import pytest
 
 import sandbox_land as sl
@@ -442,3 +444,36 @@ def test_title_is_the_proposed_one_with_the_session_appended():
     assert t == "Add the thing [sess]"
     t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], [], None)
     assert t == "[sess] feat: one"          # no proposal: built from the subjects
+
+
+def test_land_reads_run_concurrently_but_writes_stay_on_this_thread(monkeypatch):
+    """The compare and open-PR reads of every branch overlap (a barrier only
+    releases when all four are in flight at once); the PR POSTs and the user
+    prompt stay on the calling thread, in branch order."""
+    branches = ["sbx/s/a", "sbx/s/b"]
+    api = Api({}, branches=branches)
+    barrier = threading.Barrier(2 * len(branches), timeout=5)
+    main = threading.current_thread()
+    writers, prompts = [], []
+
+    def gated(method, path, body=None, raw=False):
+        if "/compare/" in path or "/pulls?" in path:
+            barrier.wait()   # raises BrokenBarrierError if reads were serial
+        elif method == "POST":
+            writers.append(threading.current_thread())
+        return api(method, path, body, raw)
+    monkeypatch.setattr(sl, "gh_api", gated)
+    results = sl.land("o/r", "s", confirm=lambda b, d: prompts.append(
+        threading.current_thread()))
+    assert [r.branch for r in results] == branches
+    assert [p["head"] for p in api.posted] == branches
+    assert writers and all(t is main for t in writers)
+
+
+def test_land_skips_the_deps_read_when_there_is_nothing_to_land(monkeypatch):
+    seen = []
+    api = Api({}, branches=[])
+    monkeypatch.setattr(sl, "gh_api", lambda m, p, *a, **k: (
+        seen.append(p), api(m, p, *a, **k))[1])
+    assert sl.land("o/r", "s") == []
+    assert not any("contents" in p for p in seen)
