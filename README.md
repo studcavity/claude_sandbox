@@ -222,7 +222,9 @@ launcher can prove which commits a session made:
   merge stays blocked until you re-check:
   `./venv/bin/python sandbox_provenance.py OWNER/REPO --pr N`
   (fixes: drop or re-sign foreign commits; or `git rebase --exec 'git commit
-  --amend --no-edit -S' origin/main` with your own SSH signing key).
+  --amend --no-edit -S' origin/main` with your own SSH signing key);
+  or break glass for this one head commit with `--override "reason"`, which
+  posts success and comments on the PR without checking signatures).
 - What it proves: every commit came from this session or from you. What it
   doesn't: that the session's own commits are benign (it holds its key), or
   that CI didn't already run foreign commits (`pull_request: synchronize` runs
