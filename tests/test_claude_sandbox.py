@@ -1101,3 +1101,71 @@ def test_confirm_held_treats_eof_as_no(monkeypatch):
         raise EOFError
     monkeypatch.setattr("builtins.input", eof)
     assert cs.confirm_held("sbx/s/w", ".github/x") is False
+
+
+# --- one landing pipeline (spec 06, problem 2) ------------------------------- #
+def _pipeline(monkeypatch, land=None, prov=None):
+    calls = []
+
+    def fake_land(repo, session=None, confirm=None):
+        calls.append(("land", repo, session))
+        if land:
+            raise land
+        return [cs.sandbox_land.Landed("sbx/s/work", "main", "opened",
+                                       "https://github.com/o/r/pull/7", 1)]
+
+    def fake_post(repo, landed):
+        calls.append(("provenance", repo, [l.detail for l in landed]))
+        if prov:
+            raise prov
+        return []
+    monkeypatch.setattr(cs.sandbox_land, "land", fake_land)
+    monkeypatch.setattr(cs.sandbox_provenance, "post_session", fake_post)
+    monkeypatch.setattr(cs, "report_landing", lambda *a, **k: None)
+    monkeypatch.setattr(cs, "report_provenance", lambda *a, **k: None)
+    return calls
+
+
+def test_the_pipeline_lands_then_posts_provenance(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch)
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    assert ok and len(landed) == 1
+    assert [c[0] for c in calls] == ["land", "provenance"]
+
+
+def test_a_failed_landing_skips_provenance_but_never_raises(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch, land=cs.GitHubError("down", 0))
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    assert landed == [] and not ok and [c[0] for c in calls] == ["land"]
+
+
+def test_a_failed_provenance_step_never_undoes_the_landing(make_args, monkeypatch):
+    _pipeline(monkeypatch, prov=RuntimeError("boom"))
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), None)
+    assert ok and len(landed) == 1
+
+
+def test_no_pr_and_no_provenance_are_honoured(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch)
+    cs.land_and_report(make_args(repo="o/r"), "s", open_prs=False)
+    assert calls == []
+    cs.land_and_report(make_args(repo="o/r", no_provenance=True), "s")
+    assert [c[0] for c in calls] == ["land"]
+
+
+@pytest.mark.parametrize("kw,code", [({}, 0), ({"land": cs.GitHubError("x", 0)}, 1),
+                                     ({"prov": RuntimeError("boom")}, 0)])
+def test_land_all_goes_through_the_same_pipeline(monkeypatch, kw, code):
+    """--land-all used to repeat the sequence (and an exception from a later
+    step escaped it); both entry points now call land_and_report."""
+    calls = _pipeline(monkeypatch, **kw)
+    monkeypatch.setattr(cs.sandbox_update, "check_for_updates", lambda *a, **k: None)
+    assert cs.main(["o/r", "--land-all", "--no-user-check"]) == code
+    assert calls[0] == ("land", "o/r", None)
+    assert ("provenance" in [c[0] for c in calls]) == (not kw.get("land"))
+
+
+def test_landing_is_called_from_exactly_one_place():
+    import inspect
+    src = inspect.getsource(cs)
+    assert src.count("sandbox_land.land(") == 1

@@ -557,6 +557,32 @@ def report_provenance(outcomes):
         print("\n" + text, file=sys.stderr)
 
 
+def land_and_report(args, session=None, open_prs=True):
+    """The one post-landing sequence, for a session's branches (every
+    session's when `session` is None): open PRs, then post their provenance.
+    Each step has its own try, so one failing never stops the next, and
+    nothing raises. -> (landed, ok), where ok is False if landing failed."""
+    who = session or "all sessions"
+    landed, ok = [], True
+    if open_prs:
+        try:
+            landed = sandbox_land.land(
+                args.repo, session, confirm_held if sys.stdin.isatty() else None)
+            report_landing(landed, session)
+        except Exception as e:
+            ok = False
+            log(f"warning: couldn't open PRs for {who}: {e}"
+                + (f"; push state is on GitHub under "
+                   f"{sandbox_sessions.branch_prefix(session)}" if session else ""))
+    if landed and not args.no_provenance:
+        try:
+            report_provenance(sandbox_provenance.post_session(args.repo, landed))
+        except Exception as e:
+            log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
+                f"for {who}: {e}")
+    return landed, ok
+
+
 def check_workflow_scope():
     """Warn (never fail) if the sandbox WILL be able to push workflow files."""
     try:
@@ -1098,24 +1124,7 @@ class Sandbox:
         a = self.args
         if not a.repo or a.read_only or self.key_id is None:
             return
-        landed = []
-        if not a.no_pr:
-            try:
-                landed = sandbox_land.land(
-                    a.repo, self.session_id,
-                    confirm_held if sys.stdin.isatty() else None)
-                report_landing(landed, self.session_id)
-            except Exception as e:
-                log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
-                    "push state is on GitHub under "
-                    f"{sandbox_sessions.branch_prefix(self.session_id)}")
-        if landed and not a.no_provenance:
-            try:
-                report_provenance(sandbox_provenance.post_session(
-                    a.repo, landed))
-            except Exception as e:
-                log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
-                    f"for {self.session_id}: {e}")
+        land_and_report(a, self.session_id, open_prs=not a.no_pr)
 
     def teardown(self):
         if self._torn_down:
@@ -1364,16 +1373,11 @@ def _launch(args):
                 if bad:
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
-            landed = sandbox_land.land(
-                args.repo, confirm=confirm_held if sys.stdin.isatty() else None)
-            report_landing(landed)
-            if landed and not args.no_provenance:
-                report_provenance(sandbox_provenance.post_session(
-                    args.repo, landed))
+            _, ok = land_and_report(args)
+            return 0 if ok else 1
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        return 0
 
     box = Sandbox(args)
     sandbox_github.start_prefetch(prefetch_plan(args))
