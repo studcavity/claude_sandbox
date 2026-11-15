@@ -32,7 +32,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest               # all tests
 python -m pyflakes *.py tests/ # lint
-shellcheck run.sh              # shell lint (shellcheck is in claude_sandbox_deps.yaml)
+shellcheck run.sh smoke.sh .githooks/*   # shell lint (shellcheck is in claude_sandbox_deps.yaml)
 ```
 
 The tests never touch real containers, GitHub or the network. They mock

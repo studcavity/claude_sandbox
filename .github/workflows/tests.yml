@@ -39,7 +39,7 @@ jobs:
       - name: Lint (pyflakes)
         run: python -m pyflakes *.py tests/
       - name: Lint (shellcheck)
-        run: shellcheck run.sh
+        run: shellcheck run.sh smoke.sh .githooks/*
       - name: Run tests
         run: python -m pytest -rs
 
