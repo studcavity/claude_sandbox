@@ -3,12 +3,12 @@
 These exist because each safety net can be weakened silently: drop one flag
 and everything stays green while a whole class of bug stops being caught.
 """
-import configparser
 import glob
 import os
 import re
 import subprocess
 import sys
+import tomllib
 
 import pytest
 import yaml
@@ -96,14 +96,14 @@ def test_hook_never_blocks_a_push_even_on_garbage(hook_repo):
 
 # -- mypy: the setting that makes it catch the shadowing bug ---------------- #
 def test_mypy_config_checks_untyped_defs(repo_root):
-    cp = configparser.ConfigParser()
-    cp.read(os.path.join(repo_root, "mypy.ini"))
-    assert cp.getboolean("mypy", "check_untyped_defs")
+    with open(os.path.join(repo_root, "pyproject.toml"), "rb") as f:
+        cfg = tomllib.load(f)
+    assert cfg["tool"]["mypy"]["check_untyped_defs"] is True
 
 
 def test_mypy_catches_an_attribute_shadowing_a_method(repo_root, tmp_path):
     """The exact bug that crashed every launch: `self.session = ...` hid the
-    session() method. With the repo's mypy.ini, mypy must flag it."""
+    session() method. With the repo's pyproject.toml, mypy must flag it."""
     src = tmp_path / "shadow.py"
     src.write_text("class Sandbox:\n"
                    "    def __init__(self, name):\n"
@@ -112,7 +112,7 @@ def test_mypy_catches_an_attribute_shadowing_a_method(repo_root, tmp_path):
                    "        return workdir\n")
     p = subprocess.run(
         [sys.executable, "-m", "mypy", "--config-file",
-         os.path.join(repo_root, "mypy.ini"), "--cache-dir", os.devnull,
+         os.path.join(repo_root, "pyproject.toml"), "--cache-dir", os.devnull,
          str(src)], capture_output=True, text=True, cwd=tmp_path)
     assert p.returncode != 0
     assert "method-assign" in p.stdout or "Cannot assign to a method" in p.stdout

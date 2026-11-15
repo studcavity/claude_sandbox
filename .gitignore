@@ -22,3 +22,4 @@ Thumbs.db
 # local env / secrets
 .env
 .venv.lock
+build/
