@@ -802,14 +802,16 @@ def test_actions_run_after_prs_even_with_no_pr_and_honour_no_actions(
         make_args, monkeypatch):
     got = []
     monkeypatch.setattr(cs.sandbox_actions, "run",
-                        lambda *a: got.append(a) or [])
+                        lambda *a, **kw: got.append((a, kw)) or [])
     monkeypatch.setattr(cs.sandbox_land, "land",
                         lambda *a: pytest.fail("landed"))
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=True,
                    name="quirky-hopper")
     box.key_id = 1
     box.land()
-    assert got == [("o/r", "quirky-hopper")]
+    # the caps travel from the flags to the filer
+    assert got == [(("o/r", "quirky-hopper"),
+                    {"limits": {"actions": 25, "issues": 10}})]
     got.clear()
     box.args.no_actions = True
     box.land()

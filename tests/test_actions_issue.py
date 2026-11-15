@@ -188,3 +188,59 @@ def test_a_brief_read_error_other_than_404_fails_and_stays_retryable():
     (o,) = run(api, (A, msg(issue("i1"))))
     assert o.status == "failed" and created(api) == []
     assert api.posts("/comments") == []
+
+
+# --- 3f caps ------------------------------------------------------------------ #
+def many(n, prefix="i"):
+    return msg(*[issue(f"{prefix}{k}", f"Item {k}") for k in range(n)])
+
+
+def ids_of(outcomes, status):
+    return [o.id for o in outcomes if o.status == status]
+
+
+def test_a_session_is_capped_and_the_excess_is_reported_not_silently_dropped():
+    api = Api()
+    out = run(api, (A, many(13)), session="sess")
+    assert len(ids_of(out, "done")) == sa.MAX_ISSUES_PER_SESSION == 10
+    rejected = [o for o in out if o.status == "rejected"]
+    assert len(rejected) == 3 and "cap 10" in rejected[0].detail
+    assert "--max-issues" in rejected[0].detail
+    assert len(created(api)) == 10
+
+
+def test_the_cap_counts_issues_already_filed_so_a_rerun_cannot_dodge_it():
+    api = Api()
+    run(api, (A, many(10)), session="sess")                  # fills the cap
+    again = run(api, ("b" * 40, many(2, "later")), session="sess")
+    assert [o.status for o in again] == ["rejected", "rejected"]
+    assert len(created(api)) == 10                            # nothing new was filed
+
+
+def test_items_that_already_exist_are_not_blocked_by_the_cap():
+    api = Api()
+    run(api, (A, many(10)), session="sess")
+    out = run(api, (A, many(10)), session="sess")             # same items again
+    assert set(o.status for o in out) == {"exists"}
+
+
+def test_the_cap_is_per_session_not_per_repo():
+    api = Api()
+    run(api, (A, many(10)), session="one")
+    out = run(api, ("b" * 40, many(2, "x")), session="two")
+    assert ids_of(out, "done") == ["x0", "x1"]
+
+
+def test_limits_are_configurable():
+    api = Api()
+    acts = sa.parse_commits([(A, many(6))])
+    out = sa.execute(sa.Context("o/r", "sess", [], api, None,
+                                {"issues": 2, "actions": 4}), acts)
+    assert len(out) == 4                                       # --max-actions
+    assert len(ids_of(out, "done")) == 2                       # --max-issues
+    assert len(ids_of(out, "rejected")) == 2
+
+
+def test_default_limits_apply_when_none_are_given():
+    ctx = sa.Context("o/r", "s", [], None)
+    assert sa.limit(ctx, "actions") == 25 and sa.limit(ctx, "issues") == 10

@@ -377,6 +377,11 @@ def report_landing(results, session=None):
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
 
 
+def action_limits(args):
+    """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
+    return {"actions": args.max_actions, "issues": args.max_issues}
+
+
 def report_statuses(outcomes):
     """Print the exit summary of `sandbox/check` statuses (to stderr)."""
     text = sandbox_check.format_status_outcomes(outcomes)
@@ -887,7 +892,8 @@ class Sandbox:
                     f"for {self.session_id}: {e}")
         if not a.no_actions:
             try:
-                report_actions(sandbox_actions.run(a.repo, self.session_id))
+                report_actions(sandbox_actions.run(
+                    a.repo, self.session_id, limits=action_limits(a)))
             except Exception as e:
                 log(f"warning: couldn't run follow-up actions for "
                     f"{self.session_id}: {e}")
@@ -951,6 +957,14 @@ def build_parser():
                    help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
                         "status on the session's PRs (it is only posted where "
                         "the repo's ruleset requires it)")
+    p.add_argument("--max-actions", type=int, metavar="N",
+                   default=sandbox_actions.MAX_ACTIONS,
+                   help="most Sandbox-Action items to carry out per run "
+                        "(default %(default)s)")
+    p.add_argument("--max-issues", type=int, metavar="N",
+                   default=sandbox_actions.MAX_ISSUES_PER_SESSION,
+                   help="most issues one session may have in a repo, counting "
+                        "ones already filed (default %(default)s)")
     p.add_argument("--no-actions", action="store_true",
                    help="don't act on `Sandbox-Action:` trailers in the "
                         "session's commit messages (e.g. file follow-up issues)")
@@ -1106,7 +1120,8 @@ def main(argv=None):
                 report_statuses(sandbox_check.post_session_statuses(
                     args.repo, landed))
             if not args.no_actions:
-                report_actions(sandbox_actions.run(args.repo))
+                report_actions(sandbox_actions.run(
+                    args.repo, limits=action_limits(args)))
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1

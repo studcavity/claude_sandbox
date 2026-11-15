@@ -495,7 +495,7 @@ class DryRunApi:
 
 
 def file_issues_run(repo, since=None, last=DEFAULT_LAST, dry_run=False,
-                    api=None, cwd=None, out=print):
+                    api=None, cwd=None, out=print, limits=None):
     """Scan commits for Sandbox-Action trailers and carry them out -> exit code
     (0 ok, 1 if any item failed)."""
     import sandbox_github
@@ -505,7 +505,7 @@ def file_issues_run(repo, since=None, last=DEFAULT_LAST, dry_run=False,
         api = DryRunApi(api)
     actions = sandbox_actions.parse_commits(read_commits(since, last, cwd=cwd))
     outcomes = sandbox_actions.execute(
-        sandbox_actions.Context(repo, "all", [], api), actions)
+        sandbox_actions.Context(repo, "all", [], api, None, limits), actions)
     if dry_run:
         for method, path, body in api.writes:
             if path.endswith("/issues") and method == "POST":
@@ -565,14 +565,23 @@ def main(argv=None):
                     f"(default {DEFAULT_LAST}; ignored with --since)")
     ap.add_argument("--dry-run", action="store_true",
                     help="with --file-issues: show what would be filed")
+    ap.add_argument("--max-actions", type=int, metavar="N",
+                    default=sandbox_actions.MAX_ACTIONS,
+                    help="with --file-issues: items to carry out (default %(default)s)")
+    ap.add_argument("--max-issues", type=int, metavar="N",
+                    default=sandbox_actions.MAX_ISSUES_PER_SESSION,
+                    help="with --file-issues: issues one session may have "
+                    "(default %(default)s)")
     a = ap.parse_args(argv)
     if a.file_issues:
         if a.post_status or a.pr or a.override or a.base or a.head or a.branch:
             ap.error("--file-issues stands alone (use --since/--last/--dry-run)")
-        if a.last < 1:
-            ap.error("--last must be at least 1")
+        if a.last < 1 or a.max_actions < 1 or a.max_issues < 1:
+            ap.error("--last, --max-actions and --max-issues must be at least 1")
         try:
-            return file_issues_run(a.file_issues, a.since, a.last, a.dry_run)
+            return file_issues_run(a.file_issues, a.since, a.last, a.dry_run,
+                                   limits={"actions": a.max_actions,
+                                           "issues": a.max_issues})
         except CheckError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1

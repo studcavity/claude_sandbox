@@ -118,3 +118,17 @@ def test_cli_combinations(argv):
     with pytest.raises(SystemExit) as e:
         sc.main(argv)
     assert e.value.code == 2
+
+
+def test_file_issues_honours_the_limits(repo):
+    # real ids carry the session, which is what the per-session cap counts
+    repo.commit(msg(*[issue(f"t{k}-20261115-quirky-hopper-a3f{k}", f"T{k}")
+                      for k in range(5)]), {"a.txt": "1"})
+    api = Api()
+    rc, lines = run(api, limits={"issues": 2, "actions": 25})
+    assert len(issues(api)) == 2 and "REJECTED (policy)" in "\n".join(lines)
+
+
+def test_cli_rejects_nonpositive_limits():
+    with pytest.raises(SystemExit):
+        sc.main(["--file-issues", "o/r", "--max-issues", "0"])

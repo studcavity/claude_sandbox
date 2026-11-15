@@ -84,7 +84,8 @@ ID_MAX = 100          # was 40; ids now carry date + session + random suffix
 ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,%d}$" % ID_MAX)
 REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,%d})$" % ID_MAX)
 SESSION_RE = sandbox_names.SESSION_RE
-MAX_ACTIONS = 25      # executed per run, across all commits
+MAX_ACTIONS = 25      # executed per run, across all commits (--max-actions)
+MAX_ISSUES_PER_SESSION = 10   # issues one session may have, existing + new (--max-issues)
 MAX_LINE = 8000       # a trailer line longer than this is ignored
 MAX_TITLE = 120
 MAX_BODY = 4000
@@ -264,8 +265,14 @@ class PolicyRejected(Rejected):
 
 # `cache` is per-run scratch (labels ensured, issues already filed); execute()
 # supplies it, so callers can keep building Context(repo, session, branches, api).
-Context = collections.namedtuple("Context", "repo session branches api cache",
-                                 defaults=(None,))
+Context = collections.namedtuple("Context", "repo session branches api cache limits",
+                                 defaults=(None, None))
+
+
+def limit(ctx, name):
+    """A configured cap (`actions` per run, `issues` per session)."""
+    default = {"actions": MAX_ACTIONS, "issues": MAX_ISSUES_PER_SESSION}[name]
+    return int((ctx.limits or {}).get(name, default))
 
 
 class Reused(str):
@@ -291,6 +298,7 @@ def known_issues(ctx):
     if "issues" in ctx.cache:
         return ctx.cache["issues"]
     found: dict = {}
+    counts: dict = {}
     for page in range(1, MAX_LEDGER_PAGES + 1):
         items = ctx.api("GET", f"/repos/{ctx.repo}/issues?labels=sandbox"
                         f"&state=all&per_page=100&page={page}") or []
@@ -299,10 +307,16 @@ def known_issues(ctx):
                 continue
             m = _LEDGER_RE.search(it.get("body") or "")
             if m:
-                found.setdefault((m.group(1), m.group(2)), it["html_url"])
+                if (m.group(1), m.group(2)) not in found:
+                    found[(m.group(1), m.group(2))] = it["html_url"]
+                    for lab in it.get("labels") or []:
+                        name = lab.get("name", "") if isinstance(lab, dict) else lab
+                        if name.startswith("session:"):
+                            counts[name[8:]] = counts.get(name[8:], 0) + 1
         if len(items) < 100:
             break
     ctx.cache["issues"] = found
+    ctx.cache["counts"] = counts
     return found
 
 
@@ -358,6 +372,13 @@ def _issue(ctx, a):
     existing = known_issues(ctx).get((a.sha, a.id))
     if existing:
         return Reused(existing)
+    session = session_of(ctx, a)
+    cap = limit(ctx, "issues")
+    have = ctx.cache["counts"].get(session, 0) if session else 0
+    if session and have >= cap:
+        raise PolicyRejected(
+            f"not filed: session {session} already has {have} issues here "
+            f"(cap {cap}; the launcher's --max-issues raises it)")
     brief = fetch_brief(ctx, a)
     hits = sandbox_untrusted.find_secrets(brief or "")
     if hits:
@@ -371,7 +392,6 @@ def _issue(ctx, a):
                       f"{_defang(clean_block(brief, MAX_BRIEF))}\n\n"
                       f"[Full file at that commit](https://github.com/{ctx.repo}"
                       f"/blob/{a.sha}/{todo_path(a.id)})")
-    session = session_of(ctx, a)
     labels = ["sandbox", "follow-up"] + ([f"session:{session}"] if session else [])
     ensure_labels(ctx, labels)
     text = (
@@ -385,6 +405,8 @@ def _issue(ctx, a):
                     {"title": clean_line(title, MAX_TITLE), "body": text,
                      "labels": labels})
     ctx.cache["issues"][(a.sha, a.id)] = issue["html_url"]
+    if session:
+        ctx.cache["counts"][session] = have + 1
     return issue["html_url"]
 
 
@@ -413,10 +435,10 @@ def _resolved_refs(actions):
     return out
 
 
-def plan(actions):
+def plan(actions, cap=None):
     """-> (to_run, superseded): executable, understood, unaddressed actions
-    (capped at MAX_ACTIONS) and those skipped because a later commit
-    resolved them."""
+    (capped at `cap`, default MAX_ACTIONS) and those skipped because a later
+    commit resolved them."""
     resolved = _resolved_refs(actions)
     run: list = []
     skipped: list = []
@@ -424,7 +446,7 @@ def plan(actions):
         if (a.type, a.v) not in HANDLERS:
             continue
         (skipped if (a.sha, a.id) in resolved else run).append(a)
-    return run[:MAX_ACTIONS], skipped
+    return run[:MAX_ACTIONS if cap is None else cap], skipped
 
 
 # --- idempotency ledger: a marker comment on the commit -------------------- #
@@ -451,7 +473,7 @@ def execute(ctx, actions):
     """Plan and carry out -> [Outcome]. One failure never stops the rest."""
     if ctx.cache is None:
         ctx = ctx._replace(cache={})
-    to_run, skipped = plan(actions)
+    to_run, skipped = plan(actions, limit(ctx, "actions"))
     out = [Outcome(a.sha, a.id, a.type, "superseded", "") for a in skipped]
     done = {}
     for a in to_run:
@@ -493,7 +515,7 @@ def session_commits(api, repo, default, branches):
     return out
 
 
-def run(repo, session=None, api=None):
+def run(repo, session=None, api=None, limits=None):
     """Find and execute the actions in a session's (or every session's, if
     None) unmerged commits -> [Outcome]."""
     import sandbox_github
@@ -502,7 +524,8 @@ def run(repo, session=None, api=None):
     default = api("GET", f"/repos/{repo}")["default_branch"]
     branches = sandbox_land.session_branches(repo, session, api)
     actions = parse_commits(session_commits(api, repo, default, branches))
-    return execute(Context(repo, session or "all", branches, api), actions)
+    return execute(Context(repo, session or "all", branches, api, None, limits),
+                   actions)
 
 
 def format_outcomes(outcomes):
