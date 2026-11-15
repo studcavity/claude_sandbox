@@ -142,10 +142,12 @@ SESSION_TOOL_WRAPPER = """#!/bin/sh
 set -eu
 tool="${HOME}/.local/share/claude-sandbox/sandbox_check.py"
 if [ "$#" -gt 0 ]; then exec python3 "$tool" "$@"; fi
+# Best effort: without a fresh origin the "behind" check would be stale.
+timeout 30 git fetch -q origin || echo "sandbox-check: fetch failed; behind-check may be stale" >&2
 base=$(git rev-parse --verify -q origin/HEAD || git rev-parse --verify -q origin/main \
        || git rev-parse --verify -q origin/master) || {
   echo "sandbox-check: can't find origin's default branch" >&2; exit 2; }
-exec python3 "$tool" "$base" HEAD
+exec python3 "$tool" --fresh "$base" HEAD
 """
 
 

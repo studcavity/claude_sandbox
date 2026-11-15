@@ -1,6 +1,6 @@
 """sandbox_check.py - lint the work record of a range of commits (CI).
 
-    python sandbox_check.py BASE HEAD [--strict]
+    python sandbox_check.py BASE HEAD [--strict] [--fresh]
 
 Prints GitHub annotations (`::error::` and `::warning::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
@@ -20,6 +20,7 @@ Rules and severities
          commit ADDS (checked per commit, so a secret added and later removed
          is still caught: it stays in history)
   warn   subject isn't `type: summary` (conventional commits)
+  warn   (--fresh only) HEAD is behind BASE: rebase and re-run the tests
   warn   source files changed but no test file changed anywhere in the range
 
 A line that deliberately contains a fake credential can't be marked as
@@ -215,6 +216,20 @@ def check_findings(base, head, exists=None, cwd=None):
     return out
 
 
+def behind_finding(base, head, cwd=None):
+    """-> Finding or None: `head` lacks commits that `base` has. A rebase can
+    be textually clean while the combined tree fails its tests (two PRs each
+    green on their own base), and CI no longer forces branches up to date, so
+    the session must rebase and re-run the suite itself."""
+    out = git("rev-list", "--count", f"{head}..{base}", cwd=cwd).strip()
+    if not out.isdigit() or int(out) == 0:
+        return None
+    return Finding("", WARNING,
+                   f"{head} is {out} commit(s) behind {base}: rebase on it and "
+                   "re-run the whole test suite before finishing (a clean "
+                   "rebase can still break tests)", None, None)
+
+
 def check_range(base, head):
     """-> [(short sha, problem)]: the errors only (the original contract)."""
     return [(f.sha, f.text) for f in check_findings(base, head)
@@ -246,10 +261,16 @@ def main(argv=None):
     ap.add_argument("head", nargs="?")
     ap.add_argument("--strict", action="store_true",
                     help="treat warnings as errors")
+    ap.add_argument("--fresh", action="store_true",
+                    help="warn if HEAD is behind BASE (for a session's own use)")
     a = ap.parse_args(argv)
     if not (a.base and a.head):
         ap.error("BASE and HEAD are required")
     findings = check_findings(a.base, a.head)
+    if a.fresh:
+        behind = behind_finding(a.base, a.head)
+        if behind:
+            findings.append(behind)
     for f in findings:
         print(annotation(f))
     errors = sum(f.severity == ERROR for f in findings)

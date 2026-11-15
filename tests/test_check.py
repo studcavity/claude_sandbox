@@ -116,3 +116,21 @@ def test_branch_session_parsing():
     assert sandbox_names.branch_session(f"refs/heads/sbx/{s}/a/b") == s
     for ref in (None, "", "main", "sbx/x", "feature/sbx/x/y"):
         assert sandbox_names.branch_session(ref) is None
+
+
+def test_behind_finding_warns_when_head_lacks_base_commits(repo, tmp_path):
+    repo("feat: one", "b.txt")
+    subprocess.run(["git", "branch", "side", "main~1"], cwd=tmp_path, check=True)
+    f = sc.behind_finding("main", "side")
+    assert f.severity == sc.WARNING and "1 commit(s) behind" in f.text
+    assert "re-run the whole test suite" in f.text
+    assert sc.behind_finding("side", "main") is None  # main contains side
+
+
+def test_fresh_flag_adds_the_warning_but_not_an_error(repo, tmp_path, capsys):
+    repo("feat: one", "b.txt")
+    subprocess.run(["git", "branch", "side", "main~1"], cwd=tmp_path, check=True)
+    assert sc.main(["--fresh", "main", "side"]) == 0
+    assert "behind main" in capsys.readouterr().out
+    assert sc.main(["main", "side"]) == 0
+    assert "behind" not in capsys.readouterr().out
