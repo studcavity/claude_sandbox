@@ -29,7 +29,7 @@ import sandbox_labels
 import sandbox_record
 import sandbox_templates
 import sandbox_untrusted
-from sandbox_github import gh_api
+from sandbox_github import GitHubError, gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
 
 # One row of the exit summary. base is the PR's target (the default branch, or
@@ -281,12 +281,34 @@ def head_moved(pr, tip):
             f"{head[:7] or 'an unknown head'})")
 
 
-def land(repo, session=None, extra_sensitive=(), confirm=None):
+def setup_script_paths(repo, default):
+    """Repo-relative `setup:` script paths in the default branch's deps file.
+
+    Read here, at landing time, so the review hold doesn't depend on how the
+    launcher was run (--land-all and --no-deps never parse the deps file). A
+    branch that *adds* a setup entry edits the deps file itself, which is held
+    anyway. No file, or one that doesn't parse, means no scripts: an invalid
+    file aborts every launch, so nothing in it would run."""
+    try:
+        raw = gh_api("GET", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}"
+                            f"?ref={_q(default)}", raw=True)
+        deps = sandbox_deps.parse(raw)
+    except GitHubError as e:
+        if e.code != 404:
+            raise
+        return []
+    except sandbox_deps.DepsError:
+        return []
+    return [s["path"] for s in deps.get("setup") or []]
+
+
+def land(repo, session=None, confirm=None):
     """Open PRs for a session's branches (all sessions' if session is None)
     -> [Landed]. A session's branches may stack on each other, never on
     another session's."""
     default = gh_api("GET", f"/repos/{repo}")["default_branch"]
     branches = session_branches(repo, session)
+    extra_sensitive = setup_script_paths(repo, default) if branches else []
     by_session = collections.defaultdict(list)
     for b in branches:
         by_session[b.split("/")[1]].append(b)

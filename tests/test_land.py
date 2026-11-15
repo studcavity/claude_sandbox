@@ -2,6 +2,7 @@
 import pytest
 
 import sandbox_land as sl
+from sandbox_github import GitHubError
 
 
 def test_sensitive_paths():
@@ -37,8 +38,9 @@ class Api:
     """Fake GitHub. compares: {(base, head): compare-dict}; unknown pairs are
     'ahead by 1' so simple tests need only the default-branch compare."""
 
-    def __init__(self, compares, pulls=(), branches=("sbx/s/work",)):
+    def __init__(self, compares, pulls=(), branches=("sbx/s/work",), deps=None):
         self.compares, self.pulls, self.posted = compares, list(pulls), []
+        self.deps = deps  # raw claude_sandbox_deps.yaml on the default branch
         self.branches = list(branches)
         self.label_calls, self.fail_labels = [], False
         self.head_sha, self.patched = TIP, []
@@ -46,6 +48,11 @@ class Api:
     def __call__(self, method, path, body=None, raw=False):
         if path == "/repos/o/r":
             return {"default_branch": "main"}
+        if "/contents/claude_sandbox_deps.yaml" in path:
+            assert raw and path.endswith("?ref=main")
+            if self.deps is None:
+                raise GitHubError("not found", 404)
+            return self.deps
         if "/git/matching-refs/" in path:
             return [{"ref": f"refs/heads/{b}"} for b in self.branches]
         if "/compare/" in path:
@@ -114,9 +121,35 @@ def test_land_outcomes_never_open_when_not_due(monkeypatch, compare, pulls,
     assert api.posted == []
 
 
-def test_land_holds_setup_scripts(monkeypatch):
-    monkeypatch.setattr(sl, "gh_api", Api(main_cmp(cmp_(files=["t/setup.sh"]))))
-    assert sl.land("o/r", "s", ["t/setup.sh"])[0].outcome == "held"
+SETUP_DEPS = b"setup:\n  - name: prep\n    path: t/setup.sh\n"
+
+
+def test_land_holds_setup_scripts_named_in_the_default_branchs_deps(monkeypatch):
+    """The hold comes from the deps file on the default branch, read at
+    landing time, so it doesn't depend on which launcher path landed (a
+    --land-all or --no-deps run never parses the deps file)."""
+    api = Api(main_cmp(cmp_(files=["t/setup.sh"])), deps=SETUP_DEPS)
+    monkeypatch.setattr(sl, "gh_api", api)
+    assert sl.land("o/r", "s")[0].outcome == "held"
+    assert api.posted == []
+    assert sl.land("o/r")[0].outcome == "held"  # session=None, as --land-all
+
+
+def test_setup_script_paths_tolerates_missing_or_broken_deps(monkeypatch):
+    monkeypatch.setattr(sl, "gh_api", Api({}))
+    assert sl.setup_script_paths("o/r", "main") == []
+    monkeypatch.setattr(sl, "gh_api", Api({}, deps=b"setup: [not a list of maps"))
+    assert sl.setup_script_paths("o/r", "main") == []
+    monkeypatch.setattr(sl, "gh_api", Api({}, deps=SETUP_DEPS))
+    assert sl.setup_script_paths("o/r", "main") == ["t/setup.sh"]
+
+
+def test_setup_script_paths_surfaces_other_github_errors(monkeypatch):
+    def boom(*a, **kw):
+        raise GitHubError("rate limited", 403)
+    monkeypatch.setattr(sl, "gh_api", boom)
+    with pytest.raises(GitHubError):
+        sl.setup_script_paths("o/r", "main")
 
 
 def test_confirmed_hold_opens_the_pr(monkeypatch):

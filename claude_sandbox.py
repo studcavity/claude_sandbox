@@ -454,12 +454,6 @@ def check_expected_user(login, expected):
             "that is intended.")
 
 
-def setup_paths(deps):
-    """Repo-relative `setup:` script paths from parsed deps (they run with
-    extra privilege in future sandboxes, so a PR touching them is held)."""
-    return [s["path"] for s in (deps or {}).get("setup") or []]
-
-
 def confirm_held(branch, detail):
     """Ask whether to open a PR for a branch held for touching privileged
     files. Default no; no answer (EOF) is no. Both strings are session text,
@@ -1130,7 +1124,7 @@ class Sandbox:
         if not a.no_pr:
             try:
                 landed = sandbox_land.land(
-                    a.repo, self.session_id, setup_paths(self.deps),
+                    a.repo, self.session_id,
                     confirm_held if sys.stdin.isatty() else None)
                 report_landing(landed, self.session_id)
             except Exception as e:

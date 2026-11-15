@@ -796,19 +796,21 @@ def test_land_failure_never_blocks_teardown(make_args, monkeypatch):
     box.land()  # logs a warning, does not raise
 
 
-def test_land_passes_session_and_setup_scripts(make_args, monkeypatch):
+def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
+    """Setup-script holds are decided inside sandbox_land (from the default
+    branch's deps file), not by what this launch happened to parse."""
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False,
-                   name="quirky-hopper")
-    box.key_id, box.deps = 1, {"setup": [{"path": "t/setup.sh"}]}
+                   name="quirky-hopper", no_deps=True)
+    box.key_id, box.deps = 1, None
     got = []
     monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: got.append(a) or [])
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.land()
-    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], None)]  # no prompt
+    assert got == [("o/r", "quirky-hopper", None)]  # no prompt
     got.clear()
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
     box.land()
-    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], cs.confirm_held)]
+    assert got == [("o/r", "quirky-hopper", cs.confirm_held)]
 
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
