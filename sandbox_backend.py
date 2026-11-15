@@ -58,6 +58,12 @@ class Backend(abc.ABC):
         return True
 
     @property
+    def can_push(self) -> bool:
+        """Whether the session can push its work to a remote itself (else
+        the launcher copies it out at the end)."""
+        return False
+
+    @property
     def has_commits(self) -> bool:
         """Whether the session makes commits that come back to the user (so
         they are signed and linted)."""

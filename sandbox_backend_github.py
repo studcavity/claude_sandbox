@@ -253,6 +253,10 @@ class GitHubBackend(Backend):
         return bool(self.args.repo)
 
     @property
+    def can_push(self):
+        return self.has_commits
+
+    @property
     def has_commits(self):
         return bool(self.args.repo and not self.args.read_only)
 
