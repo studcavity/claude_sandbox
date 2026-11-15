@@ -6,8 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-# Read-only token; `pull_request` (not `pull_request_target`) never exposes
-# secrets to PR code.
+# Read-only token. `pull_request` withholds secrets from *fork* PRs only: a PR
+# from a branch in this repo (every sandbox session's PR) runs the branch's
+# own workflow code WITH repo Actions secrets. This workflow uses none; keep
+# it that way, and put real secrets in an Environment limited to the default
+# branch. The launcher never opens a PR that edits .github/.
 permissions:
   contents: read
 

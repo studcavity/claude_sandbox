@@ -57,6 +57,8 @@ On every launch the program:
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
+| `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
+| `sandbox_land.py` | host-side: open PRs for a session's branches, hold privileged ones |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
@@ -68,6 +70,55 @@ python -m pytest
 ```
 CI runs the suite (plus pyflakes and shellcheck) on pushes to `main` and on
 PRs from branches in this repo. See `CLAUDE.md` for testing conventions.
+
+## concurrent sessions
+Any number of sandboxes can run on one repo at once. What keeps them apart:
+- **Identity.** Each session gets a Docker-style id (`quirky-hopper`; or
+  `--name`), used as the container name, in its deploy key's title
+  (`ephemeral <host>:<id>`) and in its branch names.
+- **Branches.** The clone starts on `sbx/<id>/work`; the session is told to use
+  only `sbx/<id>/*`, never the default branch or another session's branches.
+- **PRs, opened by the launcher.** When a session ends, the launcher (host,
+  your `gh` login) opens a PR for each of its pushed branches. **No GitHub
+  credential enters the sandbox**: it can push with its deploy key and nothing
+  else, so it can't open, approve or merge PRs. `--no-pr` skips this;
+  `./run.sh REPO --land-all` opens PRs for every unmerged `sbx/*` branch
+  (recovery after a crashed launcher; it also grabs live sessions' work).
+  Text from the session is sanitised (no live `@mentions`, labelled untrusted).
+- **Held, not opened:** a branch that changes `.github/`, `.githooks/`,
+  `CODEOWNERS`, the deps/host files or a `setup:` script gets no PR; the
+  launcher says so and you review the branch by hand. Those files run with
+  extra privilege (CI with Actions secrets; root and the deploy key in every
+  future sandbox), so they are how an injected session would persist.
+- **Merging is yours.** The launcher never merges and there is no auto-merge:
+  a PR that merges itself would let one injected session change `main`.
+  Merge each PR with GitHub's rebase or squash button (history stays linear).
+- **Stale keys.** A launcher killed by SIGKILL or a reboot leaves its write
+  deploy key behind. Each launch deletes this host's keys whose container no
+  longer exists; live siblings' keys and other hosts' keys are never touched.
+- **Image and venv builds** are serialised with file locks, so simultaneous
+  first launches build once instead of racing.
+
+### What actually protects `main`
+A deploy key can push to *any* branch, so the branch prefix is advice, not a
+permission. The enforcement is GitHub-side. Apply the ruleset once per repo
+(needs admin; review it first; it also blocks *you* pushing straight to
+`main`, because it has no bypass actors):
+```
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/protect-main.json
+```
+It requires PRs for the default branch and blocks force-push, deletion and
+merge commits. Add a `required_status_checks` rule for your CI jobs (names are
+repo-specific, so they aren't in the file). Each launch warns if the default
+branch doesn't require PRs. Also:
+- Keep repo Actions secrets minimal. A PR from a same-repo branch runs the
+  branch's workflow code *with* secrets; put real secrets in an Environment
+  restricted to the default branch.
+- Not provided: GitHub's merge queue (unavailable on personal-account repos)
+  and auto-merge. Without a queue, enable "require branches up to date" and
+  use the "Update branch" button when PRs collide.
+- A session can still force-push or add commits to *another* session's branch,
+  which is why the diff, not the branch name, is what you review.
 
 ## USB passthrough
 Sandboxes get no host hardware by default. Two separate repo files exist on

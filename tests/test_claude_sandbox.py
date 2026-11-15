@@ -684,3 +684,115 @@ def test_claude_md_stresses_ephemeral_session(repo_root):
 def test_claude_md_documents_commit_message_followups(repo_root):
     md = _render(repo_root, [])
     assert "Follow-up:" in md and "git log --grep='Follow-up'" in md
+
+
+# --------------------------------------------------------------------------- #
+# concurrent sessions: identity, branches, landing
+# --------------------------------------------------------------------------- #
+def test_session_id_is_the_container_name_and_avoids_existing(make_args,
+                                                              monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs.Container, "list_names",
+                        staticmethod(lambda cli: seen.setdefault("n", {"x"})))
+    box = cs.Sandbox(make_args(name=None))
+    assert box.session == box.name and "claude" not in box.name
+    assert cs.sandbox_sessions.validate_session(box.name)
+
+
+def test_bad_name_is_rejected_up_front():
+    p = cs.build_parser()
+    args = p.parse_args(["repo", "--name", "a/b"])
+    with pytest.raises(ValueError):
+        cs.normalize_args(args)
+
+
+def test_land_all_needs_a_repo():
+    args = cs.build_parser().parse_args(["--account-key", "--land-all"])
+    with pytest.raises(ValueError, match="--land-all"):
+        cs.normalize_args(args)
+
+
+def test_clone_puts_session_on_its_own_branch(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", name="quirky-hopper")
+    cmds = []
+    monkeypatch.setattr(box.box, "user", lambda s, **k: cmds.append(s))
+    box.clone()
+    assert "checkout -q -b sbx/quirky-hopper/work" in cmds[-1]
+
+
+def test_read_only_session_makes_no_branch(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", read_only=True)
+    cmds = []
+    monkeypatch.setattr(box.box, "user", lambda s, **k: cmds.append(s))
+    box.clone()
+    assert len(cmds) == 1 and "checkout" not in cmds[0]
+
+
+def test_deploy_key_title_names_host_and_session(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", name="quirky-hopper")
+    posted = []
+    monkeypatch.setattr(box.box, "user", lambda s, **k: type(
+        "R", (), {"stdout": "ssh-ed25519 AAA"})())
+    monkeypatch.setattr(cs, "gh_api", lambda m, p, body=None, raw=False:
+                        posted.append(body) or {"id": 7, "ssh_keys": []})
+    box.provision_key()
+    key = [b for b in posted if b and "key" in b][0]
+    assert key["title"] == f"ephemeral {cs.sandbox_sessions.host_id()}:quirky-hopper"
+
+
+@pytest.mark.parametrize("kw", [dict(no_pr=True), dict(read_only=True),
+                                dict(repo=None)])
+def test_land_is_skipped_when_it_should_be(make_args, monkeypatch, kw):
+    base = dict(repo="o/r", no_pr=False)
+    box = _sandbox(make_args, monkeypatch, **{**base, **kw})
+    box.key_id = 1
+    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    box.land()
+
+
+def test_land_is_skipped_before_a_key_exists(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False)
+    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    box.land()  # key_id is None: the session never got that far
+
+
+def test_land_failure_never_blocks_teardown(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False)
+    box.key_id = 1
+
+    def boom(*a):
+        raise cs.GitHubError("down", 0)
+    monkeypatch.setattr(cs.sandbox_land, "land", boom)
+    box.land()  # logs a warning, does not raise
+
+
+def test_land_passes_session_and_setup_scripts(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False,
+                   name="quirky-hopper")
+    box.key_id, box.deps = 1, {"setup": [{"path": "t/setup.sh"}]}
+    got = []
+    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: got.append(a) or [])
+    box.land()
+    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"])]
+
+
+def test_template_tells_session_its_identity_and_branch_rules(repo_root):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    md = cs.render_claude_md(
+        t, {"sudo": True, "tools": [], "branch": "sbx/quirky-hopper/work",
+            "usb": set()}, "quirky-hopper", "/h/r", "o/r", False, "",
+        session="quirky-hopper")
+    assert "session\n`quirky-hopper`" in md.replace("session `", "session\n`")
+    assert "sbx/quirky-hopper/" in md and "Never push to the default" in md
+    assert "force-with-lease" in md and "claude/" not in md.replace(
+        "claude_sandbox", "").replace("claude-sandbox", "")
+
+
+def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
+    import json
+    rs = json.load(open(os.path.join(repo_root, "rulesets",
+                                     "protect-main.json")))
+    types = {r["type"] for r in rs["rules"]}
+    assert {"pull_request", "non_fast_forward", "deletion"} <= types
+    assert rs["bypass_actors"] == [] and rs["enforcement"] == "active"
+    assert rs["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"]
