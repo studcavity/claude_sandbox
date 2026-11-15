@@ -19,6 +19,7 @@ Pure decisions (ids, ref filtering, argv) are separate from the I/O so they
 can be tested without a container.
 """
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -34,9 +35,10 @@ import sandbox_names
 import sandbox_provenance
 import sandbox_sessions
 import sandbox_untrusted
+import sandbox_volumes
 from sandbox_backend import Backend
-from sandbox_containers import HOME
-from sandbox_util import log
+from sandbox_containers import HOME, Container
+from sandbox_util import log, run
 
 BUNDLE_REF_RE = re.compile(r"^([0-9a-f]{40}|[0-9a-f]{64}) (\S+)$")
 # One path component of a branch name we accept back. Stricter than git's
@@ -577,3 +579,80 @@ def report(primary, base, base_sha, session, imported, key):
     return format_report(primary, base, session, [
         branch_facts(primary, base_sha, session, ref, tip, key, setup)
         for ref, tip in imported])
+
+
+# --------------------------------------------------------------------------- #
+# --recover: import what a crashed launch left on a kept volume
+# --------------------------------------------------------------------------- #
+def kept_volumes(volumes_json, primary):
+    """Kept work volumes of `primary` from `storage volume list --format
+    json` -> [dict(name, session, base, workdir, used_by)]. Entries whose
+    labels don't validate are skipped: they decide paths and refs."""
+    meta = sandbox_volumes.META_PREFIX
+    out = []
+    for v in json.loads(volumes_json or "[]"):
+        cfg = v.get("config") or {}
+        name = v.get("name", "")
+        session, base = cfg.get(meta + "session", ""), cfg.get(meta + "base", "")
+        workdir = cfg.get(meta + "workdir", "")
+        if (v.get("type") != "custom"
+                or not name.startswith(sandbox_volumes.KEEP_PREFIX)
+                or cfg.get(meta + "source") != primary
+                or not sandbox_names.SESSION_RE.match(session)
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base)
+                or not re.fullmatch(r"(/[A-Za-z0-9._-]+){2,}", workdir)
+                or os.path.normpath(workdir) != workdir or ".." in workdir):
+            continue
+        out.append(dict(name=name, session=session, base=base, workdir=workdir,
+                        used_by=list(v.get("used_by") or [])))
+    return out
+
+
+def recover(args, make_image, environ=None):
+    """For each kept volume of this repo that no instance uses: mount it
+    read-only in a throwaway helper container, bundle the session's branches
+    out there (the host never runs git on the volume), import them, and
+    delete the volume once that worked. -> exit status."""
+    cli, primary = args.cli, args.local
+    pool = sandbox_volumes.default_pool(cli)
+    found = kept_volumes(run([cli, "storage", "volume", "list", pool,
+                              "--format", "json"], capture=True).stdout, primary)
+    if not found:
+        log(f"no kept work volumes for {primary}")
+        return 0
+    status, image = 0, None
+    for v in found:
+        if v["used_by"]:
+            log(f"{v['name']} is still in use by {', '.join(v['used_by'])}; "
+                f"stop that first (`{cli} stop ...`)")
+            status = 1
+            continue
+        be = LocalBackend(args, environ, home=os.path.dirname(v["workdir"]))
+        be.base, be.base_sha = v["base"][:12], v["base"]
+        if be.workdir() != v["workdir"]:
+            log(f"warning: {v['name']} was made for {v['workdir']}, not "
+                f"{be.workdir()}; skipped")
+            status = 1
+            continue
+        image = image or make_image()
+        helper = Container(cli, f"cs-recover-{v['session']}"[:63])
+        log(f"recovering session {v['session']} from {v['name']}")
+        try:
+            helper.launch(image, ephemeral=True)
+            run([cli, "config", "device", "add", helper.name, "cs-work", "disk",
+                 f"pool={pool}", f"source={v['name']}", f"path={v['workdir']}",
+                 "readonly=true"], capture=True)
+            be.export(helper, v["session"])
+        except (subprocess.CalledProcessError, RuntimeError, OSError) as e:
+            log(f"warning: couldn't start the recovery container: {e}")
+            be.export_failed = True
+        finally:
+            helper.delete()
+        be.work_kept = True
+        if be.land(v["session"]):
+            run([cli, "storage", "volume", "delete", pool, v["name"]],
+                check=False, capture=True)
+            log(f"deleted {v['name']}")
+        else:
+            status = 1
+    return status

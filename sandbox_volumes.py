@@ -83,6 +83,15 @@ def orphans(volumes_json, now, min_age=ORPHAN_MIN_AGE):
     return found
 
 
+def default_pool(cli):
+    """The storage pool of the default profile's root disk."""
+    out = run([cli, "profile", "device", "get", "default", "root",
+               "pool"], capture=True).stdout.strip()
+    if not out:
+        raise RuntimeError("could not find the default storage pool")
+    return out
+
+
 class Volumes:
     """Create, attach and delete the volumes of one container."""
 
@@ -92,11 +101,7 @@ class Volumes:
         self.created = []
 
     def _discover_pool(self):
-        out = run([self.cli, "profile", "device", "get", "default", "root",
-                   "pool"], capture=True).stdout.strip()
-        if not out:
-            raise RuntimeError("could not find the default storage pool")
-        return out
+        return default_pool(self.cli)
 
     def sweep(self, now=None):
         """Delete leaked volumes from earlier crashed launches."""
