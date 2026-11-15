@@ -39,6 +39,13 @@ concurrency (plan 1b), and a clean way to file issues from plan 5's workflow.
 - Thread safety: confirm the chosen client's session is safe for the thread
   pool in plan 1b, otherwise one client per worker.
 
+## Keep the `api(method, path, body)` seam
+`sandbox_actions`, `sandbox_land`, `sandbox_sessions` and their tests inject a
+plain `api` callable and fake it. Whatever the client, keep that callable as the
+boundary (adapt the library behind it first), and only then introduce typed
+dataclasses call site by call site. Rewriting handlers to library types in one
+go would break the test doubles that PR #4 relies on.
+
 ## Tests
 - `tests/integration/test_gh.py` already drives the real `gh` against a local
   HTTPS server (`GH_HOST` + self-signed cert). Both libraries accept a custom

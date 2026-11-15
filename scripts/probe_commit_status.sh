@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# probe_commit_status.sh - throwaway-repo experiment for docs/plans/05-check-verb.md
+# probe_commit_status.sh - throwaway-repo experiment for docs/plans/05-sandbox-check-delta.md
 #
 # Answers, against real GitHub, whether the launcher can gate PR merges with a
 # commit status posted from the host (no workflow in the repo):
