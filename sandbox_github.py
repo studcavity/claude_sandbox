@@ -173,6 +173,11 @@ def _github_login_live():
     return r.stdout.strip()
 
 
+def repo_owner(repo):
+    """Login of the account that owns `repo`, as GitHub reports it now (so a
+    renamed or transferred repo shows its real owner)."""
+    return gh_api("GET", f"/repos/{repo}")["owner"]["login"]
+
 
 def github_login():
     """Login of the account `gh` is authenticated as (also proves auth works)."""
