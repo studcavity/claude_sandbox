@@ -245,7 +245,7 @@ def run(repo, session=None, api=None):
     import sandbox_land
     api = api or sandbox_github.gh_api
     default = api("GET", f"/repos/{repo}")["default_branch"]
-    branches = sandbox_land.session_branches(repo, session)
+    branches = sandbox_land.session_branches(repo, session, api)
     actions = parse_commits(session_commits(api, repo, default, branches))
     return execute(Context(repo, session or "all", branches, api), actions)
 
