@@ -105,3 +105,19 @@ def test_wait_network_gives_up(monkeypatch):
     monkeypatch.setattr(sc.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match="network"):
         c.wait_network()
+
+
+def test_add_usb_argv(calls):
+    sc.Container("incus", "box").add_usb("2e8a", "000c")
+    assert calls[0][0] == [
+        "incus", "config", "device", "add", "box", "usb-2e8a-000c", "usb",
+        "vendorid=2e8a", "productid=000c", "uid=1000", "gid=1000",
+        "mode=0660"]
+
+
+@pytest.mark.parametrize("vid, pid", [("2E8A", "000c"), ("2e8a", "000c uid=0"),
+                                      ("2e8", "000c"), ("", "")])
+def test_add_usb_rejects_bad_ids(calls, vid, pid):
+    with pytest.raises(ValueError):
+        sc.Container("incus", "box").add_usb(vid, pid)
+    assert calls == []

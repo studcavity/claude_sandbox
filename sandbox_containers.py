@@ -1,10 +1,12 @@
 """sandbox_containers.py - thin wrapper around `lxc`/`incus` for one container."""
+import re
 import subprocess
 import time
 
 from sandbox_util import log, run
 
 USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
+HEX4 = re.compile(r"^[0-9a-f]{4}$")
 
 
 class Container:
@@ -52,6 +54,20 @@ class Container:
              'umask 077 && cat > "$1.tmp" && chmod "$2" "$1.tmp" '
              '&& mv "$1.tmp" "$1"',
              "sh", path, mode], input=data)
+
+    def add_usb(self, vid, pid):
+        """Pass host USB devices matching vid:pid into the container.
+
+        Runs on the host, no shell. Owned by the session user with mode 0660
+        (never world-accessible). Incus attaches every host device with this
+        id, and re-attaches after it re-enumerates. IDs are re-validated here
+        so a caller bug can't smuggle extra device options.
+        """
+        if not (HEX4.match(vid) and HEX4.match(pid)):
+            raise ValueError(f"bad USB id {vid!r}:{pid!r}")
+        run([self.cli, "config", "device", "add", self.name,
+             f"usb-{vid}-{pid}", "usb", f"vendorid={vid}", f"productid={pid}",
+             f"uid={UID}", f"gid={UID}", "mode=0660"])
 
     def self_check(self):
         """Round-trip a file through put_file; raises if the container's exec

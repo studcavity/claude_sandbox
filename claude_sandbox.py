@@ -55,6 +55,7 @@ import sys
 import uuid
 
 import sandbox_deps
+import sandbox_host
 from sandbox_containers import HOME, UID, USER, Container
 from sandbox_github import (GitHubError, gh_api, github_token, token_scopes,
                             validate_repo, workflow_push_warning)
@@ -74,6 +75,8 @@ TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
 DEFAULT_TOKEN_FILE = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
     "claude_sandbox", "oauth_token")
+DEFAULT_USB_ALLOW = os.path.join(os.path.dirname(DEFAULT_TOKEN_FILE),
+                                 "usb_allow")
 SECRETS_FILE = f"{HOME}/.sandbox_secrets"  # inside the container
 
 # Tools listed in the sandbox's CLAUDE.md when present.
@@ -146,9 +149,14 @@ def session_script(workdir, load_secrets, shell=False, model="default",
 def parse_probe(out):
     """Parse the key=value lines printed by the container probe."""
     facts = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    # usb= carries bare vid:pid pairs only. Strings a device reports about
+    # itself (product, serial) are attacker-controlled and never read.
+    usb = {sandbox_host.parse_usb_spec(t) for t in facts.get("usb", "").split()
+           if sandbox_host.USB_SPEC_RE.match(t)}
     return {"sudo": facts.get("sudo", "").strip() == "yes",
             "tools": facts.get("tools", "").split(),
-            "branch": facts.get("branch", "").strip()}
+            "branch": facts.get("branch", "").strip(),
+            "usb": usb}
 
 
 def access_lines(workdir, repo, branch, read_only):
@@ -172,12 +180,12 @@ def access_lines(workdir, repo, branch, read_only):
 
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
-                     deps_note):
+                     deps_note, usb_devices=(), cli="incus"):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file); write $$ for a literal dollar sign. `facts` comes from
+    $deps_file, $host_file, $usb); write $$ for a literal dollar sign. `facts` comes from
     parse_probe().
     """
     branch = facts["branch"]
@@ -193,7 +201,32 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         branch=f" (`{branch}`)" if branch else "",
         deps=deps_note,
         deps_file=sandbox_deps.DEPS_FILE,
+        host_file=sandbox_host.HOST_FILE,
+        usb=sandbox_host.usb_section(usb_devices, cli, container,
+                                     facts["usb"]) or "No USB devices were requested.",
     )
+
+def usb_spec(text):
+    """argparse type for --usb: normalised (vid, pid) text 'vid:pid'."""
+    try:
+        return "%s:%s" % sandbox_host.parse_usb_spec(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
+def ask_usb(req):
+    """Interactive approval of one repo-requested device (default: no)."""
+    print(f"\nThe repo requests USB device "
+          f"\033[1m{req['vendor_id']}:{req['product_id']}\033[0m "
+          f"(name {req['name']!r}).\nIts description (from the repo, "
+          f"untrusted): {sandbox_host.display_text(req['description'])}\n"
+          "Attach it to the sandbox? Only approve hardware you own and trust.",
+          file=sys.stderr)
+    try:
+        return input("Attach? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
 
 def check_workflow_scope(token):
     """Warn (never fail) if the sandbox won't be able to push workflow files."""
@@ -240,6 +273,7 @@ class Sandbox:
         self._torn_down = False
         self.deps = None
         self.deps_baked = False
+        self.usb_devices = []
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{sandbox_deps.DEPS_FILE}`.")
 
@@ -304,6 +338,47 @@ class Sandbox:
             log(f"deps: {l}")
         self.deps = deps if lines else None
         return self.deps
+
+    def resolve_usb(self):
+        """Decide which USB devices to attach (host only, before any build).
+
+        Requests come from the repo's claude_sandbox_host.yaml; grants come
+        only from --usb, the host allowlist or an interactive yes. The host
+        file is separate from the deps file, so it never affects image caches.
+        """
+        a = self.args
+        self.usb_devices = []
+        if a.no_usb:
+            return []
+        requests = []
+        if a.repo:
+            try:
+                raw = gh_api("GET", f"/repos/{a.repo}/contents/"
+                             f"{sandbox_host.HOST_FILE}", self.token, raw=True)
+                requests = sandbox_host.parse(raw)["usb"]
+            except GitHubError as e:
+                if e.code != 404:
+                    raise
+        try:
+            allow = sandbox_host.load_allowlist(a.usb_allow)
+        except ValueError as e:
+            raise RuntimeError(f"USB allowlist: {e}") from None
+        self.usb_devices = sandbox_host.resolve_usb(
+            requests, a.usb, allow, a.repo,
+            ask=ask_usb if sys.stdin.isatty() else None)
+        for d in self.usb_devices:
+            log(f"usb: {d['vendor_id']}:{d['product_id']} "
+                f"{'will be attached' if d['approved'] else 'NOT attached (not approved)'}"
+                f" ({d['source']})")
+        return self.usb_devices
+
+    def attach_usb(self):
+        """Attach approved devices. Runs after install_deps so repo-supplied
+        installers never run with hardware present, and before any credential
+        exists in the container."""
+        for d in self.usb_devices:
+            if d["approved"]:
+                self.box.add_usb(d["vendor_id"], d["product_id"])
 
     def install_deps(self):
         """Install the deps into this container unless the image has them.
@@ -373,6 +448,9 @@ class Sandbox:
         """Render the --claude-md template into ~/.claude/ in the container."""
         probe = self.box.user(
             "sudo -n true 2>/dev/null && echo sudo=yes || echo sudo=no; "
+            "printf 'usb='; for d in /sys/bus/usb/devices/*; do "
+            "[ -r $d/idVendor ] && [ -r $d/idProduct ] && "
+            "printf '%s:%s ' $(cat $d/idVendor) $(cat $d/idProduct); done; echo; "
             "printf 'tools='; for t in " + " ".join(SANDBOX_TOOLS) + "; do "
             "command -v $t >/dev/null && printf '%s ' $t; done; echo; "
             f"printf 'branch='; git -C {shlex.quote(workdir)} "
@@ -384,7 +462,8 @@ class Sandbox:
                               container=self.name, workdir=workdir,
                               repo=self.args.repo,
                               read_only=self.args.read_only,
-                              deps_note=self.deps_note)
+                              deps_note=self.deps_note,
+                              usb_devices=self.usb_devices, cli=self.cli)
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
                       input=md)
 
@@ -503,6 +582,20 @@ def build_parser():
                         "'default' leaves the choice to Claude Code")
     p.add_argument("--no-deps", action="store_true",
                    help=f"don't install the repo's {sandbox_deps.DEPS_FILE}")
+    p.add_argument("--usb", action="append", default=[], metavar="VID:PID",
+                   type=usb_spec,
+                   help="pass the host USB device(s) with this id into the "
+                        "sandbox (repeatable, e.g. 2e8a:000c). The repo's "
+                        f"{sandbox_host.HOST_FILE} can only request devices; "
+                        "this flag, --usb-allow or a prompt grants them")
+    p.add_argument("--no-usb", action="store_true",
+                   help="attach no USB devices, ignoring --usb and the repo's "
+                        "requests")
+    p.add_argument("--usb-allow", dest="usb_allow", default=DEFAULT_USB_ALLOW,
+                   metavar="PATH",
+                   help="allowlist of repo-requested devices attached without "
+                        "a prompt: lines of 'VID:PID [owner/repo]' "
+                        f"(default: {DEFAULT_USB_ALLOW})")
     p.add_argument("--claude-md", metavar="PATH",
                    default=os.path.join(os.path.dirname(
                        os.path.abspath(__file__)), "sandbox_CLAUDE.md"),
@@ -546,6 +639,8 @@ def main(argv=None):
         if not args.no_cache:
             image = ensure_base_image(args.cli, args.image,
                                       args.max_age, args.rebuild)
+        if not args.setup_token:
+            box.resolve_usb()  # prompt now, not after a long image build
         if not args.setup_token and box.load_deps() and not args.no_cache:
             baked = ensure_deps_image(args.cli, image, box.deps,
                                       args.max_age, args.rebuild)
@@ -559,6 +654,7 @@ def main(argv=None):
             return box.setup_token()
         box.install_deps()  # before any credential is in the container
         box.setup_nesting()
+        box.attach_usb()
         box.provision_key()
         box.install_claude()
         workdir = box.clone()

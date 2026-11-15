@@ -1,0 +1,113 @@
+"""Tests for sandbox_host: host-side requests/approval (no containers)."""
+import os
+
+import pytest
+
+import sandbox_deps
+import sandbox_host as sh
+
+GOOD = {"name": "probe", "vendor_id": "2E8A", "product_id": "000C",
+        "description": "Pico debug probe (CMSIS-DAP), SWD"}
+
+
+def _doc(**over):
+    d = dict(GOOD, **over)
+    first, *rest = d.items()
+    return "usb:\n" + f"  - {first[0]}: {first[1]!r}\n" + "".join(
+        f"    {k}: {v!r}\n" for k, v in rest)
+
+
+def test_parse_normalises_and_defaults():
+    (u,) = sh.parse(_doc())["usb"]
+    assert (u["vendor_id"], u["product_id"], u["tools"]) == ("2e8a", "000c", [])
+
+
+@pytest.mark.parametrize("over", [
+    {"vendor_id": "2e8"}, {"vendor_id": "2e8a1"}, {"product_id": "zzzz"},
+    {"name": "-x"}, {"name": "a b"},
+    {"description": "line\nbreak"}, {"description": "x" * 201},
+    {"description": "```yaml"}, {"description": "$HOME"},
+    {"description": "# Heading"}, {"description": ""},
+    {"tools": "pyocd"}, {"tools": ["a b"]}, {"tools": ["a"] * 9},
+    {"extra": "x"},
+])
+def test_parse_rejects(over):
+    with pytest.raises(sandbox_deps.DepsError):
+        sh.parse(_doc(**over))
+
+
+def test_parse_rejects_unknown_top_level_key_and_dupes_and_too_many():
+    with pytest.raises(sandbox_deps.DepsError):
+        sh.parse("apt: [git]")
+    entry = "  - {name: %s, vendor_id: '2e8a', product_id: '%s', description: d}\n"
+    with pytest.raises(sandbox_deps.DepsError, match="names"):
+        sh.parse("usb:\n" + entry % ("a", "0001") + entry % ("a", "0002"))
+    with pytest.raises(sandbox_deps.DepsError, match="vid:pid"):
+        sh.parse("usb:\n" + entry % ("a", "0001") + entry % ("b", "0001"))
+    with pytest.raises(sandbox_deps.DepsError, match="at most"):
+        sh.parse("usb:\n" + "".join(entry % (f"n{i}", f"{i:04x}")
+                                    for i in range(9)))
+
+
+def test_deps_file_rejects_usb_and_host_file_never_touches_cache_key():
+    """usb: lives only in the host file, so it cannot reach the image cache."""
+    with pytest.raises(sandbox_deps.DepsError):
+        sandbox_deps.parse("usb: []")
+    base = sandbox_deps.parse("apt: [git]")
+    import inspect
+    import sandbox_images
+    assert "sandbox_host" not in inspect.getsource(sandbox_images)
+    assert sandbox_deps.cache_key(base)
+
+
+@pytest.mark.parametrize("spec", ["2e8a:000c", "2E8A:000C"])
+def test_parse_usb_spec(spec):
+    assert sh.parse_usb_spec(spec) == ("2e8a", "000c")
+
+
+def test_allowlist_parse_and_fail_closed():
+    got = sh.parse_allowlist("# c\n2e8a:000c\n\n1234:ABCD Me/Repo  # x\n")
+    assert got == {("2e8a", "000c", None), ("1234", "abcd", "me/repo")}
+    for bad in ("2e8a", "2e8a:000c a b", "*:*"):
+        with pytest.raises(ValueError):
+            sh.parse_allowlist(bad)
+
+
+def test_load_allowlist_permissions(tmp_path):
+    assert sh.load_allowlist(str(tmp_path / "none")) == set()
+    f = tmp_path / "a"
+    f.write_text("2e8a:000c\n")
+    os.chmod(f, 0o600)
+    assert sh.load_allowlist(str(f)) == {("2e8a", "000c", None)}
+    os.chmod(f, 0o666)
+    with pytest.raises(ValueError, match="writable"):
+        sh.load_allowlist(str(f))
+
+
+REQ = sh.parse(_doc())["usb"]
+
+
+def _resolve(flags=(), allow=(), repo="me/p", ask=None):
+    return sh.resolve_usb(REQ, list(flags), set(allow), repo, ask)
+
+
+def test_resolve_matrix():
+    assert _resolve()[0]["approved"] is False                 # request only
+    assert _resolve(ask=lambda r: True)[0]["approved"] is True
+    assert _resolve(ask=lambda r: False)[0]["approved"] is False
+    assert _resolve(flags=["2e8a:000c"])[0]["approved"] is True
+    assert _resolve(allow=[("2e8a", "000c", None)])[0]["approved"] is True
+    assert _resolve(allow=[("2e8a", "000c", "me/p")])[0]["approved"] is True
+    assert _resolve(allow=[("2e8a", "000c", "me/other")])[0]["approved"] is False
+    assert _resolve(allow=[("2e8a", "0003", None)])[0]["approved"] is False
+
+
+def test_resolve_flag_wins_but_keeps_repo_text_and_does_not_prompt():
+    (d,) = _resolve(flags=["2e8a:000c"],
+                    ask=lambda r: pytest.fail("must not prompt"))
+    assert d["source"] == "flag" and d["name"] == "probe"
+    assert d["description"].startswith("Pico")
+
+
+def test_display_text_strips_control_chars():
+    assert sh.display_text("a\x1b[31mb\n") == "a?[31mb?"

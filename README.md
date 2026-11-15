@@ -37,6 +37,7 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 | `sandbox_containers.py` | `Container`: thin wrapper over `lxc`/`incus` |
 | `sandbox_github.py` | GitHub REST client, token lookup, repo-name validation |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
+| `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
@@ -48,6 +49,39 @@ python -m pytest
 ```
 CI runs the suite (plus pyflakes and shellcheck) on pushes to `main` and on
 PRs from branches in this repo. See `CLAUDE.md` for testing conventions.
+
+## USB passthrough
+Sandboxes get no host hardware by default. Two separate repo files exist on
+purpose: `claude_sandbox_deps.yaml` says what to *install* (baked into cached
+images) and `claude_sandbox_host.yaml` says what to *borrow from the host* at
+launch. Editing the host file never rebuilds an image, and launchers that
+predate it just ignore it.
+
+```yaml
+# claude_sandbox_host.yaml
+usb:
+  - name: pico-probe
+    vendor_id: "2e8a"        # 4 hex digits, quoted
+    product_id: "000c"
+    description: Raspberry Pi Pico debug probe (CMSIS-DAP)  # plain text, <=200
+    tools: [pyocd]           # optional hints
+```
+The file is a **request**; the repo can't grant itself a device. A device is
+attached only if you approve it:
+- `--usb VID:PID` (repeatable): explicit grant, no repo file needed;
+- the interactive `[y/N]` prompt (default no; skipped without a TTY);
+- `~/.config/claude_sandbox/usb_allow` (`--usb-allow PATH`): lines of
+  `VID:PID` or `VID:PID owner/repo`, attached without a prompt. Must be owned
+  by you and not group/world writable.
+`--no-usb` ignores everything. Devices are attached after the deps install
+(installers never run with hardware present) and before any credential exists.
+Incus attaches *every* host device with that vid:pid, with mode 0660 owned by
+`ubuntu` (the session has `sudo`, so this is hygiene, not a boundary). The
+host must not be using the device, and two sandboxes can't share one.
+Sandbox CLAUDE.md lists what was attached, from a sysfs probe of what the
+container actually sees. Only pass devices you own and trust: USB firmware can
+attack its host, and a debug probe can rewrite whatever it is wired to.
+Not verified against real incus/hardware; see `CLAUDE.md` for the smoke run.
 
 ## model
 Sessions use Sonnet 5.5 (`claude-sonnet-5-5`) by default. Choose another with

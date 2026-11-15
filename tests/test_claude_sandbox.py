@@ -84,8 +84,15 @@ def test_session_script_quotes_workdir_and_prefixes_secrets():
 
 def test_parse_probe():
     facts = cs.parse_probe("sudo=yes\ntools=git rg \nbranch=main\njunk\n")
-    assert facts == {"sudo": True, "tools": ["git", "rg"], "branch": "main"}
-    assert cs.parse_probe("") == {"sudo": False, "tools": [], "branch": ""}
+    assert facts == {"sudo": True, "tools": ["git", "rg"], "branch": "main",
+                     "usb": set()}
+    assert cs.parse_probe("") == {"sudo": False, "tools": [], "branch": "",
+                                  "usb": set()}
+
+
+def test_parse_probe_usb_keeps_only_well_formed_ids():
+    facts = cs.parse_probe("usb=2E8A:000c junk 1234:abcd; $(x) 2e8a:\n")
+    assert facts["usb"] == {("2e8a", "000c")}
 
 
 @pytest.mark.parametrize("repo, read_only, needle", [
@@ -116,7 +123,7 @@ def gh(monkeypatch):
 
     def fake(method, path, token, body=None, raw=False):
         calls.append((method, path))
-        if path.endswith("/contents/" + cs.sandbox_deps.DEPS_FILE):
+        if "/contents/" in path:
             raise cs.GitHubError("nf", 404)
         return {"id": 42}
     monkeypatch.setattr(cs, "gh_api", fake)
@@ -225,3 +232,133 @@ def test_nesting_setup_script_shape():
 
 def test_parser_has_nesting_flag():
     assert cs.build_parser().parse_args(["--nesting"]).nesting is True
+
+
+# --------------------------------------------------------------------------- #
+# USB passthrough: approval flow, ordering, CLAUDE.md
+# --------------------------------------------------------------------------- #
+HOST_YAML = (b'usb:\n  - name: probe\n    vendor_id: "2e8a"\n'
+             b'    product_id: "000c"\n    description: Debug probe\n')
+
+
+@pytest.fixture
+def gh_host(monkeypatch):
+    """GitHub serving a host file that requests 2e8a:000c."""
+    def fake(method, path, token, body=None, raw=False):
+        if path.endswith("/" + cs.sandbox_host.HOST_FILE):
+            return HOST_YAML
+        raise cs.GitHubError("nf", 404)
+    monkeypatch.setattr(cs, "gh_api", fake)
+
+
+def test_usb_request_alone_attaches_nothing(make_args, monkeypatch, gh_host,
+                                            fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    box.box = fake_box
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
+    (dev,) = box.resolve_usb()
+    assert dev["approved"] is False
+    box.attach_usb()
+    assert not [c for c in fake_box.calls if c[0] == "add_usb"]
+
+
+def test_usb_prompt_yes_attaches(make_args, monkeypatch, gh_host, fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    box.box = fake_box
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    box.resolve_usb()
+    box.attach_usb()
+    assert ("add_usb", "2e8a", "000c") in fake_box.calls
+
+
+def test_usb_prompt_default_is_no(make_args, monkeypatch, gh_host):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    assert box.resolve_usb()[0]["approved"] is False
+
+
+def test_usb_flag_grants_without_repo(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, usb=["1234:abcd"])
+    box.box = fake_box
+    box.resolve_usb()
+    box.attach_usb()
+    assert ("add_usb", "1234", "abcd") in fake_box.calls
+
+
+def test_no_usb_overrides_everything(make_args, monkeypatch, gh_host,
+                                     fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="me/p", usb=["2e8a:000c"],
+                   no_usb=True)
+    box.box = fake_box
+    assert box.resolve_usb() == []
+    box.attach_usb()
+    assert fake_box.calls == []
+
+
+def test_usb_allowlist_grants_without_prompt(make_args, monkeypatch, gh_host,
+                                             tmp_path):
+    allow = tmp_path / "allow"
+    allow.write_text("2e8a:000c me/p\n")
+    box = _sandbox(make_args, monkeypatch, repo="me/p", usb_allow=str(allow))
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
+    assert box.resolve_usb()[0]["approved"] is True
+
+
+def test_usb_bad_allowlist_aborts_launch(make_args, monkeypatch, gh_host,
+                                         tmp_path):
+    allow = tmp_path / "allow"
+    allow.write_text("2e8a\n")
+    box = _sandbox(make_args, monkeypatch, repo="me/p", usb_allow=str(allow))
+    with pytest.raises(RuntimeError, match="USB allowlist"):
+        box.resolve_usb()
+
+
+def test_usb_attached_after_deps_before_key(monkeypatch):
+    """Source-order guard: installers run before hardware is present and
+    hardware is attached before any credential is provisioned."""
+    import inspect
+    src = inspect.getsource(cs.main)
+    assert (src.index("box.install_deps()") < src.index("box.attach_usb()")
+            < src.index("box.provision_key()"))
+
+
+@pytest.mark.parametrize("bad", ["2e8a", "2e8a:", ":000c", "2e8a:*",
+                                 "xyz1:0000", "2e8a:000c;rm", "2e8a:00000"])
+def test_usb_flag_rejects_malformed(bad, capsys):
+    with pytest.raises(SystemExit):
+        cs.build_parser().parse_args(["--usb", bad])
+
+
+def test_usb_flag_normalises_case():
+    assert cs.build_parser().parse_args(["--usb", "2E8A:000C"]).usb == ["2e8a:000c"]
+
+
+def _render(repo_root, devices, visible=""):
+    with open(os.path.join(repo_root, "sandbox_CLAUDE.md")) as f:
+        template = f.read()
+    return cs.render_claude_md(
+        template, cs.parse_probe(f"sudo=no\nusb={visible}"), container="c1",
+        workdir="/w", repo="me/p", read_only=False, deps_note="D",
+        usb_devices=devices, cli="incus")
+
+
+def test_claude_md_usb_states(repo_root):
+    dev = lambda n, p, ok: dict(name=n, vendor_id="2e8a", product_id=p,
+                                description="Probe", tools=["pyocd"],
+                                source="repo", approved=ok)
+    md = _render(repo_root, [dev("seen", "000c", True), dev("gone", "0003", True),
+                             dev("no", "0004", False)], "2e8a:000c")
+    assert "`seen` 2e8a:000c, Probe (tools: `pyocd`): attached and visible" in md
+    assert "`gone` 2e8a:0003, Probe (tools: `pyocd`): attached but not visible" in md
+    assert "not approved** by the host user" in md
+    assert ("incus config device add c1 usb-2e8a-000c usb vendorid=2e8a "
+            "productid=000c uid=1000 gid=1000 mode=0660") in md
+    assert not re.search(r"\$[a-z_{]", md), "unsubstituted placeholder"
+
+
+def test_claude_md_without_usb_says_so(repo_root):
+    md = _render(repo_root, [])
+    assert "No USB devices were requested." in md
+    assert "config device add c1" not in md

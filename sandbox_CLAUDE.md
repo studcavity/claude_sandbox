@@ -154,6 +154,30 @@ are what validate your change; the watcher is only for the whole picture
   when you couldn't see it.
 - Pushes that only touch docs, or a branch with no CI, don't need a watcher.
 
+## Host hardware (USB)
+$usb
+
+Host USB devices are never attached by default. A repo can *request* devices in
+`$host_file` (default branch, separate from `$deps_file` and never baked into an
+image), but a request does nothing until the host user approves it with
+`--usb VID:PID`, the launcher's prompt, or their allowlist. You can't attach
+devices from inside the container; the host runs `config device add`. Check
+what you actually have:
+- `ls -l /dev/bus/usb/*/*` (nodes are owned by `$user`, mode 0660)
+- `grep -H . /sys/bus/usb/devices/*/idVendor /sys/bus/usb/devices/*/idProduct` (no `lsusb` needed)
+If a device is "not visible", it is probably unplugged on the host or in use by
+a host process; ask the user. To get one that isn't listed, add a request, commit
+and push, and tell the user to relaunch with `--usb VID:PID`:
+
+```yaml
+usb:                       # requests only; nothing is attached without approval
+  - name: pico-probe       # [A-Za-z0-9._+-]
+    vendor_id: "2e8a"      # 4 hex digits, quoted
+    product_id: "000c"
+    description: Raspberry Pi Pico debug probe (CMSIS-DAP)   # plain text, max 200 chars
+    tools: [pyocd]         # optional hints
+```
+
 ## Missing sandbox capabilities
 If the task needs something this sandbox doesn't provide (access to a device,
 a permission or capability the container lacks, a host service, nested

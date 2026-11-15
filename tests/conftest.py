@@ -29,6 +29,9 @@ class FakeBox:
     def put_file(self, path, data, mode="0644"):
         self.calls.append(("put_file", path, data, mode))
 
+    def add_usb(self, vid, pid):
+        self.calls.append(("add_usb", vid, pid))
+
     def self_check(self):
         self.calls.append(("self_check",))
 
@@ -51,6 +54,8 @@ def make_args(tmp_path):
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
                     rebuild=False, nesting=False, max_age=7, model="default", no_deps=False,
+                    usb=[], no_usb=False,
+                    usb_allow=str(tmp_path / "usb_allow"),
                     claude_md=os.path.join(REPO_ROOT, "sandbox_CLAUDE.md"),
                     setup_token=False,
                     token_file=str(tmp_path / "oauth_token"))
