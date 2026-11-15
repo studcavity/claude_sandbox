@@ -80,6 +80,7 @@ import sandbox_sessions
 import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
+import sandbox_github
 from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
                             token_scopes, validate_repo, workflow_push_warning)
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
@@ -407,6 +408,24 @@ def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
     print("\n" + sandbox_land.format_landing(
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
+
+
+def prefetch_plan(args):
+    """The independent GitHub reads a launch makes, to start together (see
+    sandbox_github.start_prefetch). Mirrors what the launch will actually ask
+    for, so nothing is fetched that a flag turns off."""
+    if not args.repo or args.setup_token or args.land_all or args.no_prefetch:
+        return []
+    repo = args.repo
+    specs: list = [("login",)]
+    if not args.no_deps:
+        specs.append(("api", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}", True))
+    if not args.no_usb:
+        specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
+    if not args.read_only:
+        specs += [("scopes",), ("api", f"/repos/{repo}", False),
+                  ("api", f"/repos/{repo}/keys?per_page=100", False)]
+    return specs
 
 
 def action_limits(args):
@@ -1000,6 +1019,9 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-prefetch", action="store_true",
+                   help="make the launch's GitHub reads one at a time instead "
+                        "of starting the independent ones together")
     p.add_argument("--timings", action="store_true",
                    help="print where the launch spent its time (stages, and "
                         "how many gh / incus calls ran) when it ends")
@@ -1162,6 +1184,7 @@ def main(argv=None):
     try:
         return _launch(args)
     finally:
+        sandbox_github.clear_prefetch()
         if timings is not None:
             sandbox_timing.install(None)
             print("\n" + timings.report(), file=sys.stderr)
@@ -1201,6 +1224,7 @@ def _launch(args):
         return 0
 
     box = Sandbox(args)
+    sandbox_github.start_prefetch(prefetch_plan(args))
     if not args.setup_token:
         with sandbox_timing.stage("github login + scopes"):
             try:

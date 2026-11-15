@@ -70,7 +70,7 @@ def make_args(tmp_path):
     def _make(**kw):
         base = dict(repo=None, repository=None, account_key=False,
                     github_user="studcavity", no_user_check=False,
-                    no_update_check=True, read_only=False, no_pr=False, no_actions=False, no_protect_prompt=False, no_check_status=False, max_actions=25, max_issues=10, timings=False, timings_json=None,
+                    no_update_check=True, read_only=False, no_pr=False, no_actions=False, no_protect_prompt=False, no_check_status=False, max_actions=25, max_issues=10, timings=False, timings_json=None, no_prefetch=False,
                     land_all=False, image=None,
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
@@ -91,3 +91,13 @@ def no_real_pool_check(monkeypatch, request):
     if request.module.__name__ != "test_pool":
         import sandbox_pool
         monkeypatch.setattr(sandbox_pool, "check", lambda cli, grow_to=None: None)
+
+
+@pytest.fixture(autouse=True)
+def no_real_prefetch(monkeypatch, request):
+    """The launch starts GitHub reads in threads through the real gh wrapper;
+    tests fake `gh_api` per module, so keep the prefetch from reaching a real
+    `gh` (test_prefetch turns it back on against a faked `_gh`)."""
+    if request.module.__name__ != "test_prefetch":
+        import sandbox_github
+        monkeypatch.setattr(sandbox_github, "PREFETCH_ENABLED", False)

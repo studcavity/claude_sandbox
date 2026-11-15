@@ -215,3 +215,23 @@ def test_the_report_survives_a_crash(world, monkeypatch, capsys):
 def test_an_unwritable_json_path_is_a_warning_not_a_failure(world, capsys):
     assert cs.main(argv(world, "--timings-json", "/nonexistent-dir/t.json")) == 0
     assert "couldn't write" in capsys.readouterr().err
+
+
+# --- prefetch wiring (plan 1b) -------------------------------------------------- #
+def test_launch_starts_the_prefetch_and_always_clears_it(world, monkeypatch):
+    import sandbox_github
+    seen = []
+    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
+    cleared = []
+    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    assert cs.main(argv(world)) == 0
+    assert seen and ("login",) in seen[0] and cleared == [1]
+
+
+def test_no_prefetch_flag_starts_nothing_but_still_clears(world, monkeypatch):
+    import sandbox_github
+    seen, cleared = [], []
+    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
+    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    assert cs.main(argv(world, "--no-prefetch")) == 0
+    assert seen == [[]] and cleared == [1]

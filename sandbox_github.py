@@ -1,9 +1,13 @@
 """sandbox_github.py - GitHub access via the host's `gh` CLI (run with invoke)."""
+import concurrent.futures
+import functools
 import io
 import json
 import re
 import shlex
+import threading
 import time
+from typing import Any, Callable
 
 from invoke import Context
 from invoke.exceptions import CommandTimedOut
@@ -75,7 +79,7 @@ def _fail(args, r):
                       int(m.group(1)) if m else 0)
 
 
-def gh_api(method, path, body=None, raw=False):
+def _gh_api_live(method, path, body=None, raw=False):
     """Call the GitHub API through `gh api`; raw=True returns bytes."""
     args = ["api", "-X", method, path]
     if raw:
@@ -90,7 +94,77 @@ def gh_api(method, path, body=None, raw=False):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 
-def github_login():
+# --- prefetch -------------------------------------------------------------- #
+# A launch makes ~5 independent GitHub reads back to back (who am I, token
+# scopes, the deps file, the host file, repo info, deploy keys), ~0.35 s each.
+# `start_prefetch` begins them together in threads; the ordinary functions
+# below consume a finished (or running) result once if there is one and
+# otherwise call GitHub as before, so no call site changes, and an exception
+# in a prefetched call replays where the value is used, exactly as a direct
+# call would have raised it. Entries expire (PREFETCH_TTL) so a read can never
+# be served stale much later, and are consumed at most once.
+PREFETCH_ENABLED = True
+PREFETCH_TTL = 120.0
+_prefetched: dict = {}
+_prefetch_lock = threading.Lock()
+_pool = None
+
+
+def _take(key):
+    with _prefetch_lock:
+        entry = _prefetched.pop(key, None)
+    if entry is None or time.monotonic() - entry[1] > PREFETCH_TTL:
+        return None
+    return entry[0]
+
+
+def start_prefetch(specs):
+    """Begin the reads in `specs` concurrently. Each spec is ("login",),
+    ("scopes",) or ("api", path, raw) for a GET. No-op when disabled."""
+    global _pool
+    if not PREFETCH_ENABLED or not specs:
+        return
+    with _prefetch_lock:
+        if _pool is None:
+            _pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=6, thread_name_prefix="prefetch")
+        for spec in specs:
+            job: Callable[[], Any]
+            key: tuple
+            if spec[0] == "api":
+                key = ("api", spec[1], bool(spec[2]))
+                job = functools.partial(_gh_api_live, "GET", spec[1], None,
+                                        bool(spec[2]))
+            elif spec[0] == "login":
+                key, job = ("login",), _github_login_live
+            elif spec[0] == "scopes":
+                key, job = ("scopes",), _token_scopes_live
+            else:
+                raise ValueError(f"unknown prefetch spec {spec!r}")
+            _prefetched[key] = (_pool.submit(job), time.monotonic())
+
+
+def clear_prefetch():
+    """Forget anything unconsumed and stop the workers (end of a launch)."""
+    global _pool
+    with _prefetch_lock:
+        _prefetched.clear()
+        pool, _pool = _pool, None
+    if pool is not None:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def gh_api(method, path, body=None, raw=False):
+    """Call the GitHub API through `gh api`; raw=True returns bytes. A GET that
+    was prefetched is answered from that (once)."""
+    if method == "GET" and body is None:
+        fut = _take(("api", path, bool(raw)))
+        if fut is not None:
+            return fut.result()
+    return _gh_api_live(method, path, body, raw)
+
+
+def _github_login_live():
     """Login of the account `gh` is authenticated as (also proves auth works)."""
     args = ["api", "user", "--jq", ".login"]
     r = _gh(args)
@@ -99,7 +173,14 @@ def github_login():
     return r.stdout.strip()
 
 
-def token_scopes():
+
+def github_login():
+    """Login of the account `gh` is authenticated as (also proves auth works)."""
+    fut = _take(("login",))
+    return fut.result() if fut is not None else _github_login_live()
+
+
+def _token_scopes_live():
     """OAuth scopes of gh's token, or None if GitHub doesn't say
     (fine-grained tokens and GitHub App tokens send no X-OAuth-Scopes)."""
     args = ["api", "-i", "/"]
@@ -111,6 +192,12 @@ def token_scopes():
         if name.strip().lower() == "x-oauth-scopes":
             return {s.strip() for s in value.split(",") if s.strip()}
     return None
+
+
+def token_scopes():
+    """OAuth scopes of gh's token (see _token_scopes_live), prefetched if started."""
+    fut = _take(("scopes",))
+    return fut.result() if fut is not None else _token_scopes_live()
 
 
 WORKFLOW_FIX = ("to allow it, run `gh auth refresh -s workflow` on the host "

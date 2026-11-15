@@ -15,6 +15,7 @@ import collections
 import contextlib
 import json
 import os
+import threading
 import time
 
 Row = collections.namedtuple("Row", "name depth start seconds")
@@ -29,6 +30,7 @@ class Timings:
         self.counters = {}            # label -> [calls, seconds]
         self.marks = {}               # name -> seconds since start (first wins)
         self._depth = 0
+        self._lock = threading.Lock()   # counters are fed from prefetch threads
 
     @contextlib.contextmanager
     def stage(self, name):
@@ -41,9 +43,10 @@ class Timings:
             self.rows.append(Row(name, depth, start - self.t0, self.clock() - start))
 
     def count(self, label, seconds):
-        c = self.counters.setdefault(label, [0, 0.0])
-        c[0] += 1
-        c[1] += seconds
+        with self._lock:
+            c = self.counters.setdefault(label, [0, 0.0])
+            c[0] += 1
+            c[1] += seconds
 
     def mark(self, name):
         self.marks.setdefault(name, self.clock() - self.t0)
