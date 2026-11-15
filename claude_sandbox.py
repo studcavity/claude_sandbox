@@ -315,12 +315,12 @@ def access_lines(workdir, repo, branch, read_only):
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None, protection_note=""):
+                     disk_note="", session=None):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo, $protection); write $$ for a
+    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -329,8 +329,6 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         container=container,
         session=session or container,
         repo=repo or "(no repo)",
-        protection=protection_note or "Not applicable (no repo, or a "
-                                      "read-only key).",
         prefix=sandbox_sessions.branch_prefix(session or container),
         access="\n".join(access_lines(workdir, repo, branch, read_only)),
         user=USER, uid=UID, home=HOME,
@@ -352,28 +350,6 @@ def render_deps_ref(template):
     """Fill the deps-file reference (placeholders: $deps_file, $user)."""
     return string.Template(template).substitute(
         deps_file=sandbox_deps.DEPS_FILE, user=USER)
-
-
-def protection_note(repo, branch, state, checks=()):
-    """Repo-specific text for the sandbox CLAUDE.md about default-branch
-    protection and required status checks."""
-    facts = {
-        "protected": f"`{branch}` already requires pull requests.",
-        "applied": f"The launcher applied the protection ruleset to `{branch}` "
-                   "at the start of this session.",
-        "unprotected": f"`{branch}` does **not** require pull requests: no "
-                       "ruleset is enforcing the branch workflow, so it is "
-                       "only a convention here.",
-        "unknown": f"Whether `{branch}` is protected could not be verified.",
-    }[state]
-    if checks:
-        req = ("Required status checks: " + ", ".join(f"`{c}`" for c in checks)
-               + ".")
-    elif state == "applied":
-        req = "No status checks are required yet."
-    else:
-        req = "Required status checks: none known."
-    return f"{facts} {req} (Repo: `{repo}`.)"
 
 
 def ask_protect(repo, branch, effects):
@@ -643,7 +619,7 @@ class Sandbox:
             Container.list_names(self.cli)
             | sandbox_provenance.recorded_sessions(args.repo))
         self.session_id = sandbox_sessions.validate_session(self.name)
-        self.protection_note = ""
+        self.host_warnings: list = []   # for the user; never in the session's CLAUDE.md
         self.box = Container(self.cli, self.name)
         self.key_id = None
         self.container_up = False
@@ -943,7 +919,6 @@ class Sandbox:
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
                               session=self.session_id,
-                              protection_note=self.protection_note,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
@@ -1047,20 +1022,39 @@ class Sandbox:
     def protect_default_branch(self):
         """Check that the default branch requires PRs; if it doesn't, offer
         (on a terminal, default no) to apply rulesets/protect-main.json.
-        Advice only: never blocks the launch. Records protection_note for the
-        session's CLAUDE.md."""
+        Advice only: never blocks the launch. What is still missing afterwards
+        becomes host-side warnings (self.host_warnings: printed now and in the
+        exit summary); nothing about the repo's protection reaches the
+        session, whatever its state."""
         a = self.args
-        branch, state, checks = "the default branch", "unknown", []
+        branch, state = "the default branch", "unknown"
         try:
             branch, warn, state = sandbox_sessions.check_protection(a.repo)
-            if warn:
-                log(f"warning: {warn}")
             if (state in ("unprotected", "protected")
                     and not a.no_protect_prompt and sys.stdin.isatty()):
-                state, checks = self.offer_protection(branch, state)
+                state, _ = self.offer_protection(branch, state)
         except (GitHubError, OSError, ValueError) as e:
             log(f"warning: couldn't check or apply branch protection: {e}")
-        self.protection_note = protection_note(a.repo, branch, state, checks)
+        required = ci = None
+        if state in ("protected", "applied"):
+            required = sandbox_protect.required_on(a.repo, branch)
+            ci = sandbox_protect.discover_checks(a.repo, branch)
+        self.add_host_warnings(sandbox_protect.gap_warnings(
+            a.repo, branch, state, required, ci or []))
+
+    def add_host_warnings(self, warnings):
+        """Show each now, and keep it for the exit summary."""
+        for w in warnings:
+            log(f"warning: {w}")
+        self.host_warnings.extend(warnings)
+
+    def report_host_warnings(self):
+        """Repeat the launch warnings at exit, where a long session hasn't
+        scrolled them away. Never raises."""
+        if self.host_warnings:
+            print("\nrepo warnings (for you; the session was not told):\n"
+                  + "\n".join(f"  - {w}" for w in self.host_warnings),
+                  file=sys.stderr)
 
     def offer_protection(self, branch, state="unprotected"):
         """Ask, then apply. Returns (state, required_checks).
@@ -1478,6 +1472,7 @@ def _launch(args):
         finally:
             with sandbox_timing.stage("land: PRs, provenance"):
                 box.land()
+            box.report_host_warnings()
     return 0
 
 

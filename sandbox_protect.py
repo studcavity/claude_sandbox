@@ -61,6 +61,76 @@ def discover_checks(repo, branch):
                    if c.get("conclusion") == "success"})
 
 
+def rule_checks(rules):
+    """Check names the effective rules of a branch require (the list GitHub
+    returns for `/rules/branches/<branch>`)."""
+    return {c["context"] for r in rules or []
+            if r.get("type") == "required_status_checks"
+            for c in (r.get("parameters") or {}).get("required_status_checks")
+            or [] if isinstance(c, dict) and c.get("context")}
+
+
+def classic_checks(protection):
+    """Check names a classic branch protection requires (its `contexts` and
+    `checks`)."""
+    rsc = (protection or {}).get("required_status_checks") or {}
+    names = set(rsc.get("contexts") or [])
+    names.update(c["context"] for c in rsc.get("checks") or []
+                 if isinstance(c, dict) and c.get("context"))
+    return names
+
+
+def required_on(repo, branch):
+    """Check names required to merge into `branch` (rulesets and classic
+    protection together), or None if it can't be read."""
+    quoted = urllib.parse.quote(branch, safe="")
+    try:
+        names = rule_checks(gh_api("GET", f"/repos/{repo}/rules/branches/{quoted}"))
+    except GitHubError:
+        return None
+    try:
+        names |= classic_checks(gh_api(
+            "GET", f"/repos/{repo}/branches/{quoted}/protection"))
+    except GitHubError as e:
+        if e.code != 404:
+            return None
+    return names
+
+
+def gap_warnings(repo, branch, state, required, ci):
+    """Plain-text warnings, FOR THE USER, about gaps in `branch`'s protection.
+
+    state: protected | applied | unprotected | unknown. required: the check
+    names the branch requires, or None when that couldn't be read. ci: names
+    that passed on its head commit. These go to the host's terminal at launch
+    and exit and into nothing a session can read: a list of a repo's weak
+    points is a map for a prompt-injected session."""
+    out = []
+    if state == "unprotected":
+        out.append(f"`{branch}` of {repo} does not require pull requests: no "
+                   "ruleset enforces the PR workflow, so nothing stops a "
+                   "direct push (launch on a terminal to be offered "
+                   "rulesets/protect-main.json)")
+    elif state == "unknown":
+        out.append(f"couldn't verify whether `{branch}` of {repo} is protected")
+    if state in ("protected", "applied") and required is not None:
+        ci, missing = sorted(ci), sorted(set(ci) - required)
+        how = (" To require them, add a required_status_checks rule to the "
+               f"ruleset (`gh api repos/{repo}/rulesets` lists its id; README: "
+               "Required status checks).")
+        if not required:
+            out.append(f"no status check is required to merge into `{branch}` "
+                       f"of {repo}"
+                       + (": CI jobs that passed there are "
+                          + ", ".join(f"`{c}`" for c in ci) + "." + how
+                          if ci else ""))
+        elif missing:
+            out.append(f"CI jobs not required to merge into `{branch}` of "
+                       f"{repo}: " + ", ".join(f"`{c}`" for c in missing)
+                       + "." + how)
+    return out
+
+
 def apply_ruleset(repo, ruleset):
     """Create the ruleset; returns its id. Raises GitHubError (e.g. 403/422 when
     the account's plan has no rulesets for this repo, or no admin)."""

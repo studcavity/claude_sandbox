@@ -70,8 +70,14 @@ def flow(make_args, monkeypatch):
                         or st["repo_rulesets"])
     monkeypatch.setattr(cs.sandbox_protect, "discover_checks",
                         lambda r, b: st["checks"])
-    monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset",
-                        lambda r, rs: st["applied"].append(rs) or 1)
+    st.setdefault("required", {"ci"})   # satisfied by default: no gap
+    monkeypatch.setattr(cs.sandbox_protect, "required_on",
+                        lambda r, b: st["required"])
+    def apply(r, rs):
+        st["applied"].append(rs)
+        st["required"] = set(st.get("required", ())) | set(sp.required_checks(rs))
+        return 1
+    monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset", apply)
 
     def answer(*a):
         st["asked"].append(a)
@@ -82,12 +88,16 @@ def flow(make_args, monkeypatch):
     return box, st
 
 
-def test_declined_applies_nothing_and_note_says_unprotected(flow):
+def warned(box):
+    return "\n".join(box.host_warnings)
+
+
+def test_declined_applies_nothing_and_warns_the_user(flow):
     box, st = flow
     st["answers"] = [False]
     box.protect_default_branch()
     assert st["applied"] == []
-    assert "does **not** require pull requests" in box.protection_note
+    assert "does not require pull requests" in warned(box)
 
 
 def test_yes_applies_ruleset_without_checks_by_default(flow):
@@ -96,7 +106,7 @@ def test_yes_applies_ruleset_without_checks_by_default(flow):
     box.protect_default_branch()
     (rs,) = st["applied"]
     assert "required_status_checks" not in {r["type"] for r in rs["rules"]}
-    assert "No status checks are required yet" in box.protection_note
+    assert "does not require" not in warned(box)
 
 
 def test_yes_to_checks_requires_the_discovered_names(flow):
@@ -106,7 +116,7 @@ def test_yes_to_checks_requires_the_discovered_names(flow):
     (rs,) = st["applied"]
     assert rs["rules"][-1]["parameters"]["required_status_checks"] == [
         {"context": "test (3.12)"}]
-    assert "`test (3.12)`" in box.protection_note
+    assert "`test (3.12)`" not in warned(box)  # required now, so no gap
 
 
 def test_no_to_checks_still_applies_base_ruleset(flow):
@@ -122,7 +132,7 @@ def test_never_prompts_when_protected_or_flagged_or_not_a_tty(flow,
     box, st = flow
     st["state"] = "protected"
     box.protect_default_branch()
-    assert st["asked"] == [] and "already requires" in box.protection_note
+    assert st["asked"] == [] and box.host_warnings == []
 
     st["state"] = "unprotected"
     box.args.no_protect_prompt = True
@@ -139,7 +149,7 @@ def test_unknown_state_is_not_offered_a_change(flow):
     box, st = flow
     st["state"] = "unknown"
     box.protect_default_branch()
-    assert st["asked"] == [] and "could not be verified" in box.protection_note
+    assert st["asked"] == [] and "couldn't verify" in warned(box)
 
 
 def test_existing_same_named_ruleset_is_not_duplicated(flow):
@@ -157,25 +167,121 @@ def test_apply_failure_never_aborts_and_note_stays_honest(flow, monkeypatch):
         raise GitHubError("403 plan has no rulesets", 403)
     monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset", boom)
     box.protect_default_branch()  # must not raise
-    assert "does **not** require pull requests" in box.protection_note
+    assert "does not require pull requests" in warned(box)
 
 
-def test_protection_note_wording():
-    n = cs.protection_note("o/r", "main", "protected", ["lint"])
-    assert "`lint`" in n and "o/r" in n
-    assert "none known" in cs.protection_note("o/r", "main", "protected")
+# -- gaps are warnings for the user, never text the session reads -------------- #
+def test_gap_warnings_wording_and_the_suggested_fix():
+    gw = sp.gap_warnings
+    assert gw("o/r", "main", "protected", {"lint"}, ["lint"]) == []
+    assert gw("o/r", "main", "protected", None, ["lint"]) == []      # can't tell
+    (w,) = gw("o/r", "main", "protected", set(), ["lint", "test (3.12)"])
+    assert "no status check is required" in w and "`lint`, `test (3.12)`" in w
+    assert "gh api repos/o/r/rulesets" in w
+    (w,) = gw("o/r", "main", "applied", {"lint"}, ["lint", "docs"])
+    assert "CI jobs not required" in w and "`docs`" in w and "`lint`" not in w
+    assert gw("o/r", "main", "protected", set(), []) == [
+        "no status check is required to merge into `main` of o/r"]
+    (w,) = gw("o/r", "main", "unprotected", None, [])
+    assert "does not require pull requests" in w
+    (w,) = gw("o/r", "main", "unknown", None, [])
+    assert "couldn't verify" in w
+    assert gw("o/r", "main", "unprotected", set(), ["ci"]) == [w for w in gw(
+        "o/r", "main", "unprotected", None, [])]   # one warning, not two
+
+
+def test_required_checks_are_read_from_rulesets_and_classic_protection():
+    rules = [{"type": "pull_request"},
+             {"type": "required_status_checks", "parameters": {
+                 "required_status_checks": [{"context": "a"}, {"context": "b"}]}}]
+    assert sp.rule_checks(rules) == {"a", "b"} and sp.rule_checks(None) == set()
+    assert sp.classic_checks({"required_status_checks": {
+        "contexts": ["c"], "checks": [{"context": "d"}]}}) == {"c", "d"}
+    assert sp.classic_checks({}) == set()
+
+
+def test_required_on_merges_both_and_reports_unreadable_as_none(monkeypatch):
+    def api(m, p, body=None, **k):
+        if "/rules/branches/" in p:
+            return [{"type": "required_status_checks", "parameters": {
+                "required_status_checks": [{"context": "a"}]}}]
+        raise GitHubError("no classic protection", 404)
+    monkeypatch.setattr(sp, "gh_api", api)
+    assert sp.required_on("o/r", "main") == {"a"}
+
+    def forbidden(m, p, body=None, **k):
+        raise GitHubError("forbidden", 403)
+    monkeypatch.setattr(sp, "gh_api", forbidden)
+    assert sp.required_on("o/r", "main") is None
+
+
+def test_exit_summary_repeats_the_launch_warnings(flow, capsys):
+    box, st = flow
+    st["state"] = "unknown"
+    box.protect_default_branch()
+    launch = capsys.readouterr().err
+    assert "warning: couldn't verify" in launch
+    box.report_host_warnings()
+    exit_ = capsys.readouterr().err
+    assert "couldn't verify" in exit_ and "the session was not told" in exit_
+    box.host_warnings.clear()
+    box.report_host_warnings()
+    assert capsys.readouterr().err == ""
+
+
+def test_a_protected_repo_with_unrequired_ci_jobs_warns_with_the_names(flow):
+    box, st = flow
+    st["state"], st["checks"], st["required"] = "protected", ["lint", "test"], {"lint"}
+    box.protect_default_branch()
+    assert "`test`" in warned(box) and "`lint`" not in warned(box)
+
+
+STATES = [("protected", set(), []), ("protected", {"lint"}, ["lint"]),
+          ("protected", set(), ["lint"]), ("unprotected", set(), []),
+          ("unknown", set(), []), ("applied", {"lint"}, ["lint", "test"])]
+
+
+def _render(repo_root, box):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    return cs.render_claude_md(
+        t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
+        "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
+
+
+def test_the_sessions_claude_md_is_the_same_whatever_the_protection_state(
+        flow, repo_root, monkeypatch):
+    """A list of the repo's weak points is a map for a prompt-injected
+    session, so the rendered text must not depend on any of them."""
+    box, st = flow
+    rendered = set()
+    for state, required, ci in STATES:
+        st.update(state=state, required=set(required), checks=list(ci),
+                  answers=[False, False], asked=[])
+        box.host_warnings.clear()
+        box.protect_default_branch()
+        rendered.add(_render(repo_root, box))
+    assert len(rendered) == 1
+    (md,) = rendered
+    for gap in ("does not require", "does **not** require", "none known",
+                "could not be verified", "No status checks", "applied the "):
+        assert gap not in md
+
+
+def test_render_claude_md_takes_no_protection_input():
+    import inspect
+    assert "protection_note" not in inspect.signature(cs.render_claude_md).parameters
+    assert not hasattr(cs, "protection_note")
 
 
 def test_template_covers_branches_and_status_checks(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     md = cs.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
-        "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper",
-        protection_note=cs.protection_note("o/r", "main", "applied", ["lint"]))
+        "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
     assert "stack" not in md.lower()  # spec 05: every PR targets the default
     assert "sbx/quirky-hopper/<task>" in md
-    assert "required_status_checks" in md and "gh api repos/o/r/rulesets" in md
-    assert "`lint`" in md and "(`o/r`)" in md
+    assert "never push to it" in md and "strands every open PR" in md
+    assert "(`o/r`)" in md
     assert not __import__("re").search(r"\$[a-z_{]", md)
 
 
@@ -294,8 +400,7 @@ def test_repo_defined_rulesets_replace_the_generic_one(flow):
     (rs,) = st["applied"]
     assert rs["name"] == "require-x"          # not protect-default-branch
     assert st["asked"] == [(("ruleset", "require-x"),)]  # one question only
-    assert "`ci`" in box.protection_note
-    assert "No status checks" not in box.protection_note
+    assert "No status checks" not in warned(box)
 
 
 def test_repo_ruleset_is_offered_even_on_a_protected_branch(flow):
@@ -304,9 +409,7 @@ def test_repo_ruleset_is_offered_even_on_a_protected_branch(flow):
     st["repo_rulesets"] = ([repo_rs()], [])
     st["answers"] = [True]
     box.protect_default_branch()
-    assert len(st["applied"]) == 1
-    assert "already requires pull requests" in box.protection_note
-    assert "`ci`" in box.protection_note
+    assert len(st["applied"]) == 1 and box.host_warnings == []
 
 
 def test_declined_and_existing_repo_rulesets_apply_nothing(flow):
