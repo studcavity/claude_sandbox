@@ -612,6 +612,7 @@ class Sandbox:
         self.container_up = False
         self._torn_down = False
         self._volumes_thread = None   # see teardown() / wait_volumes()
+        self._release_kept = False    # land() said a kept volume's work is safe
         self.deps = None
         self.deps_baked = False
         self.image = None
@@ -648,10 +649,13 @@ class Sandbox:
     def attach_volumes(self):
         """Mount size-capped volumes over /tmp and the clone directory."""
         mounts = sandbox_volumes.plan(self.name, self.backend.workdir(),
-                                      self.args.volume_size)
+                                      self.args.volume_size,
+                                      keep_work=self.backend.keep_work(
+                                          self.session_id))
         self.volumes = sandbox_volumes.Volumes(
             self.cli, self.box, mounts, self.args.volume_size)
         self.volumes.attach()
+        self.backend.work_kept = bool(self.volumes.kept())
 
     def disk_note(self):
         """Facts about this session's disks for the sandbox CLAUDE.md."""
@@ -990,7 +994,9 @@ class Sandbox:
         """Bring the session's work back (PRs, or an import). Runs AFTER
         teardown, so nothing the session left running can change it. Never
         raises."""
-        self.backend.land(self.session_id)
+        # A kept work volume goes once its work is safe, but only after the
+        # background delete has finished (wait_volumes), never beside it.
+        self._release_kept = bool(self.backend.land(self.session_id))
 
     def teardown(self):
         if self._torn_down:
@@ -1023,6 +1029,9 @@ class Sandbox:
         t, self._volumes_thread = self._volumes_thread, None
         if t is not None:
             t.join()
+        if self._release_kept:
+            self._release_kept = False
+            self.volumes.release()
 
 
 # --------------------------------------------------------------------------- #

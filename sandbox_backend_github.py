@@ -492,6 +492,6 @@ class GitHubBackend(Backend):
         and its container gone), so its branches can't move under the
         checks. Never raises."""
         a = self.args
-        if not a.repo or a.read_only or self.key_id is None:
-            return
-        land_and_report(a, session_id, open_prs=not a.no_pr)
+        if a.repo and not a.read_only and self.key_id is not None:
+            land_and_report(a, session_id, open_prs=not a.no_pr)
+        return True   # the work is on GitHub; nothing is kept locally
