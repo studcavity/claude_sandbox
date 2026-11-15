@@ -422,3 +422,13 @@ def test_required_actions_checks_are_pinned_to_github_actions():
     (rule,) = rs["rules"]
     assert rule["parameters"]["required_status_checks"] == [
         {"context": "commit-metadata", "integration_id": 15368}]
+
+
+def test_linear_history_is_not_something_the_launcher_initialises(repo_root):
+    base = sp.load_ruleset(os.path.join(repo_root, "rulesets",
+                                        "protect-main.json"))
+    assert "required_linear_history" not in {r["type"] for r in base["rules"]}
+    assert "linear" not in " ".join(sp.describe(base, "main"))
+    with pytest.raises(ValueError):
+        sp.validate_repo_ruleset(
+            {**base, "rules": [{"type": "required_linear_history"}]})
