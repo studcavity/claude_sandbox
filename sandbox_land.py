@@ -26,17 +26,15 @@ import urllib.parse
 import sandbox_deps
 import sandbox_host
 import sandbox_labels
-import sandbox_record
 import sandbox_templates
 import sandbox_untrusted
-from sandbox_github import gh_api
+from sandbox_github import GitHubError, gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
 
-# One row of the exit summary. base is the PR's target (the default branch, or
-# the session's own earlier branch when stacked); commits counts what the PR
-# adds over that base.
+# One row of the exit summary. base is the PR's target: always the default
+# branch (a PR into another base would get no CI, which is filtered to the
+# default branch); commits counts what the PR adds over it.
 Landed = collections.namedtuple("Landed", "branch base outcome detail commits")
-MAX_SIBLINGS = 10  # bound the compare calls used to find a stack parent
 
 SENSITIVE_DIRS = (".github/", ".githooks/")
 SENSITIVE_FILES = (sandbox_deps.DEPS_FILE, sandbox_host.HOST_FILE)
@@ -61,8 +59,12 @@ def clean_text(text, limit):
     return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
-MAX_RECORD_ITEMS = 10
-MAX_SUMMARY_LINES = sandbox_record.MAX_SUMMARY_LINES
+MAX_CAVEATS = 10
+MAX_SUMMARY_LINES = 8
+MAX_LINES_PER_MESSAGE = 400   # a commit message is read, not parsed forever
+_NOT_VERIFIED = re.compile(r"(?i)^\s*not\s+verified\b")
+_PR_TITLE = re.compile(r"(?i)^\s*pr-title\s*:\s*(\S.*)$")
+_PR_SUMMARY = re.compile(r"(?i)^\s*pr-summary\s*:\s*(\S.*)$")
 
 
 def safe_line(text, limit):
@@ -75,51 +77,71 @@ def safe_line(text, limit):
     return clean_text(text, limit)
 
 
-def record_section(rec):
-    """Markdown for what the commits say about their own verification and
-    follow-ups (see sandbox_record). Every line of session text is sanitised."""
-    out = ["### What the commits say", "",
-           "_Lifted from the commit messages by the launcher; untrusted like "
-           "everything below._", ""]
-
-    def sha(x):
-        return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
-
-    def block(title, items, fmt):
-        if not items:
-            return
-        out.append(f"**{title}** ({len(items)})")
-        out.extend("- " + fmt(i) for i in items[:MAX_RECORD_ITEMS])
-        if len(items) > MAX_RECORD_ITEMS:
-            out.append(f"- ...and {len(items) - MAX_RECORD_ITEMS} more")
-        out.append("")
-    block("Verified", rec.verified, lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Not verified", rec.not_verified,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Follow-ups", rec.follow_ups,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Issues the launcher will file", rec.issues,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[2], 120)} "
-                    f"(`{safe_line(i[1], 100)}`)")
-    if not rec.verified and not rec.not_verified:
-        out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
-    return "\n".join(out)
+def not_verified_lines(commits):
+    """[(short sha, full message)] -> [(short sha, line)]: every line that
+    starts with `Not verified`, oldest commit first. These are the caveats a
+    reviewer most needs, so they are lifted into the PR body; the rest of what
+    a commit says about itself stays in the commit."""
+    out: list = []
+    for sha, message in commits:
+        out.extend((sha, line.strip()) for line in
+                   message.splitlines()[:MAX_LINES_PER_MESSAGE]
+                   if _NOT_VERIFIED.match(line))
+    return out
 
 
-def synopsis_section(rec):
-    """Markdown for the session's own proposed title and summary, or "" when
-    its commits carry none. Sanitised like everything else from the session."""
-    if not rec or not rec.synopsis:
-        return ""
-    sha, title, summary = rec.synopsis
+def synopsis(commits):
+    """[(short sha, full message)], oldest first -> None, or (short sha,
+    proposed title, [summary lines]) from the newest commit that has a
+    `PR-Title:` line; a later commit's synopsis replaces an earlier one."""
+    found = None
+    for sha, message in commits:
+        title: str | None = None
+        summary: list[str] = []
+        for line in message.splitlines()[:MAX_LINES_PER_MESSAGE]:
+            if (m := _PR_TITLE.match(line)):
+                title = title or m.group(1).strip()
+            elif (m := _PR_SUMMARY.match(line)):
+                if len(summary) < MAX_SUMMARY_LINES:
+                    summary.append(m.group(1).strip())
+        if title:
+            found = (sha, title, summary)
+    return found
+
+
+def synopsis_section(syn):
+    """Markdown for the session's own proposed title and summary (see
+    synopsis). Sanitised like everything else from the session."""
+    sha, title, summary = syn
     if not re.fullmatch(r"[0-9a-f]{4,40}", sha or ""):
         sha = "?"
     out = ["### Proposed synopsis", "",
            f"_Proposed by the session in commit `{sha}`; untrusted like "
            "everything below. Its title is this PR's title._",
            "", f"**Proposed title:** {safe_line(title, 120)}", ""]
-    out.extend(f"- {safe_line(s, 200)}" for s in summary[:MAX_SUMMARY_LINES])
+    out.extend(f"- {safe_line(x, 200)}" for x in summary[:MAX_SUMMARY_LINES])
     return "\n".join(out) + "\n"
+
+
+def caveats_section(items):
+    """Markdown for the `Not verified` lines (see not_verified_lines). Every
+    line of session text is sanitised and secret-checked."""
+    out: list = ["### Not verified, according to the commits", "",
+           "_Lifted from the commit messages by the launcher; untrusted like "
+           "everything below._", ""]
+
+    def sha(x):
+        return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
+    if not items:
+        out += ["_No commit says anything is not verified._", ""]
+    else:
+        out.append(f"({len(items)})")
+        out.extend(f"- `{sha(s)}` {safe_line(t, 160)}"
+                   for s, t in items[:MAX_CAVEATS])
+        if len(items) > MAX_CAVEATS:
+            out.append(f"- ...and {len(items) - MAX_CAVEATS} more")
+        out.append("")
+    return "\n".join(out)
 
 
 def label_pr(repo, pr, session):
@@ -139,25 +161,25 @@ def label_pr(repo, pr, session):
         pass
 
 
-def pr_text(session, branch, subjects, record=None):
+def pr_text(session, branch, subjects, caveats=None, syn=None):
     """(title, body) for a session branch from its commit subjects (and, if
-    given, the Record of what its commits say about themselves). The title is
-    the session's proposed one plus ` [session]` when it proposed one, else
-    built from the subjects."""
+    given, its `Not verified` lines: see not_verified_lines). The title is the
+    session's proposed one (see synopsis) plus ` [session]` when it proposed
+    one, else built from the subjects."""
     tail = branch.split("/", 2)[-1]
     first = clean_text(subjects[0], 80) if subjects else tail
     title = f"[{session}] " + (first if len(subjects) == 1 else
                                f"{clean_text(tail, 40)} ({len(subjects)} commits)")
-    if record is not None and record.synopsis:
+    if syn:
         # The session's own title, sanitised; the session name goes last so
         # it is the launcher, not the session, that says whose PR this is.
-        title = f"{safe_line(record.synopsis[1], 100)} [{session}]"
+        title = f"{safe_line(syn[1], 100)} [{session}]"
     shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
     body = sandbox_templates.render(
         "pr.md", session=session, branch=clean_text(branch, 120),
-        record=((synopsis_section(record) + "\n" if record.synopsis else "")
-                + record_section(record) + "\n") if record is not None else "",
+        caveats=((synopsis_section(syn) + "\n" if syn else "")
+                 + (caveats_section(caveats) + "\n" if caveats is not None else "")),
         subjects=shown,
         more=f"\n...and {more} more commits.\n" if more > 0 else "")
     return title, body
@@ -176,25 +198,13 @@ def session_branches(repo, session=None, api=None):
     return [n for n in names if n.startswith(prefix)]
 
 
-def choose_base(default, candidates):
-    """Target branch for a PR. candidates are (branch, status, ahead_by) of
-    the *same session's* other branches compared to this one: the closest
-    strict ancestor becomes the base (a stacked PR whose diff shows only the
-    increment); otherwise the default branch."""
-    ancestors = [(n, b) for b, status, n in candidates
-                 if status == "ahead" and n > 0]
-    return min(ancestors)[1] if ancestors else default
-
-
-def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
-                confirm=None):
+def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
     """Open a PR for one branch -> Landed. Outcomes: 'empty' (nothing ahead
     of the default branch), 'held' (privileged files), 'exists' (open PR url)
     or 'opened' (PR url).
 
-    The hold test always uses the diff against the *default* branch, not the
-    stack parent: a stacked PR must not smuggle a privileged change in via the
-    branch below it.
+    Every PR targets the default branch, so a branch built on another of the
+    session's branches shows their commits too (and is held if they are).
 
     `confirm(branch, detail) -> bool`, when given, is asked before a branch
     held for its files is opened anyway; None (non-interactive) keeps the hold.
@@ -218,31 +228,20 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
         return Landed(branch, default, "held", "couldn't pin the branch tip "
                       "(250+ commits?)", cum["ahead_by"])
 
-    candidates = []
-    for sib in sorted(b for b in siblings if b != branch)[:MAX_SIBLINGS]:
-        c = gh_api("GET", f"/repos/{repo}/compare/{_q(sib)}...{_q(branch)}")
-        candidates.append((sib, c.get("status"), c.get("ahead_by", 0)))
-    base = choose_base(default, candidates)
-    inc = cum if base == default else gh_api(
-        "GET", f"/repos/{repo}/compare/{_q(base)}...{_q(branch)}")
-
     owner = repo.split("/")[0]
     open_ = gh_api("GET", f"/repos/{repo}/pulls?state=open&per_page=1&head="
                           f"{urllib.parse.quote(owner + ':' + branch, safe='')}")
     if open_:
-        return Landed(branch, open_[0].get("base", {}).get("ref", base),
-                      "exists", open_[0]["html_url"], inc["ahead_by"])
+        return Landed(branch, open_[0].get("base", {}).get("ref", default),
+                      "exists", open_[0]["html_url"], cum["ahead_by"])
     subjects = [c["commit"]["message"].split("\n", 1)[0]
-                for c in inc.get("commits") or []]
-    record = sandbox_record.extract(
-        [((c.get("sha") or "")[:7], c["commit"]["message"])
-         for c in inc.get("commits") or []])
-    title, body = pr_text(session, branch, subjects, record)
-    if base != default:
-        body += (f"\nStacked on `{clean_text(base, 120)}`: merge that PR "
-                 "first. This PR's diff is only what this branch adds.\n")
+                for c in cum.get("commits") or []]
+    messages = [((c.get("sha") or "")[:7], c["commit"]["message"])
+                for c in cum.get("commits") or []]
+    title, body = pr_text(session, branch, subjects, not_verified_lines(messages),
+                          synopsis(messages))
     pr = gh_api("POST", f"/repos/{repo}/pulls",
-                {"title": title, "head": branch, "base": base, "body": body,
+                {"title": title, "head": branch, "base": default, "body": body,
                  "maintainer_can_modify": False})
     moved = head_moved(pr, tip)
     if moved:
@@ -254,9 +253,9 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
             moved += "; the PR was closed"
         except (RuntimeError, KeyError, TypeError, ValueError):
             moved += f"; CLOSE IT BY HAND: {pr.get('html_url', '?')}"
-        return Landed(branch, base, "held", moved, inc["ahead_by"])
+        return Landed(branch, default, "held", moved, cum["ahead_by"])
     label_pr(repo, pr, session)
-    return Landed(branch, base, "opened", pr["html_url"], inc["ahead_by"])
+    return Landed(branch, default, "opened", pr["html_url"], cum["ahead_by"])
 
 
 def checked_tip(cmp_):
@@ -281,17 +280,35 @@ def head_moved(pr, tip):
             f"{head[:7] or 'an unknown head'})")
 
 
-def land(repo, session=None, extra_sensitive=(), confirm=None):
+def setup_script_paths(repo, default):
+    """Repo-relative `setup:` script paths in the default branch's deps file.
+
+    Read here, at landing time, so the review hold doesn't depend on how the
+    launcher was run (--land-all and --no-deps never parse the deps file). A
+    branch that *adds* a setup entry edits the deps file itself, which is held
+    anyway. No file, or one that doesn't parse, means no scripts: an invalid
+    file aborts every launch, so nothing in it would run."""
+    try:
+        raw = gh_api("GET", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}"
+                            f"?ref={_q(default)}", raw=True)
+        deps = sandbox_deps.parse(raw)
+    except GitHubError as e:
+        if e.code != 404:
+            raise
+        return []
+    except sandbox_deps.DepsError:
+        return []
+    return [s["path"] for s in deps.get("setup") or []]
+
+
+def land(repo, session=None, confirm=None):
     """Open PRs for a session's branches (all sessions' if session is None)
-    -> [Landed]. A session's branches may stack on each other, never on
-    another session's."""
+    -> [Landed]. Each PR targets the default branch."""
     default = gh_api("GET", f"/repos/{repo}")["default_branch"]
     branches = session_branches(repo, session)
-    by_session = collections.defaultdict(list)
-    for b in branches:
-        by_session[b.split("/")[1]].append(b)
-    return [land_branch(repo, b, default, by_session[b.split("/")[1]],
-                        extra_sensitive, confirm) for b in branches]
+    extra_sensitive = setup_script_paths(repo, default) if branches else []
+    return [land_branch(repo, b, default, extra_sensitive, confirm)
+            for b in branches]
 
 
 def pr_number(url):
@@ -300,8 +317,7 @@ def pr_number(url):
 
 
 def format_landing(results, session=None, color=False):
-    """The exit summary: one block per branch, stacked PRs marked, plus the
-    merge order. Plain text; color only when asked (a terminal)."""
+    """The exit summary: one block per branch. Plain text; color only when asked (a terminal)."""
     def paint(code, text):
         return f"\033[{code}m{text}\033[0m" if color else text
     marks = {"opened": ("\u2714", "32", "opened"),
@@ -314,12 +330,11 @@ def format_landing(results, session=None, color=False):
         out.append("\u2502 no session branches were pushed")
     for r in results:
         icon, code, label = marks[r.outcome]
-        stacked = r.base.startswith("sbx/")
         head = "\u2502 " + paint(code, f"{icon} {label:<9}")
         if r.outcome in ("opened", "exists"):
             out.append(f"{head} {pr_number(r.detail):<5} {r.branch} "
-                       f"\u2192 {r.base}" + (" (stacked)" if stacked else "")
-                       + f"  [{r.commits} commit{'s' * (r.commits != 1)}]")
+                       f"\u2192 {r.base}"
+                       f"  [{r.commits} commit{'s' * (r.commits != 1)}]")
             out.append(f"\u2502 {'':<12}{r.detail}")
         elif r.outcome == "held":
             out.append(f"{head} {r.branch}")
@@ -328,9 +343,6 @@ def format_landing(results, session=None, color=False):
         else:
             out.append(f"{head} {r.branch}")
     n = sum(r.outcome == "opened" for r in results)
-    foot = (f"{n} opened. " if results else "") + (
-        "Merge stacked PRs bottom-up (parents first). " if any(
-            r.base.startswith("sbx/") for r in results) else "") \
-        + "The launcher never merges."
+    foot = (f"{n} opened. " if results else "") + "The launcher never merges."
     out.append("\u2514 " + foot)
     return "\n".join(out)

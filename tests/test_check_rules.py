@@ -85,14 +85,24 @@ def test_parse_added_lines_tracks_paths_and_line_numbers():
     assert sc.parse_added_lines("") == []
 
 
-def test_added_secret_findings_marker_and_location():
-    added = [("x.py", 7, f'T = "{GH}"'),
-             ("y.py", 3, f'T = "{GH}"  # secret-scan: allow'),
-             ("z.py", 1, "nothing here")]
-    err, note = sc.added_secret_findings(added)
-    assert err[0] == sc.ERROR and err[2:] == ("x.py", 7)
-    assert note[0] == sc.NOTICE and note[2:] == ("y.py", 3)
-    assert GH not in err[1] and GH not in note[1]
+def test_added_secret_findings_report_the_location_never_the_value():
+    added = [("x.py", 7, f'T = "{GH}"'), ("z.py", 1, "nothing here")]
+    (err,) = sc.added_secret_findings(added)
+    assert err[0] == sc.ERROR and err[2:] == ("x.py", 7) and GH not in err[1]
+
+
+def test_there_is_no_allow_marker_any_more():
+    """The marker lived in the change being judged, so it only ever hid a
+    leak from the scan; fixtures are assembled at runtime instead."""
+    (err,) = sc.added_secret_findings([("y.py", 3, f'T = "{GH}"  # secret-scan: allow')])
+    assert err[0] == sc.ERROR
+    assert not hasattr(sc, "ALLOW_MARKER") and not hasattr(sc, "NOTICE")
+
+
+def test_the_removed_rules_no_longer_fire_in_the_checker():
+    generic = 'password = "' + "aB3dE5gH7jK9mN1pQ3sT5vX7zC9" + '"'
+    assert sc.added_secret_findings([("c.py", 1, generic), ("c.py", 2, AWS)]) == []
+    assert sc.message_secret_findings(f"fix: x\n\n{generic} {AWS}") == []
 
 
 def test_scan_truncation_is_reported_not_silent(monkeypatch):
@@ -194,12 +204,12 @@ def test_deleted_secret_lines_are_not_flagged(repo):
     assert [f for f in sc.check_findings(base, "main") if f.severity == sc.ERROR] == []
 
 
-def test_allow_marker_downgrades_to_a_notice_and_passes(repo, capsys):
+def test_a_marked_fixture_is_an_error_end_to_end(repo, capsys):
     repo.commit("test: fixture", {"t.py": f"T = '{GH}'  # secret-scan: allow\n",
                                   "tests/test_t.py": "x"})
-    assert run() == 0
+    assert run() == 1
     out = capsys.readouterr().out
-    assert "::notice file=t.py,line=1::" in out and GH not in out
+    assert "::error file=t.py,line=1::" in out and GH not in out
 
 
 def test_secret_in_message_is_an_error(repo):

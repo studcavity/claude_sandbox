@@ -1,6 +1,6 @@
 # Spec 03: file follow-up issues only after merge, from one ledger
 
-Source: `docs/plans/simplification.md` item 2. Status: open. It depends on
+Source: `docs/plans/simplification.md` item 2. Status: implemented, option A (workflow on push to the default branch; the same `sandbox_issues.py` runs by hand). It depends on
 spec 02 (the request format) and is easier after it.
 
 ## Problem

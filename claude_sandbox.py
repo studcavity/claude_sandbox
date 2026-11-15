@@ -74,9 +74,8 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
-import sandbox_actions
-import sandbox_check
 import sandbox_land
+import sandbox_hardening
 import sandbox_protect
 import sandbox_provenance
 import sandbox_sessions
@@ -135,8 +134,7 @@ DEPS_REF_TEMPLATE = "sandbox_ref_deps.md"
 DEPS_REF_PATH = "~/.claude/ref/deps.md"
 SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
 SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
-SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
-                        "sandbox_names", "sandbox_templates", "sandbox_untrusted")
+SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_todo", "sandbox_untrusted")
 SESSION_TOOL_WRAPPER = """#!/bin/sh
 # Installed by claude_sandbox. Lints this session's own commits (everything
 # since the remote's default branch) with the same rules CI and the launcher
@@ -147,7 +145,7 @@ if [ "$#" -gt 0 ]; then exec python3 "$tool" "$@"; fi
 base=$(git rev-parse --verify -q origin/HEAD || git rev-parse --verify -q origin/main \
        || git rev-parse --verify -q origin/master) || {
   echo "sandbox-check: can't find origin's default branch" >&2; exit 2; }
-exec python3 "$tool" "$base" HEAD --branch "$(git rev-parse --abbrev-ref HEAD)"
+exec python3 "$tool" "$base" HEAD
 """
 
 
@@ -318,12 +316,12 @@ def access_lines(workdir, repo, branch, read_only):
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None, protection_note=""):
+                     disk_note="", session=None):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo, $protection); write $$ for a
+    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -332,8 +330,6 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         container=container,
         session=session or container,
         repo=repo or "(no repo)",
-        protection=protection_note or "Not applicable (no repo, or a "
-                                      "read-only key).",
         prefix=sandbox_sessions.branch_prefix(session or container),
         access="\n".join(access_lines(workdir, repo, branch, read_only)),
         user=USER, uid=UID, home=HOME,
@@ -357,26 +353,15 @@ def render_deps_ref(template):
         deps_file=sandbox_deps.DEPS_FILE, user=USER)
 
 
-def protection_note(repo, branch, state, checks=()):
-    """Repo-specific text for the sandbox CLAUDE.md about default-branch
-    protection and required status checks."""
-    facts = {
-        "protected": f"`{branch}` already requires pull requests.",
-        "applied": f"The launcher applied the protection ruleset to `{branch}` "
-                   "at the start of this session.",
-        "unprotected": f"`{branch}` does **not** require pull requests: no "
-                       "ruleset is enforcing the branch workflow, so it is "
-                       "only a convention here.",
-        "unknown": f"Whether `{branch}` is protected could not be verified.",
-    }[state]
-    if checks:
-        req = ("Required status checks: " + ", ".join(f"`{c}`" for c in checks)
-               + ".")
-    elif state == "applied":
-        req = "No status checks are required yet."
-    else:
-        req = "Required status checks: none known."
-    return f"{facts} {req} (Repo: `{repo}`.)"
+def ask_hardening(repo, cond):
+    """Interactive yes/no (default no) to change one Actions setting, showing
+    the exact call it would make."""
+    print(f"\n{repo}: {cond.text}.\nThe fix would make this call:\n  "
+          f"{sandbox_hardening.describe_fix(cond.fix)}", file=sys.stderr)
+    try:
+        return input("Apply it? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
 
 
 def ask_protect(repo, branch, effects):
@@ -454,12 +439,6 @@ def check_expected_user(login, expected):
             "that is intended.")
 
 
-def setup_paths(deps):
-    """Repo-relative `setup:` script paths from parsed deps (they run with
-    extra privilege in future sandboxes, so a PR touching them is held)."""
-    return [s["path"] for s in (deps or {}).get("setup") or []]
-
-
 def confirm_held(branch, detail):
     """Ask whether to open a PR for a branch held for touching privileged
     files. Default no; no answer (EOF) is no. Both strings are session text,
@@ -495,7 +474,11 @@ def prefetch_plan(args):
         specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
     if not args.read_only:
         specs += [("scopes",), ("api", f"/repos/{repo}", False),
-                  ("api", f"/repos/{repo}/keys?per_page=100", False)]
+                  ("api", f"/repos/{repo}/keys?per_page=100", False),
+                  ("api", f"/repos/{repo}/actions/permissions/workflow", False),
+                  ("api", f"/repos/{repo}/actions/secrets?per_page=1", False),
+                  ("api", f"/repos/{repo}/actions/organization-secrets?per_page=1",
+                   False)]
     return specs
 
 
@@ -559,18 +542,6 @@ def refresh_images(args):
     return 0
 
 
-def action_limits(args):
-    """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
-    return {"actions": args.max_actions, "issues": args.max_issues}
-
-
-def report_statuses(outcomes):
-    """Print the exit summary of `sandbox/check` statuses (to stderr)."""
-    text = sandbox_check.format_status_outcomes(outcomes)
-    if text:
-        print("\n" + text, file=sys.stderr)
-
-
 def report_provenance(outcomes):
     """Print the exit summary of `sandbox/provenance` statuses (to stderr)."""
     text = sandbox_provenance.format_outcomes(outcomes)
@@ -578,11 +549,30 @@ def report_provenance(outcomes):
         print("\n" + text, file=sys.stderr)
 
 
-def report_actions(outcomes):
-    """Print the exit summary of follow-up actions (to stderr)."""
-    text = sandbox_actions.format_outcomes(outcomes)
-    if text:
-        print("\n" + text, file=sys.stderr)
+def land_and_report(args, session=None, open_prs=True):
+    """The one post-landing sequence, for a session's branches (every
+    session's when `session` is None): open PRs, then post their provenance.
+    Each step has its own try, so one failing never stops the next, and
+    nothing raises. -> (landed, ok), where ok is False if landing failed."""
+    who = session or "all sessions"
+    landed, ok = [], True
+    if open_prs:
+        try:
+            landed = sandbox_land.land(
+                args.repo, session, confirm_held if sys.stdin.isatty() else None)
+            report_landing(landed, session)
+        except Exception as e:
+            ok = False
+            log(f"warning: couldn't open PRs for {who}: {e}"
+                + (f"; push state is on GitHub under "
+                   f"{sandbox_sessions.branch_prefix(session)}" if session else ""))
+    if landed and not args.no_provenance:
+        try:
+            report_provenance(sandbox_provenance.post_session(args.repo, landed))
+        except Exception as e:
+            log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
+                f"for {who}: {e}")
+    return landed, ok
 
 
 def check_workflow_scope():
@@ -645,7 +635,7 @@ class Sandbox:
             Container.list_names(self.cli)
             | sandbox_provenance.recorded_sessions(args.repo))
         self.session_id = sandbox_sessions.validate_session(self.name)
-        self.protection_note = ""
+        self.host_warnings: list = []   # for the user; never in the session's CLAUDE.md
         self.box = Container(self.cli, self.name)
         self.key_id = None
         self.container_up = False
@@ -945,7 +935,6 @@ class Sandbox:
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
                               session=self.session_id,
-                              protection_note=self.protection_note,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
@@ -1037,6 +1026,7 @@ class Sandbox:
         if not a.repo or a.read_only:
             return
         self.protect_default_branch()
+        self.harden_actions()
         try:
             live = Container.list_names(self.cli)
             gone = sandbox_sessions.reap_stale_keys(
@@ -1049,20 +1039,63 @@ class Sandbox:
     def protect_default_branch(self):
         """Check that the default branch requires PRs; if it doesn't, offer
         (on a terminal, default no) to apply rulesets/protect-main.json.
-        Advice only: never blocks the launch. Records protection_note for the
-        session's CLAUDE.md."""
+        Advice only: never blocks the launch. What is still missing afterwards
+        becomes host-side warnings (self.host_warnings: printed now and in the
+        exit summary); nothing about the repo's protection reaches the
+        session, whatever its state."""
         a = self.args
-        branch, state, checks = "the default branch", "unknown", []
+        branch, state = "the default branch", "unknown"
         try:
             branch, warn, state = sandbox_sessions.check_protection(a.repo)
-            if warn:
-                log(f"warning: {warn}")
             if (state in ("unprotected", "protected")
                     and not a.no_protect_prompt and sys.stdin.isatty()):
-                state, checks = self.offer_protection(branch, state)
+                state, _ = self.offer_protection(branch, state)
         except (GitHubError, OSError, ValueError) as e:
             log(f"warning: couldn't check or apply branch protection: {e}")
-        self.protection_note = protection_note(a.repo, branch, state, checks)
+        required = ci = None
+        if state in ("protected", "applied"):
+            required = sandbox_protect.required_on(a.repo, branch)
+            ci = sandbox_protect.discover_checks(a.repo, branch)
+        self.add_host_warnings(sandbox_protect.gap_warnings(
+            a.repo, branch, state, required, ci or []))
+
+    def harden_actions(self):
+        """Report whether the repo's Actions settings keep session code's CI
+        runs untrusted (read-only token, Actions can't approve PRs, no secrets
+        to reach) and, on a terminal and after a yes each, fix the settable
+        ones (see sandbox_hardening). Advice only: never blocks the launch;
+        what is still unmet becomes host-side warnings, never session text."""
+        a = self.args
+        ask = None
+        if not a.no_hardening_prompt and sys.stdin.isatty():
+            ask = lambda cond: ask_hardening(a.repo, cond)  # noqa: E731
+        try:
+            found, notes = sandbox_hardening.harden(a.repo, gh_api, ask)
+        except (GitHubError, OSError, ValueError) as e:
+            log(f"warning: couldn't check the repo's Actions settings: {e}")
+            return
+        log("Actions settings (no same-repo approval setting exists on "
+            "GitHub; these keep session code's CI runs untrusted):")
+        for line in notes + sandbox_hardening.summary_lines(found):
+            log(f"  {line}")
+        self.add_host_warnings(sandbox_hardening.warnings(found, bool(ask)),
+                               show=False)
+
+    def add_host_warnings(self, warnings, show=True):
+        """Keep each for the exit summary, and show it now unless already
+        shown."""
+        for w in warnings:
+            if show:
+                log(f"warning: {w}")
+        self.host_warnings.extend(warnings)
+
+    def report_host_warnings(self):
+        """Repeat the launch warnings at exit, where a long session hasn't
+        scrolled them away. Never raises."""
+        if self.host_warnings:
+            print("\nrepo warnings (for you; the session was not told):\n"
+                  + "\n".join(f"  - {w}" for w in self.host_warnings),
+                  file=sys.stderr)
 
     def offer_protection(self, branch, state="unprotected"):
         """Ask, then apply. Returns (state, required_checks).
@@ -1126,38 +1159,7 @@ class Sandbox:
         a = self.args
         if not a.repo or a.read_only or self.key_id is None:
             return
-        landed = []
-        if not a.no_pr:
-            try:
-                landed = sandbox_land.land(
-                    a.repo, self.session_id, setup_paths(self.deps),
-                    confirm_held if sys.stdin.isatty() else None)
-                report_landing(landed, self.session_id)
-            except Exception as e:
-                log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
-                    "push state is on GitHub under "
-                    f"{sandbox_sessions.branch_prefix(self.session_id)}")
-        if landed and not a.no_check_status:
-            try:
-                report_statuses(sandbox_check.post_session_statuses(
-                    a.repo, landed))
-            except Exception as e:
-                log(f"warning: couldn't post {sandbox_check.STATUS_CONTEXT} "
-                    f"for {self.session_id}: {e}")
-        if landed and not a.no_provenance:
-            try:
-                report_provenance(sandbox_provenance.post_session(
-                    a.repo, landed))
-            except Exception as e:
-                log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
-                    f"for {self.session_id}: {e}")
-        if not a.no_actions:
-            try:
-                report_actions(sandbox_actions.run(
-                    a.repo, self.session_id, limits=action_limits(a)))
-            except Exception as e:
-                log(f"warning: couldn't run follow-up actions for "
-                    f"{self.session_id}: {e}")
+        land_and_report(a, self.session_id, open_prs=not a.no_pr)
 
     def teardown(self):
         if self._torn_down:
@@ -1223,25 +1225,14 @@ def build_parser():
     p.add_argument("--timings-json", metavar="PATH",
                    help="also write the timings as JSON (implies --timings), "
                         "to compare runs")
-    p.add_argument("--no-check-status", action="store_true",
-                   help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
-                        "status on the session's PRs (it is only posted where "
-                        "the repo's ruleset requires it)")
     p.add_argument("--no-provenance", action="store_true",
                    help=f"don't post the `{sandbox_provenance.CONTEXT}` commit "
                         "status (every commit signed by the session's own key "
                         "or yours) on the session's PRs")
-    p.add_argument("--max-actions", type=int, metavar="N",
-                   default=sandbox_actions.MAX_ACTIONS,
-                   help="most Sandbox-Action items to carry out per run "
-                        "(default %(default)s)")
-    p.add_argument("--max-issues", type=int, metavar="N",
-                   default=sandbox_actions.MAX_ISSUES_PER_SESSION,
-                   help="most issues one session may have in a repo, counting "
-                        "ones already filed (default %(default)s)")
-    p.add_argument("--no-actions", action="store_true",
-                   help="don't act on `Sandbox-Action:` trailers in the "
-                        "session's commit messages (e.g. file follow-up issues)")
+    p.add_argument("--no-hardening-prompt", action="store_true",
+                   help="don't offer to tighten the repo's Actions settings "
+                        "(read-only default token, Actions can't approve PRs); "
+                        "the check and its warnings still run")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "
@@ -1421,22 +1412,11 @@ def _launch(args):
                 if bad:
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
-            landed = sandbox_land.land(
-                args.repo, confirm=confirm_held if sys.stdin.isatty() else None)
-            report_landing(landed)
-            if landed and not args.no_check_status:
-                report_statuses(sandbox_check.post_session_statuses(
-                    args.repo, landed))
-            if landed and not args.no_provenance:
-                report_provenance(sandbox_provenance.post_session(
-                    args.repo, landed))
-            if not args.no_actions:
-                report_actions(sandbox_actions.run(
-                    args.repo, limits=action_limits(args)))
+            _, ok = land_and_report(args)
+            return 0 if ok else 1
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
-        return 0
 
     box = Sandbox(args)
     sandbox_github.start_prefetch(prefetch_plan(args))
@@ -1535,8 +1515,9 @@ def _launch(args):
             with sandbox_timing.stage("teardown"):
                 box.teardown()
         finally:
-            with sandbox_timing.stage("land: PRs, statuses, actions"):
+            with sandbox_timing.stage("land: PRs, provenance"):
                 box.land()
+            box.report_host_warnings()
     return 0
 
 

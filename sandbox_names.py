@@ -13,3 +13,11 @@ import re
 SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")
 # Every session's branches live under <BRANCH_ROOT>/<session>/.
 BRANCH_ROOT = "sbx"
+
+
+def branch_session(ref):
+    """'sbx/<session>/x' (or refs/heads/...) -> session, else None."""
+    parts = (ref or "").removeprefix("refs/heads/").split("/")
+    if len(parts) >= 3 and parts[0] == BRANCH_ROOT:
+        return parts[1]
+    return None

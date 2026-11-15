@@ -2,7 +2,7 @@
 
 Source: `docs/plans/simplification.md` item 5 ("Stacked-PR base discovery").
 While checking it against the code I found a gap, which is why it is a spec
-of its own. Status: open.
+of its own. Status: implemented, option A (no stacking; stacking usage was not measured: no gh token in the sandbox).
 
 ## Problem
 

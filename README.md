@@ -46,19 +46,20 @@ On every launch the program:
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |
 | `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
 | `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
-| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments, labels); auth is still your `gh` login |
+| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments); auth is still your `gh` login |
 | `sandbox_claude_config.py` | pre-answers Claude Code's first-run dialogs (theme, onboarding, API key, trust for repos you own) |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
+| `sandbox_hardening.py` | host-side: checks (and, after a yes, tightens) the repo's Actions settings so session code's CI runs stay untrusted |
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
-| `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
-| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
-| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--post-status` (the `sandbox/check` merge gate, `--override` to break glass), `--file-issues` (post-merge filer) |
+| `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
+| `sandbox_issues.py` | files an issue for each `todo/` file a commit adds to the default branch (the post-merge filer, run by `file-issues.yml` or by hand) |
+| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with the commits' `Not verified` lines), hold privileged ones |
+| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`) |
 | `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
-| `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
 | `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
 | `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
 | `sandbox_templates.py` | validated `templates/pr.md` and `templates/issue.md` |
@@ -92,33 +93,41 @@ Any number of sandboxes can run on one repo at once.
   unmerged `sbx/*` branch (recovery after a crashed launcher; it also grabs
   live sessions' work). Session text is sanitised (no live `@mentions`,
   labelled untrusted).
-- **Follow-up actions.** A commit message can end with
-  `Sandbox-Action: {"v": 1, "type": "issue", "id": "<slug>-<YYYYMMDD>-<session>-<4 random>", "title": "..."}`
-  trailers, plus a `todo/<id>.md` brief in the same commit; `sandbox_check.py`
-  verifies both and runs in CI on PRs. After the PRs, the launcher files an
-  issue per unaddressed item and comments on the commit with the link (that
-  comment is also the idempotency record, so re-running never duplicates).
-  Malformed trailers are ignored. New action types are new `(type, version)`
-  handlers; see `sandbox_actions.py`. `--no-actions` skips this.
+- **Follow-up issues.** A session adds `todo/<name>.md` (`<name>`: lowercase
+  letters, digits, `-`) to a commit to ask for an issue: the first heading is
+  the title, the file is the body, the path is its identity. `sandbox_check.py`
+  (CI) checks the name, size and heading. The issue is filed **only after the
+  file reaches the default branch**, so a human has reviewed the text before it
+  is published, and a request whose PR is never merged is never filed (delete
+  the file before merge to withdraw it). The filer is `sandbox_issues.py`,
+  run by `.github/workflows/file-issues.yml` on every push to `main` (issues
+  come from `github-actions[bot]`; the job's only write permission is
+  `issues: write`), or by hand in a checkout:
+  `python sandbox_issues.py OWNER/REPO --since REV [--dry-run]`. The one
+  ledger is a marker on the last line of each issue, so running it twice over
+  a range files nothing new. A later edit is ignored, deleting a file closes
+  nothing, and a path added again after deletion is a new request. A repo
+  without the workflow (and `sandbox_issues.py`) files nothing unless someone
+  runs it. The launcher no longer files anything when a session ends, and the
+  old `--no-actions`, `--max-actions` and `--max-issues` flags are gone.
 - **Exit summary.** The launcher prints every branch with its PR number,
   target, commit count and URL, or why none was opened:
   ```
   ┌ pull requests for session quirky-hopper ───────────────
   │ ✔ opened    #12   sbx/quirky-hopper/1-api → main  [3 commits]
   │             https://github.com/o/r/pull/12
-  │ ✔ opened    #13   sbx/quirky-hopper/2-tests → sbx/quirky-hopper/1-api (stacked)  [1 commit]
+  │ ✔ opened    #13   sbx/quirky-hopper/2-tests → main  [1 commit]
+  │             https://github.com/o/r/pull/13
   │ ⚠ HELD      sbx/quirky-hopper/ci
-  └ 2 opened. Merge stacked PRs bottom-up (parents first). The launcher never merges.
+  └ 2 opened. The launcher never merges.
   ```
-- **Stacked PRs.** A session may build each branch on its own previous one.
-  The launcher targets each PR at the closest of that session's own branches it
-  contains, so the diff shows only that step. Merge bottom-up; after a
-  squash/rebase merge the next branch needs
-  `git rebase --onto origin/HEAD <old-parent-tip>`. PRs into a non-default base
-  may not trigger CI that is filtered to the default branch.
+- **One base.** Every PR targets the default branch. Workflows are filtered
+  to PRs into it, so a PR into another branch would get no CI, and the
+  launcher no longer opens those. A branch built on another of a session's
+  branches shows its parent's commits too; merge the parent first and rebase.
 - **Held, not opened:** a branch that changes `.github/`, `.githooks/`,
   `CODEOWNERS`, the deps/host files or a `setup:` script (and any branch
-  stacked above one) gets no PR; review it by hand. In an interactive
+  built on one) gets no PR; review it by hand. In an interactive
   terminal the launcher instead asks `Open a PR for it anyway? [y/N]` (default
   no; non-interactive runs stay held). A branch whose tip can't be pinned or
   that moves while landing is never overridable. Those files run with extra
@@ -177,24 +186,46 @@ repo and answer yes, or `gh api -X POST ... --input rulesets/<file>`):
 - `require-commit-metadata.json` requires the `commit-metadata` check (see
   `.github/workflows/commit-metadata.yml`), pinned to GitHub Actions
   (`integration_id` 15368) so no other app or token can satisfy it with a
-  status of the same name.
-- `require-sandbox-check.json` requires the `sandbox/check` commit *status*,
-  posted by `sandbox_check.py --post-status OWNER/REPO --pr N`. The launcher
-  posts it for each PR a session opens, but only in a repo whose default-branch
-  rules require it (`--no-check-status` skips it), so applying the ruleset is
-  what turns the gate on. Once on, **every** PR into the default branch needs
-  the status, including ones the launcher didn't open: post it with the command
-  above. To get past a wrong failure, rerun it with `--override "reason"` (one
-  commit only; it comments on the PR), or have an admin set the ruleset's
-  `enforcement` to `disabled` and back to `active`.
+  status of the same name. This is the **one merge gate for the commit
+  checker**. It re-runs on every push to the PR and takes its checker from the
+  PR's base, so a branch can't weaken the rules it is judged by. To get past a
+  wrong failure, use GitHub's own break-glass: an admin bypass, or temporarily
+  setting the ruleset's `enforcement` to `disabled` (the audit log records
+  it). A repo without the workflow isn't gated by the checker.
 - `require-sandbox-provenance.json`: see "Provenance" below.
 
-A test keeps every required check name equal to a real CI job name, except
-`sandbox/check` and `sandbox/provenance`, which are commit statuses.
+There used to be a second gate, a host-posted `sandbox/check` status
+(`require-sandbox-check.json`). It is gone. If you applied that ruleset, every
+PR is now blocked by a context that never reports: delete it.
+`gh api repos/OWNER/REPO/rulesets` lists the rulesets (note the id of
+`require-sandbox-check`), then
+`gh api -X DELETE repos/OWNER/REPO/rulesets/<id>`.
 
-Each session's CLAUDE.md states this repo's protection status and required
-checks, and tells the session to name the checks to require whenever it adds,
-renames or removes a CI job (renaming a required job strands open PRs). Also:
+A test keeps every required check name equal to a real CI job name, except
+`sandbox/provenance`, which is a commit status.
+
+**Where protection gaps are reported.** To **you**, never to the session: at
+launch (a `warning:` line) and again in the exit summary ("repo warnings"), so
+a long session doesn't scroll them away. They are: the default branch isn't
+protected, or that couldn't be verified; no status check is required to merge;
+and CI jobs that passed on the default branch but aren't required. The
+session's CLAUDE.md is identical whatever the state (a test checks it): a list
+of a repo's weak points is a map for a prompt-injected session. It only says to
+use PRs, never push to the default branch, and tell you before changing a CI
+job's name.
+
+**Required status checks.** A CI job only blocks a merge if a ruleset lists it.
+To add the ones the launcher named: `gh api repos/OWNER/REPO/rulesets` (note
+the ruleset's id), save it with `gh api repos/OWNER/REPO/rulesets/<id> >
+ruleset.json`, add this rule to its `rules`, and
+`gh api -X PUT repos/OWNER/REPO/rulesets/<id> --input ruleset.json`:
+`{"type": "required_status_checks", "parameters":
+{"strict_required_status_checks_policy": true, "required_status_checks":
+[{"context": "<check name>"}]}}`. Use names that have passed (they must match
+the job's displayed name, matrix values expanded, e.g. `test (3.12)`). Renaming
+a required job strands every open PR, so update the ruleset in step.
+
+Also:
 - Keep repo Actions secrets minimal. A PR from a same-repo branch runs the
   branch's workflow code *with* secrets; put real secrets in an Environment
   restricted to the default branch.
@@ -204,6 +235,26 @@ renames or removes a CI job (renaming a required job strands open PRs). Also:
   turn `strict_required_status_checks_policy` on if you want that.
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
+
+### Secrets: what is scanned, and GitHub push protection
+A session can only leak what it can see, and the launcher puts exactly three
+secrets in a container: the Claude credential (`sk-ant-...`), the deploy key
+and the session signing key (OpenSSH private keys). `sandbox_untrusted` scans
+for those, plus GitHub token formats, in commit messages and added lines (CI),
+PR text, and `todo/` issue text; it reports the kind, never the value. It does
+not scan for credentials the sandbox never holds (AWS, Slack, generic
+`password = ...`), and there is no allow marker: a test fixture is assembled
+at runtime (`"ghp_" + "x" * 40`).
+
+The launcher does **not rely on** GitHub push protection, but it is the better
+first line where you have it, because it stops a known credential before it is
+in history. Turn it on with
+`gh api -X PATCH repos/OWNER/REPO -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'`
+(or Settings -> Code security). Not verified: whether it is available for
+private repos on your plan (as of writing it is free for public repos and a
+paid GitHub Secret Protection feature for private ones), or whether it applies
+to pushes made with a deploy key; test with a throwaway credential before
+relying on it.
 
 ### Provenance: which commits really came from the session
 A deploy key can push to any branch, so a sibling session (or anyone with push
@@ -240,7 +291,43 @@ launcher can prove which commits a session made:
   status is posted with your `gh` login, so a ruleset can't pin it to an app:
   anything else allowed to post statuses (e.g. a workflow's `GITHUB_TOKEN` when
   the repo's default workflow permissions allow writes) could post a fake
-  success. Set Settings -> Actions -> Workflow permissions to read-only.
+  success. The launcher offers to make that default read-only (next section).
+
+### Actions hardening: keep session code's CI runs untrusted
+The rule: **nothing runs in a trusted execution context before a human has
+reviewed it.** A same-repo PR runs the session's own workflow code (pytest, a
+`conftest.py`, anything it imports) before anyone reads it; that is fine only
+while the run is *untrusted*: a read-only token, no secrets it can reach, no way
+to approve or post anything that gates a merge, and logs that stay on GitHub.
+
+**GitHub has no setting that requires approval for same-repo runs.** Its
+approval settings (`fork-pr-contributor-approval`,
+`fork-pr-workflows-private-repos`) cover *fork* PRs only, and sandbox PRs come
+from a branch in the repo. So at launch the launcher checks what *can* be set
+(`sandbox_hardening.py`) and states each condition as ok / NOT MET / unknown:
+- the default workflow token is read-only, and
+- Actions may not approve pull requests: offered on a terminal, one yes/no
+  each (default no), showing the exact `PUT .../actions/permissions/workflow`
+  it would make; re-running finds nothing left to offer (`--no-hardening-prompt`
+  skips the offer, not the check). A 409 (your organisation forbids it) or 403
+  (you aren't a repo admin) is reported, never fatal;
+- no repo- or organisation-level Actions secrets exist (detected only, names
+  never values: it can't move them; put real secrets in an Environment limited
+  to the default branch).
+
+What isn't met is repeated as a warning in the exit summary, to you and not to
+the session. **Open question, not verified:** whether a deploy key can push a
+change under `.github/workflows/`. Removing the `workflow` scope from your `gh`
+token (above) doesn't answer it, since a deploy key is a separate SSH credential
+with no scopes, and `default_workflow_permissions` is only a default: a workflow
+declaring its own `permissions:` gets them. If such a push is accepted, a
+session can push an `on: push` workflow that runs at once, before any PR or
+hold, with any repo secret it names. That would be a fix-immediately finding
+(options: a push ruleset with a `file_path_restriction` on
+`.github/workflows/**`, available only on some plans for private repos; keeping
+secrets in protected-branch Environments; or a staging repo). The check needs a
+scratch repo with no secrets and a deploy key: push a no-op workflow file and
+record the result. It has not been done (see `todo/`).
 
 ### Optional: confine deploy keys to `sbx/` (apply by hand)
 A deploy key can create any branch and push tags. A pushed tag runs

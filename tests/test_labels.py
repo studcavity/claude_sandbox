@@ -13,7 +13,7 @@ def test_session_label_only_for_valid_session_names(s, expect):
 
 
 def test_every_named_label_has_a_colour_and_description():
-    for name in (sl.SANDBOX, sl.FOLLOW_UP, sl.CHECK_FAILED):
+    for name in (sl.SANDBOX, sl.FOLLOW_UP):
         color, desc = sl.colour_and_description(name)
         assert len(color) == 6 and desc
     assert sl.colour_and_description("session:x")[0] == "ededed"

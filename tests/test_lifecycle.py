@@ -228,29 +228,10 @@ def test_crash_after_launch_still_lands_and_tears_down(world, monkeypatch):
     assert ("delete", ()) in FakeContainer.instances[-1].calls
 
 
-def test_statuses_are_posted_for_the_sessions_prs_when_the_repo_requires_them(world, monkeypatch):
-    import sandbox_check
-    posted = []
-    monkeypatch.setattr(sandbox_check, "gate_required", lambda api, repo: True)
-    monkeypatch.setattr(sandbox_check, "post_status_run",
-                        lambda repo, pr, result, **k: (posted.append((repo, pr)),
-                                                       result.update(state="success", description="ok"))[1])
-    assert cs.main(argv(world)) == 0
-    assert posted == [("o/r", 7)]          # the PR the fake GitHub "opened"
-
-
-def test_no_check_status_flag_skips_posting(world, monkeypatch):
-    import sandbox_check
-    monkeypatch.setattr(sandbox_check, "gate_required", lambda api, repo: True)
-    monkeypatch.setattr(sandbox_check, "post_status_run",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("posted")))
-    assert cs.main(argv(world, "--no-check-status")) == 0
-
-
-def test_a_status_failure_never_breaks_landing_or_teardown(world, monkeypatch):
-    import sandbox_check
-    monkeypatch.setattr(sandbox_check, "gate_required",
-                        lambda api, repo: (_ for _ in ()).throw(RuntimeError("boom")))
+def test_a_provenance_failure_never_breaks_landing_or_teardown(world, monkeypatch):
+    import sandbox_provenance
+    monkeypatch.setattr(sandbox_provenance, "post_session",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cs.main(argv(world)) == 0
     assert ("DELETE", "/repos/o/r/keys/5") in [(m, p) for m, p, _ in world.gh.calls]
 
@@ -260,7 +241,7 @@ def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
     assert cs.main(argv(world, "--timings")) == 0
     err = capsys.readouterr().err
     for stage in ("github login + scopes", "container launch + boot", "clone",
-                  "session (interactive)", "land: PRs, statuses, actions", "teardown"):
+                  "session (interactive)", "land: PRs, provenance", "teardown"):
         assert stage in err
     assert "the session prompt appeared after" in err
 

@@ -2,7 +2,9 @@
 
 These specs are drawn from `docs/plans/simplification.md` after checking it
 against the code. Each one describes a problem, the options, what "done"
-looks like and how to verify it. None of them prescribes an implementation.
+looks like and how to verify it. All seven are implemented on one branch, one
+commit per spec (07 in three); each spec's `Status:` line says which option was
+taken. None of them prescribes an implementation.
 Each spec is meant to be its own PR.
 
 | Spec | Plan item | Summary |
@@ -42,7 +44,10 @@ Each spec is meant to be its own PR.
   remove ("Commit messages carry point-in-time state") is about 55 lines.
   Reaching that target would also mean cutting non-protocol sections
   (deps-file format, quality gates, git rules). Measure what each spec
-  actually removes before promising a number.
+  actually removes before promising a number. **Measured after implementing:**
+  `sandbox_CLAUDE.md` went from 330 to 311 lines (20.2k to 18.8k chars), not to
+  "well under half": the protocol section shrank, but the boundary rule and the
+  state-independent protection text were added.
 
 ## Not turned into a spec
 

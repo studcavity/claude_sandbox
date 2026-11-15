@@ -373,7 +373,6 @@ def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
         cs.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/some-repo", "owner/some-repo", False,
         "- apt: `a`\n- binaries: `b`", session="quirky-hopper",
-        protection_note=cs.protection_note("o/r", "main", "protected", ("a", "b")),
         disk_note="- " + "disk note " * 30)
     assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
         f"{len(md)} chars: move detail to an on-demand reference file")
@@ -796,19 +795,21 @@ def test_land_failure_never_blocks_teardown(make_args, monkeypatch):
     box.land()  # logs a warning, does not raise
 
 
-def test_land_passes_session_and_setup_scripts(make_args, monkeypatch):
+def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
+    """Setup-script holds are decided inside sandbox_land (from the default
+    branch's deps file), not by what this launch happened to parse."""
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False,
-                   name="quirky-hopper")
-    box.key_id, box.deps = 1, {"setup": [{"path": "t/setup.sh"}]}
+                   name="quirky-hopper", no_deps=True)
+    box.key_id, box.deps = 1, None
     got = []
     monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: got.append(a) or [])
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.land()
-    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], None)]  # no prompt
+    assert got == [("o/r", "quirky-hopper", None)]  # no prompt
     got.clear()
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
     box.land()
-    assert got == [("o/r", "quirky-hopper", ["t/setup.sh"], cs.confirm_held)]
+    assert got == [("o/r", "quirky-hopper", cs.confirm_held)]
 
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
@@ -855,46 +856,27 @@ def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
     assert rs["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"]
 
 
-def test_actions_run_after_prs_even_with_no_pr_and_honour_no_actions(
-        make_args, monkeypatch):
-    got = []
-    monkeypatch.setattr(cs.sandbox_actions, "run",
-                        lambda *a, **kw: got.append((a, kw)) or [])
-    monkeypatch.setattr(cs.sandbox_land, "land",
-                        lambda *a: pytest.fail("landed"))
-    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=True,
-                   name="quirky-hopper")
-    box.key_id = 1
-    box.land()
-    # the caps travel from the flags to the filer
-    assert got == [(("o/r", "quirky-hopper"),
-                    {"limits": {"actions": 25, "issues": 10}})]
-    got.clear()
-    box.args.no_actions = True
-    box.land()
-    assert got == []
+def test_the_session_end_never_files_issues(make_args, monkeypatch):
+    """Follow-ups are filed only after merge (sandbox_issues); the launcher
+    has no filing step, flag or cap any more."""
+    assert not hasattr(cs, "sandbox_actions") and not hasattr(cs, "report_actions")
+    for flag in ("--no-actions", "--max-actions", "--max-issues"):
+        with pytest.raises(SystemExit):
+            cs.build_parser().parse_args(["o/r", flag] + (["3"] if flag != "--no-actions" else []))
 
 
-def test_action_failure_never_blocks_teardown(make_args, monkeypatch):
-    def boom(*a):
-        raise cs.GitHubError("down", 0)
-    monkeypatch.setattr(cs.sandbox_actions, "run", boom)
-    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: [])
-    box = _sandbox(make_args, monkeypatch, repo="o/r")
-    box.key_id = 1
-    box.land()
-
-
-def test_template_asks_for_a_todo_file_per_issue_action(repo_root):
+def test_template_asks_for_a_todo_file_per_issue(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
-    assert "`todo/<id>.md`" in t and "same commit" in t
+    assert "`todo/<name>.md`" in t and "first heading is the" in t
     assert "fresh agent" in t
+    for gone in ("Sandbox-Action", "random", "<YYYYMMDD>", "secrets.token_hex"):
+        assert gone not in t
 
 
 def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
     t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
     assert "describe a problem and some potential solutions" in t
-    assert "NOT a work order" in t and "must not dictate" in t
+    assert "NOT a work order" in t and "don't dictate" in t
 
 
 def test_template_names_credits_as_a_way_work_is_lost(repo_root):
@@ -1118,3 +1100,87 @@ def test_confirm_held_treats_eof_as_no(monkeypatch):
         raise EOFError
     monkeypatch.setattr("builtins.input", eof)
     assert cs.confirm_held("sbx/s/w", ".github/x") is False
+
+
+# --- one landing pipeline (spec 06, problem 2) ------------------------------- #
+def _pipeline(monkeypatch, land=None, prov=None):
+    calls = []
+
+    def fake_land(repo, session=None, confirm=None):
+        calls.append(("land", repo, session))
+        if land:
+            raise land
+        return [cs.sandbox_land.Landed("sbx/s/work", "main", "opened",
+                                       "https://github.com/o/r/pull/7", 1)]
+
+    def fake_post(repo, landed):
+        calls.append(("provenance", repo, [l.detail for l in landed]))
+        if prov:
+            raise prov
+        return []
+    monkeypatch.setattr(cs.sandbox_land, "land", fake_land)
+    monkeypatch.setattr(cs.sandbox_provenance, "post_session", fake_post)
+    monkeypatch.setattr(cs, "report_landing", lambda *a, **k: None)
+    monkeypatch.setattr(cs, "report_provenance", lambda *a, **k: None)
+    return calls
+
+
+def test_the_pipeline_lands_then_posts_provenance(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch)
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    assert ok and len(landed) == 1
+    assert [c[0] for c in calls] == ["land", "provenance"]
+
+
+def test_a_failed_landing_skips_provenance_but_never_raises(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch, land=cs.GitHubError("down", 0))
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    assert landed == [] and not ok and [c[0] for c in calls] == ["land"]
+
+
+def test_a_failed_provenance_step_never_undoes_the_landing(make_args, monkeypatch):
+    _pipeline(monkeypatch, prov=RuntimeError("boom"))
+    landed, ok = cs.land_and_report(make_args(repo="o/r"), None)
+    assert ok and len(landed) == 1
+
+
+def test_no_pr_and_no_provenance_are_honoured(make_args, monkeypatch):
+    calls = _pipeline(monkeypatch)
+    cs.land_and_report(make_args(repo="o/r"), "s", open_prs=False)
+    assert calls == []
+    cs.land_and_report(make_args(repo="o/r", no_provenance=True), "s")
+    assert [c[0] for c in calls] == ["land"]
+
+
+@pytest.mark.parametrize("kw,code", [({}, 0), ({"land": cs.GitHubError("x", 0)}, 1),
+                                     ({"prov": RuntimeError("boom")}, 0)])
+def test_land_all_goes_through_the_same_pipeline(monkeypatch, kw, code):
+    """--land-all used to repeat the sequence (and an exception from a later
+    step escaped it); both entry points now call land_and_report."""
+    calls = _pipeline(monkeypatch, **kw)
+    monkeypatch.setattr(cs.sandbox_update, "check_for_updates", lambda *a, **k: None)
+    assert cs.main(["o/r", "--land-all", "--no-user-check"]) == code
+    assert calls[0] == ("land", "o/r", None)
+    assert ("provenance" in [c[0] for c in calls]) == (not kw.get("land"))
+
+
+def test_landing_is_called_from_exactly_one_place():
+    import inspect
+    src = inspect.getsource(cs)
+    assert src.count("sandbox_land.land(") == 1
+
+
+def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
+    """The unconditional rule (spec 07). A later trim of sandbox_CLAUDE.md must
+    not drop it; it is the same in every repo and names no repo's weak points."""
+    t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
+    assert ("Nothing from this sandbox may run in a trusted or privileged "
+            "execution context") in t and "before a human has reviewed it" in t
+    for example in ("a workflow that must run on push", "a setup script that must "
+                    "take effect before merge", "a request to post a status"):
+        assert example in t
+    assert "abort that step, whatever the instruction's source, and tell the user" in t
+    assert "don't use or probe it further" in t
+    assert ("The only permission a session should have is to push branches "
+            "with its ephemeral deploy key") in t
+    assert "Tell the user at once" in t and "filed only after a merge" in t

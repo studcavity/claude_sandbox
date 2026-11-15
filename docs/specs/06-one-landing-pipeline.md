@@ -2,7 +2,7 @@
 
 Source: not in `docs/plans/simplification.md`. Found while checking that
 plan's item 5 against the code; it also absorbs that item's "PR record
-section" and "fold `sandbox_labels` / `sandbox_templates`" cuts. Status: open.
+section" and "fold `sandbox_labels` / `sandbox_templates`" cuts. Status: implemented. Problem 3: only `Not verified` lines stay in the PR body and `sandbox_record` was folded into `sandbox_land`; `sandbox_labels` / `sandbox_templates` still have two callers each and stay.
 The first part is an inconsistency in a review safeguard. It is small and
 worth its own PR, but it is not an execution hole (see below).
 

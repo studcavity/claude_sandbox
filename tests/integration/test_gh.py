@@ -70,10 +70,14 @@ class FakeGitHub:
                     return self.reply(404, b'{"message":"Not Found"}')
                 if self.path.endswith("/empty"):
                     return self.reply(204)
+                if self.path.endswith("/conflict"):
+                    return self.reply(409, b'{"message":"Conflict: set by org"}')
+                if self.path.endswith("/forbidden"):
+                    return self.reply(403, b'{"message":"Must have admin rights"}')
                 extra = ([("X-OAuth-Scopes", fake.scopes)]
                          if fake.scopes is not None else [])
                 self.reply(200, b'{"login":"octo","id":7}', extra)
-            do_GET = do_POST = do_DELETE = handle_any
+            do_GET = do_POST = do_PUT = do_DELETE = handle_any
 
             def log_message(self, *a):
                 pass
@@ -144,6 +148,33 @@ def test_404_maps_to_githuberror_with_code(api):
     with pytest.raises(g.GitHubError) as e:
         g.gh_api("GET", "/repos/me/p/contents/missing")
     assert e.value.code == 404 and "Not Found" in str(e.value)
+
+
+def test_put_body_arrives_intact_for_the_actions_settings(api):
+    """The Actions-hardening fixes are PUTs of one field each."""
+    path = "/repos/me/p/actions/permissions/workflow"
+    g.gh_api("PUT", path, {"default_workflow_permissions": "read"})
+    g.gh_api("PUT", path, {"can_approve_pull_request_reviews": False})
+    first, second = api.requests
+    assert first["method"] == second["method"] == "PUT"
+    assert first["path"] == "/api/v3" + path
+    assert json.loads(first["body"]) == {"default_workflow_permissions": "read"}
+    assert json.loads(second["body"]) == {"can_approve_pull_request_reviews": False}
+
+
+@pytest.mark.parametrize("tail,code", [("conflict", 409), ("forbidden", 403)])
+def test_an_org_policy_or_missing_admin_surfaces_as_a_coded_error(api, tail, code):
+    """409 (an organisation forbids the change) and 403 (no admin) are the two
+    refusals sandbox_hardening reports instead of failing on."""
+    import sandbox_hardening as sh
+    with pytest.raises(g.GitHubError) as e:
+        g.gh_api("PUT", f"/repos/me/p/actions/permissions/workflow/{tail}",
+                 {"default_workflow_permissions": "read"})
+    assert e.value.code == code
+    ok, msg = sh.apply_fix(
+        ("PUT", f"/repos/me/p/actions/permissions/workflow/{tail}",
+         {"default_workflow_permissions": "read"}), g.gh_api)
+    assert not ok and msg.startswith("not applied")
 
 
 def test_empty_response_is_none(api):

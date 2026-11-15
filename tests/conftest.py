@@ -16,16 +16,6 @@ def no_real_container_runtime(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def no_real_actions(monkeypatch, request):
-    """Tests never run commit-message actions against a real GitHub (the
-    actions' own tests pass a fake api instead)."""
-    import sandbox_actions
-    if request.module.__name__.endswith("test_actions"):
-        return
-    monkeypatch.setattr(sandbox_actions, "run", lambda *a, **k: [])
-
-
-@pytest.fixture(autouse=True)
 def private_state_dir(monkeypatch, tmp_path):
     """Recorded signing keys go to a per-test directory, never ~/.local."""
     import sandbox_provenance
@@ -87,7 +77,7 @@ def make_args(tmp_path):
     def _make(**kw):
         base = dict(repo=None, repository=None, account_key=False,
                     github_user="studcavity", no_user_check=False,
-                    no_update_check=True, read_only=False, no_pr=False, no_actions=False, no_protect_prompt=False, no_check_status=False, no_provenance=False, max_actions=25, max_issues=10, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
+                    no_update_check=True, read_only=False, no_pr=False, no_protect_prompt=False, no_hardening_prompt=False, no_provenance=False, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
                     land_all=False, image=None,
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
