@@ -77,6 +77,7 @@ DEFAULT_TOKEN_FILE = os.path.join(
     "claude_sandbox", "oauth_token")
 DEFAULT_USB_ALLOW = os.path.join(os.path.dirname(DEFAULT_TOKEN_FILE),
                                  "usb_allow")
+SANDBOX_MARKER = "/etc/claude-sandbox"  # scripts test for this to gate hazards
 SECRETS_FILE = f"{HOME}/.sandbox_secrets"  # inside the container
 
 # Tools listed in the sandbox's CLAUDE.md when present.
@@ -144,6 +145,14 @@ def session_script(workdir, load_secrets, shell=False, model="default",
         # well-known terminal; scroll with the mouse or prefix-[ .
         prog = f"tmux new-session -s claude {shlex.quote(prog)}"
     return f"{load_secrets}cd {shlex.quote(workdir)} && exec {prog}"
+
+
+def setup_argv(s):
+    """argv for one validated `setup:` entry: bounded by `timeout` (killed
+    10s later if it ignores SIGTERM), run as a login shell script so the
+    session's PATH applies. Nothing is interpolated into a shell string."""
+    return ["timeout", "--kill-after=10", str(s["timeout"]),
+            "bash", "-l", "./" + s["path"], *s["args"]]
 
 
 def parse_probe(out):
@@ -289,6 +298,8 @@ class Sandbox:
         self.container_up = True
         self.box.wait_network()
         self.box.self_check()  # fail fast, before any real work
+        # Lets repo scripts refuse to run anywhere but inside a sandbox.
+        self.box.put_file(SANDBOX_MARKER, self.name.encode() + b"\n", "0644")
 
         # No-ops when launched from the cached image.
         self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
@@ -388,6 +399,33 @@ class Sandbox:
         """
         if self.deps and not self.deps_baked:
             apply_deps(self.box, self.deps)
+
+    def run_setup(self, workdir):
+        """Run the repo's `setup:` scripts in the container (as the session
+        user, in the clone, each launch).
+
+        Called after the clone and before Claude credentials are pushed, so
+        the scripts never see them; the repo's own deploy key is present. A
+        failing script never aborts the launch: it is logged and reported in
+        the sandbox CLAUDE.md so the session can tell the user.
+        """
+        if not self.deps or not self.deps.get("setup"):
+            return
+        notes = []
+        for s in self.deps["setup"]:
+            log(f"setup: running {s['path']} (timeout {s['timeout']}s)")
+            r = self.box.user_argv(setup_argv(s), env=s["env"], cwd=workdir,
+                                   check=False, input="")  # never waits on a prompt
+            if r.returncode == 0:
+                notes.append(f"`{s['path']}`: succeeded")
+            else:
+                why = ("timed out" if r.returncode == 124
+                       else f"exited with status {r.returncode}")
+                log(f"warning: setup script {s['path']} {why}; continuing")
+                notes.append(f"`{s['path']}`: **FAILED** ({why}); re-run it by "
+                             "hand and tell the user")
+        self.deps_note += "\nSetup results this launch:\n" + "\n".join(
+            f"  - {n}" for n in notes)
 
     def provision_key(self):
         log("generating SSH key inside the container")
@@ -658,6 +696,7 @@ def main(argv=None):
         box.provision_key()
         box.install_claude()
         workdir = box.clone()
+        box.run_setup(workdir)  # before Claude credentials reach the container
         box.write_claude_md(workdir)
         box.session(workdir)
     except KeyboardInterrupt:

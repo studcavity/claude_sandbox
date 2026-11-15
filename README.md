@@ -184,6 +184,40 @@ has no credentials, from host-verified downloads. If any script lacks a
 `sha256`, that repo is not cached (the script would be frozen at build time)
 and everything installs per launch as before. `--no-cache` disables it.
 
+### per-launch `setup:` scripts
+Things that need the checkout or the user's home (a venv in the repo, a
+per-user toolchain in `~/.local/bin`) can't be baked into the image. List the
+repo's own scripts under `setup:` and the launcher runs them in the container
+at the start of **every** launch:
+```yaml
+setup:
+  - name: lightning-bugs
+    path: lightning_bugs/tools/setup.sh   # repo-relative; no leading /, no ..
+    args: []                              # optional
+    env: {}                               # optional (same rules as scripts)
+    timeout: 1800                         # optional, 1-3600 seconds
+```
+Each runs as `timeout <N> bash -l ./<path> <args>` (argv, no shell string) as
+the `ubuntu` user in the clone, after the clone and **before Claude's
+credentials are copied in** (the repo's deploy key and approved USB devices are
+present), with no stdin. A failure or timeout doesn't abort the launch; it is
+logged and listed in the sandbox CLAUDE.md so the session can tell you.
+`setup:` is not part of the cache key, so editing it never rebuilds an image;
+scripts should be idempotent and fast when already done. `--no-deps` skips it.
+The path is validated on the host, but the script itself is repo code that
+runs automatically, so review changes to it like changes to this file. Older
+launchers reject a deps file containing `setup:`.
+
+Every sandbox gets `/etc/claude-sandbox`. The sandbox CLAUDE.md tells the
+session to put a guard at the top of any script that could be hazardous
+outside a sandbox (sudo, package installs, writes under `~` or `/etc`, bulk
+deletes, flashing hardware, ...), so it refuses to run on a real machine:
+```bash
+[ -f /etc/claude-sandbox ] || { echo "refusing: not inside a claude_sandbox container" >&2; exit 1; }
+```
+For example, Vape-Hacks' `lightning_bugs/tools/setup.sh` writes into
+`~/.local/bin` and `~/.arduino15`, so it should start with that guard.
+
 Hardening:
 - The host fetches the file through the GitHub API, validates it against a
   strict schema (unknown keys, odd names, `-`-prefixed apt specs, loader/shell

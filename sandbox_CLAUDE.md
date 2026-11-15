@@ -60,6 +60,12 @@ binaries:                  # installed to /usr/local/bin/<name>, mode 0755
     url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
     sha256: <64 hex>       # required
     archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
+setup:                     # repo scripts run in the container every launch (see below)
+  - name: toolchain        # [A-Za-z0-9._+-]
+    path: tools/setup.sh   # relative to the repo root; no leading /, no ..
+    args: []               # optional, argv for the script
+    env: {}                # optional, same restrictions as scripts' env
+    timeout: 1800          # optional seconds, 1-3600 (default 1800)
 ```
 
 Rules:
@@ -81,6 +87,58 @@ Rules:
   as security-sensitive: add only what the user asked for or the task needs,
   use official upstream URLs, keep entries minimal, and call out each change
   in the commit message and to the user.
+
+### Per-launch setup scripts (`setup:`)
+`apt`, `binaries` and `scripts` are baked into a cached image, as root, before
+the repo exists. Anything that needs the checkout or the user's home (a venv in
+the repo, a per-user toolchain, `~/.local/bin`) goes in `setup:` instead: the
+launcher runs each listed script **inside the container**, as `$user`, with the
+clone as the working directory, at the start of **every** launch, as
+`timeout <N> bash -l ./<path> <args>` (so no shell parses the entry).
+- It runs after the clone and before Claude's credentials are copied in, so the
+  script never sees them. The repo's own deploy key and any approved USB devices
+  are present. It gets no stdin, so it can't prompt.
+- It is not baked and not part of the image cache key, so editing `setup:` or
+  the script never triggers an image rebuild. Write scripts to be **idempotent
+  and quick when already done**, because they re-run every launch; put
+  anything heavy and system-wide in `apt`/`binaries` where it is cached.
+- A failing script does not abort the launch. The result is listed under
+  "Setup results this launch" above; if one says FAILED, re-run it, read the
+  error and tell the user.
+- `--no-deps` skips the whole file, `setup:` included.
+- A repo script runs automatically with the deploy key present, so treat adding
+  or changing one like editing `$deps_file`: security-sensitive, minimal, and
+  called out in the commit message and to the user. Pin and verify anything it
+  downloads (see how to check a `sha256`, above).
+
+**Gate hazardous scripts so they refuse to run outside the sandbox.** Setup
+scripts live in the repo, and a human (or another tool) may well run them on a
+real machine. Inside this container almost nothing is at risk; on a host the
+same script can damage the user's system or leak into their dotfiles. Whenever
+you write or edit a script that could be hazardous outside this container,
+put this guard at the very top, before any side effect:
+
+```bash
+# Refuse to run anywhere but inside a claude_sandbox container.
+[ -f /etc/claude-sandbox ] || { echo "refusing: not inside a claude_sandbox container" >&2; exit 1; }
+```
+
+The launcher creates `/etc/claude-sandbox` in every sandbox at boot. Treat a
+script as hazardous (guard it) if it does any of: `sudo` or any use of root;
+installing or removing packages; writing outside the repo directory, especially
+`~`, `/etc`, `/usr`, `/opt`, shell rc files, `~/.ssh`, `~/.gitconfig`, udev
+rules or services; `rm -rf` or any other bulk delete; changing global git,
+pip or npm config; running `curl | sh` or other unverified downloads; flashing,
+erasing or writing to hardware or devices; killing processes; touching
+credentials. If a script only reads, or only writes under its own repo
+directory (and cleans up after itself), it needs no guard; when in doubt, add
+it. Also: never run these scripts yourself on the host (you can't from here),
+never weaken or remove an existing guard to make a script "work" elsewhere,
+and if the user wants a script to also run on their machine, say what it would
+change there and let them decide and add a narrower, explicit opt-in (for
+example a `--i-know-this-modifies-my-system` argument) rather than dropping
+the guard. Mention the guard in the script's header comment so a reader knows
+why it exists.
 
 ## Testing: part of the repo, not just the session
 Work should always come with automated tests that **live in the repo** and

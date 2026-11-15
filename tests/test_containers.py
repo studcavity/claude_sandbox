@@ -121,3 +121,12 @@ def test_add_usb_rejects_bad_ids(calls, vid, pid):
     with pytest.raises(ValueError):
         sc.Container("incus", "box").add_usb(vid, pid)
     assert calls == []
+
+
+def test_user_argv_sets_cwd_and_passes_argv_unparsed(calls):
+    sc.Container("incus", "box").user_argv(
+        ["bash", "-l", "./x.sh", "a b; rm"], env={"K": "v"}, cwd="/w", check=False)
+    cmd, kw = calls[0]
+    assert cmd[cmd.index("--cwd") + 1] == "/w"
+    assert cmd[cmd.index("--") + 1:] == ["bash", "-l", "./x.sh", "a b; rm"]
+    assert "K=v" in cmd and kw["check"] is False

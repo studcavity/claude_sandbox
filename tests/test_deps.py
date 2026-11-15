@@ -184,3 +184,53 @@ def test_redirect_to_http_is_refused():
     h = d._HttpsOnly()
     with pytest.raises(DepsError, match="non-https"):
         h.redirect_request(None, None, 302, "", {}, "http://evil/x")
+
+
+# --------------------------------------------------------------------------- #
+# setup: per-launch in-container scripts
+# --------------------------------------------------------------------------- #
+def test_setup_parses_with_defaults():
+    parsed = d.parse("setup:\n  - {name: tc, path: tools/setup.sh}\n")
+    assert parsed["setup"] == [{"name": "tc", "path": "tools/setup.sh", "args": [],
+                           "env": {}, "timeout": 1800}]
+    assert d.parse("apt: [git]")["setup"] == []
+
+
+@pytest.mark.parametrize("entry", [
+    "{name: a, path: /etc/passwd}", "{name: a, path: ../x.sh}",
+    "{name: a, path: a/../x.sh}", "{name: a, path: ./x.sh}",
+    "{name: a, path: -rf}", "{name: a, path: 'x; rm -rf ~'}",
+    "{name: a, path: 'x y.sh'}", "{name: a, path: 'x\\n'}", "{name: a, path: ''}",
+    "{name: a, path: x.sh, timeout: 0}", "{name: a, path: x.sh, timeout: 3601}",
+    "{name: a, path: x.sh, timeout: true}", "{name: a, path: x.sh, timeout: '5'}",
+    "{name: a, path: x.sh, env: {LD_PRELOAD: x}}",
+    "{name: a, path: x.sh, args: [1]}", "{name: a, path: x.sh, extra: 1}",
+    "{path: x.sh}", "{name: a b, path: x.sh}",
+])
+def test_setup_rejects_bad_entries(entry):
+    with pytest.raises(DepsError):
+        d.parse(f"setup:\n  - {entry}\n")
+
+
+def test_setup_rejects_duplicates_and_too_many():
+    with pytest.raises(DepsError, match="duplicate"):
+        d.parse("setup:\n  - {name: a, path: x}\n  - {name: a, path: y}\n")
+    many = "".join(f"  - {{name: n{i}, path: s{i}.sh}}\n" for i in range(9))
+    with pytest.raises(DepsError, match="at most"):
+        d.parse("setup:\n" + many)
+
+
+def test_setup_never_changes_the_image_cache_key():
+    """Editing setup must not rebuild images: it is not baked."""
+    a = d.parse("apt: [git]")
+    b = d.parse("apt: [git]\nsetup:\n  - {name: a, path: x.sh}\n")
+    assert d.cache_key(a) == d.cache_key(b) is not None
+    # setup alone is nothing to bake
+    assert d.cache_key(d.parse(
+        "setup:\n  - {name: a, path: x.sh}\n")) is None
+
+
+def test_summary_mentions_setup():
+    parsed = d.parse("setup:\n  - {name: a, path: tools/setup.sh}\n")
+    assert any("tools/setup.sh" in l and "every launch" in l
+               for l in d.summary(parsed))

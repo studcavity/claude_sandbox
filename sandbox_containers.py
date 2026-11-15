@@ -87,6 +87,13 @@ class Container:
             cmd += ["--env", f"{k}={v}"]
         return cmd + ["--", *argv]
 
+    def user_argv(self, argv, env=None, cwd=None, **kw):
+        """Run argv as the session user with no shell interpreting it."""
+        cmd = self.user_cmd(*argv, env=env)
+        if cwd:
+            cmd[cmd.index("--cwd") + 1] = cwd
+        return run(cmd, **kw)
+
     def user(self, script, env=None, **kw):
         return run(self.user_cmd("bash", "-lc", script, env=env), **kw)
 

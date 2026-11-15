@@ -362,3 +362,79 @@ def test_claude_md_without_usb_says_so(repo_root):
     md = _render(repo_root, [])
     assert "No USB devices were requested." in md
     assert "config device add c1" not in md
+
+
+# --------------------------------------------------------------------------- #
+# setup: scripts run in the container
+# --------------------------------------------------------------------------- #
+SETUP = {"name": "tc", "path": "tools/setup.sh", "args": ["--x", "a b"],
+         "env": {"K": "v"}, "timeout": 99}
+
+
+def test_setup_argv_has_no_shell_and_is_bounded():
+    assert cs.setup_argv(SETUP) == [
+        "timeout", "--kill-after=10", "99", "bash", "-l", "./tools/setup.sh",
+        "--x", "a b"]
+
+
+def test_run_setup_runs_in_clone_without_stdin_and_reports(make_args,
+                                                           monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    seen = []
+
+    def user_argv(argv, env=None, cwd=None, **kw):
+        seen.append((argv, env, cwd, kw))
+        return subprocess.CompletedProcess(argv, 0)
+    fake_box.user_argv = user_argv
+    box.box, box.deps = fake_box, {"setup": [SETUP]}
+    box.run_setup("/home/ubuntu/p")
+    argv, env, cwd, kw = seen[0]
+    assert cwd == "/home/ubuntu/p" and env == {"K": "v"}
+    assert kw == {"check": False, "input": ""}
+    assert "`tools/setup.sh`: succeeded" in box.deps_note
+
+
+@pytest.mark.parametrize("rc, word", [(1, "status 1"), (124, "timed out")])
+def test_run_setup_failure_is_reported_not_raised(make_args, monkeypatch,
+                                                  fake_box, rc, word):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    fake_box.user_argv = lambda argv, **kw: subprocess.CompletedProcess(argv, rc)
+    box.box, box.deps = fake_box, {"setup": [SETUP]}
+    box.run_setup("/w")
+    assert "FAILED" in box.deps_note and word in box.deps_note
+
+
+def test_run_setup_noop_without_setup(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    fake_box.user_argv = lambda *a, **k: pytest.fail("must not run")
+    box.box = fake_box
+    box.run_setup("/w")  # deps None
+    box.deps = {"setup": []}
+    box.run_setup("/w")
+
+
+def test_setup_runs_after_clone_and_before_credentials():
+    import inspect
+    src = inspect.getsource(cs.main)
+    assert (src.index("box.clone()") < src.index("box.run_setup(")
+            < src.index("box.session("))
+    # credentials are only pushed by session(); setup must not touch them
+    assert "push_secrets" not in inspect.getsource(cs.Sandbox.run_setup)
+
+
+def test_launch_writes_sandbox_marker(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch)
+    for m in ("launch", "wait_network"):
+        setattr(fake_box, m, lambda *a, **k: None)
+    box.box = fake_box
+    box.launch("ubuntu:24.04")
+    assert any(c[0] == "put_file" and c[1] == "/etc/claude-sandbox"
+               for c in fake_box.calls)
+
+
+def test_template_documents_setup_and_the_hazard_guard(repo_root):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    guard = '[ -f /etc/claude-sandbox ] || '
+    assert guard in t and "Gate hazardous scripts" in t
+    assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in t
+    assert "\nsetup:" in t and cs.SANDBOX_MARKER == "/etc/claude-sandbox"

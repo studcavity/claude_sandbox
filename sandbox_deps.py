@@ -41,6 +41,9 @@ APT_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,99}(=[A-Za-z0-9][A-Za-z0-9.+:~-]{0,
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 # Variables that change how bash/the loader behave rather than configure a tool.
+# Repo-relative script path: no leading '/' or '-', no '..' or '.' segments.
+SETUP_PATH_RE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*(/[A-Za-z0-9_+][A-Za-z0-9._+-]*)*$")
+SETUP_TIMEOUT_DEFAULT, SETUP_TIMEOUT_MAX, MAX_SETUP = 1800, 3600, 8
 ENV_DENY = re.compile(r"^(LD_.*|PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS4|"
                       r"PROMPT_COMMAND|CDPATH|GLOBIGNORE)$")
 
@@ -98,8 +101,27 @@ def _section(doc, key):
     return v
 
 
+def _args(item, where):
+    args = item.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise DepsError(f"{where}: args must be a list of strings")
+    return args
+
+
+def _env(item, where):
+    env = item.get("env") or {}
+    if not isinstance(env, dict):
+        raise DepsError(f"{where}: env must be a mapping")
+    for k, v in env.items():
+        if not isinstance(k, str) or not ENV_RE.match(k) or ENV_DENY.match(k):
+            raise DepsError(f"{where}: env name not allowed: {k!r}")
+        if not isinstance(v, (str, int, float, bool)) or "\0" in str(v):
+            raise DepsError(f"{where}: env {k} must be a plain scalar")
+    return {k: str(v) for k, v in env.items()}
+
+
 def parse(raw):
-    """bytes/str -> {"apt": [...], "scripts": [...], "binaries": [...]}."""
+    """bytes/str -> {"apt", "scripts", "binaries", "setup", + metadata}."""
     if isinstance(raw, bytes):
         if len(raw) > MAX_DEPS_FILE:
             raise DepsError(f"{DEPS_FILE} is larger than {MAX_DEPS_FILE} bytes")
@@ -114,7 +136,8 @@ def parse(raw):
     if doc is None:
         doc = {}
     _check_keys(doc, DEPS_FILE, (),
-                ("apt", "scripts", "binaries", "last_generated", "platform"))
+                ("apt", "scripts", "binaries", "setup", "last_generated",
+                 "platform"))
 
     last_generated = doc.get("last_generated")
     if isinstance(last_generated, (datetime.datetime, datetime.date)):
@@ -142,20 +165,9 @@ def parse(raw):
     for i, s in enumerate(_section(doc, "scripts")):
         w = f"scripts[{i}]"
         _check_keys(s, w, ("name", "url"), ("sha256", "args", "env"))
-        args = s.get("args") or []
-        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-            raise DepsError(f"{w}: args must be a list of strings")
-        env = s.get("env") or {}
-        if not isinstance(env, dict):
-            raise DepsError(f"{w}: env must be a mapping")
-        for k, v in env.items():
-            if not isinstance(k, str) or not ENV_RE.match(k) or ENV_DENY.match(k):
-                raise DepsError(f"{w}: env name not allowed: {k!r}")
-            if not isinstance(v, (str, int, float, bool)) or "\0" in str(v):
-                raise DepsError(f"{w}: env {k} must be a plain scalar")
         scripts.append({"name": _str(s, "name", w, NAME_RE), "url": _url(s, w),
-                        "sha256": _sha(s, w, required=False), "args": args,
-                        "env": {k: str(v) for k, v in env.items()}})
+                        "sha256": _sha(s, w, required=False),
+                        "args": _args(s, w), "env": _env(s, w)})
 
     binaries = []
     for i, b in enumerate(_section(doc, "binaries")):
@@ -172,7 +184,27 @@ def parse(raw):
     names = [b["name"] for b in binaries]
     if len(set(names)) != len(names):
         raise DepsError("binaries: duplicate names")
+
+    setup = []
+    for i, s in enumerate(_section(doc, "setup")):
+        w = f"setup[{i}]"
+        _check_keys(s, w, ("name", "path"), ("args", "env", "timeout"))
+        timeout = s.get("timeout", SETUP_TIMEOUT_DEFAULT)
+        if (not isinstance(timeout, int) or isinstance(timeout, bool)
+                or not 1 <= timeout <= SETUP_TIMEOUT_MAX):
+            raise DepsError(f"{w}: timeout must be 1-{SETUP_TIMEOUT_MAX} seconds")
+        path = _str(s, "path", w, SETUP_PATH_RE)
+        if any(seg in (".", "..") for seg in path.split("/")):
+            raise DepsError(f"{w}: invalid path: {path!r}")
+        setup.append({"name": _str(s, "name", w, NAME_RE), "path": path,
+                      "args": _args(s, w), "env": _env(s, w),
+                      "timeout": timeout})
+    if len(setup) > MAX_SETUP:
+        raise DepsError(f"setup: at most {MAX_SETUP} entries")
+    if len({s["name"] for s in setup}) != len(setup):
+        raise DepsError("setup: duplicate names")
     return {"apt": apt, "scripts": scripts, "binaries": binaries,
+            "setup": setup,
             "last_generated": last_generated, "platform": platform}
 
 
@@ -180,8 +212,9 @@ def cache_key(deps):
     """Hex digest identifying what gets installed, or None if it must not be
     baked into a cached image.
 
-    Only the install sections feed the key (comments, ordering of keys and
-    the metadata fields don't). Scripts without a sha256 are whatever the URL
+    Only the install sections feed the key (comments, ordering of keys, the
+    metadata fields and `setup`, which runs per launch and is never baked,
+    don't). Scripts without a sha256 are whatever the URL
     serves at build time, and a cached image would freeze that with no way to
     notice, so such deps are never cached.
     """
@@ -205,6 +238,10 @@ def summary(deps):
     if deps["binaries"]:
         out.append("binaries: " + ", ".join(
             f"`{b['name']}` (/usr/local/bin)" for b in deps["binaries"]))
+    if deps.get("setup"):
+        out.append("setup (run in the container at the start of every launch, "
+                   "after the clone): " + ", ".join(
+                       f"`{s['path']}`" for s in deps["setup"]))
     return out
 
 
