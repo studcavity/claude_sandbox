@@ -695,7 +695,7 @@ def test_session_id_is_the_container_name_and_avoids_existing(make_args,
     monkeypatch.setattr(cs.Container, "list_names",
                         staticmethod(lambda cli: seen.setdefault("n", {"x"})))
     box = cs.Sandbox(make_args(name=None))
-    assert box.session == box.name and "claude" not in box.name
+    assert box.session_id == box.name and "claude" not in box.name
     assert cs.sandbox_sessions.validate_session(box.name)
 
 

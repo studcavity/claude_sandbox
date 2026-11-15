@@ -367,7 +367,7 @@ class Sandbox:
         # The container name doubles as the session id (key title, branches).
         self.name = args.name or sandbox_sessions.pick_name(
             Container.list_names(self.cli))
-        self.session = sandbox_sessions.validate_session(self.name)
+        self.session_id = sandbox_sessions.validate_session(self.name)
         self.box = Container(self.cli, self.name)
         self.key_id = None
         self.container_up = False
@@ -571,7 +571,7 @@ class Sandbox:
         self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
         title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
-                                           self.session)
+                                           self.session_id)
         if self.args.repo:
             log(f"adding deploy key to {self.args.repo}")
             resp = gh_api("POST", f"/repos/{self.args.repo}/keys",
@@ -615,7 +615,7 @@ class Sandbox:
             # their own branch under sbx/<session>/ and land through PRs.
             self.box.user(f"git -C {shlex.quote(repo_dir)} checkout -q -b "
                           + shlex.quote(sandbox_sessions.work_branch(
-                              self.session)))
+                              self.session_id)))
         return repo_dir
 
     def write_claude_md(self, workdir):
@@ -637,7 +637,7 @@ class Sandbox:
                               repo=self.args.repo,
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
-                              session=self.session,
+                              session=self.session_id,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
@@ -721,10 +721,10 @@ class Sandbox:
             return
         try:
             report_landing(sandbox_land.land(
-                a.repo, self.session, setup_paths(self.deps)))
+                a.repo, self.session_id, setup_paths(self.deps)))
         except Exception as e:
-            log(f"warning: couldn't open PRs for {self.session}: {e}; push "
-                f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session)}")
+            log(f"warning: couldn't open PRs for {self.session_id}: {e}; push "
+                f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session_id)}")
 
     def teardown(self):
         if self._torn_down:
