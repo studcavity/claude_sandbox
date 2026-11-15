@@ -4,8 +4,7 @@ import subprocess
 
 import pytest
 
-import sandbox_issues as si
-
+from claude_sandbox.github import issues as si
 A = "a" * 40
 B = "b" * 40
 GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0" * 2   # assembled: see test_untrusted.py

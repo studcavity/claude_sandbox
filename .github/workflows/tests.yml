@@ -47,11 +47,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Lint (pyflakes)
-        run: python -m pyflakes *.py tests/
+        run: python -m pyflakes claude_sandbox scripts/*.py tests/
       - name: Types (mypy)
-        run: python -m mypy *.py
+        run: python -m mypy claude_sandbox scripts/*.py
       - name: Lint (shellcheck)
-        run: shellcheck run.sh smoke.sh .githooks/*
+        run: shellcheck run.sh scripts/*.sh .githooks/*
       - name: Run tests
         run: |
           set +e

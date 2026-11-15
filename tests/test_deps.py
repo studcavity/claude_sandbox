@@ -8,8 +8,8 @@ import zipfile
 import pytest
 import yaml
 
-import sandbox_deps as d
-from sandbox_deps import DepsError
+from claude_sandbox.container import deps as d
+from claude_sandbox.container.deps import DepsError
 
 SHA = "a" * 64
 

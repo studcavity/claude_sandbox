@@ -6,9 +6,7 @@ import types
 
 import pytest
 
-import sandbox_github as g
-
-
+from claude_sandbox.github import gh as g
 class Gh:
     """Fake `_gh`: records calls, can block on a barrier or fail for a path."""
 
@@ -134,7 +132,7 @@ def args(**kw):
 
 
 def plan(**kw):
-    import sandbox_backend_github as bg
+    from claude_sandbox.backends import github as bg
     return bg.prefetch_plan(args(**kw))
 
 

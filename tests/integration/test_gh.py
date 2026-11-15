@@ -7,7 +7,7 @@ that the mocked unit tests cannot. Skipped unless `gh` and `openssl` are on
 PATH. gh's version floats with the host, so this is what catches an upstream
 change in flags or output.
 
-A second, opt-in group (CS_GH_LIVE=1, ./smoke.sh) makes read-only calls to real
+A second, opt-in group (CS_GH_LIVE=1, ./scripts/smoke.sh) makes read-only calls to real
 GitHub with whatever credentials `gh` has.
 """
 import http.server
@@ -20,8 +20,7 @@ import threading
 
 import pytest
 
-import sandbox_github as g
-
+from claude_sandbox.github import gh as g
 pytestmark = pytest.mark.gh
 
 if not (shutil.which("gh") and shutil.which("openssl")):
@@ -166,7 +165,7 @@ def test_put_body_arrives_intact_for_the_actions_settings(api):
 def test_an_org_policy_or_missing_admin_surfaces_as_a_coded_error(api, tail, code):
     """409 (an organisation forbids the change) and 403 (no admin) are the two
     refusals sandbox_hardening reports instead of failing on."""
-    import sandbox_hardening as sh
+    from claude_sandbox.github import hardening as sh
     with pytest.raises(g.GitHubError) as e:
         g.gh_api("PUT", f"/repos/me/p/actions/permissions/workflow/{tail}",
                  {"default_workflow_permissions": "read"})
@@ -214,7 +213,7 @@ def test_gh_missing_is_a_clear_error(api, monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# opt-in: read-only calls to real GitHub (./smoke.sh, or CI with GH_TOKEN)
+# opt-in: read-only calls to real GitHub (./scripts/smoke.sh, or CI with GH_TOKEN)
 # --------------------------------------------------------------------------- #
 live = pytest.mark.skipif(os.environ.get("CS_GH_LIVE") != "1",
                           reason="set CS_GH_LIVE=1 to call real GitHub")

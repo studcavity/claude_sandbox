@@ -9,12 +9,9 @@ import types
 
 import pytest
 
-import sandbox_volumes
-
-import claude_sandbox as cs
-import sandbox_backend_github as bg
-
-
+from claude_sandbox.container import volumes as sandbox_volumes
+from claude_sandbox import cli as cs
+from claude_sandbox.backends import github as bg
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -119,7 +116,7 @@ def test_tail_text_strips_terminal_noise_and_marks_a_cut():
 
 
 def test_resume_prompt_names_each_failure_and_its_output():
-    a = {"name": "tests", "path": "final-check.sh"}
+    a = {"name": "tests", "path": "scripts/final-check.sh"}
     b = {"name": "lint", "path": "tools/lint.sh"}
     p = cs.resume_prompt([(a, 1, "FAILED tests/test_x.py::test_y"),
                           (b, 124, "slow")])
@@ -167,7 +164,7 @@ def test_parse_probe_usb_keeps_only_well_formed_ids():
     (None, False, "No repo was cloned"),
 ])
 def test_render_claude_md_real_template(repo_root, repo, read_only, needle):
-    with open(os.path.join(repo_root, "sandbox_CLAUDE.md")) as f:
+    with open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")) as f:
         template = f.read()
     md = cs.render_claude_md(
         template, cs.parse_probe("sudo=no\ntools=git jq\nbranch=main"),
@@ -442,7 +439,7 @@ def test_usb_flag_normalises_case():
 
 
 def _render(repo_root, devices, visible=""):
-    with open(os.path.join(repo_root, "sandbox_CLAUDE.md")) as f:
+    with open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")) as f:
         template = f.read()
     return cs.render_claude_md(
         template, cs.parse_probe(f"sudo=no\nusb={visible}"), container="c1",
@@ -460,7 +457,7 @@ DEPS_REF_BUDGET_CHARS = 8_000
 
 def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
     md = cs.render_claude_md(
-        open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read(),
+        open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read(),
         cs.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/some-repo", "owner/some-repo", False,
         "- apt: `a`\n- binaries: `b`", session="quirky-hopper",
@@ -468,7 +465,7 @@ def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
     assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
         f"{len(md)} chars: move detail to an on-demand reference file")
     ref = cs.render_deps_ref(
-        open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read())
+        open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read())
     assert len(ref) <= DEPS_REF_BUDGET_CHARS
 
 
@@ -564,13 +561,13 @@ def test_launch_writes_sandbox_marker(make_args, monkeypatch, fake_box):
 
 
 def test_template_documents_setup_and_the_hazard_guard(repo_root):
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     guard = '[ -f /etc/claude-sandbox ] || '
     assert guard in t and "Gate hazardous scripts" in t
     flat = " ".join(t.split())
     assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in flat
     assert cs.SANDBOX_MARKER == "/etc/claude-sandbox"
-    ref = open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read()
+    ref = open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read()
     assert "\nsetup:" in ref and "idempotent" in ref
 
 
@@ -687,7 +684,7 @@ def test_update_check_happens_before_any_github_or_container_work(
 
 
 def test_template_has_no_docker_references(repo_root):
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     assert "docker" not in t.lower() and "podman" not in t.lower()
 
 
@@ -745,7 +742,7 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
 
 
 def test_template_documents_image_key(repo_root):
-    t = open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read()
     assert "\nimage: images:ubuntu/24.04" in t and "--image" in t
 
 
@@ -904,7 +901,7 @@ def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
 
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     md = cs.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "sbx/quirky-hopper/work",
             "usb": set()}, "quirky-hopper", "/h/r", "o/r", False, "",
@@ -939,7 +936,7 @@ def test_deps_reference_is_written_and_the_prompt_points_at_it(
 
 def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
     import json
-    rs = json.load(open(os.path.join(repo_root, "rulesets",
+    rs = json.load(open(os.path.join(repo_root, "config", "rulesets",
                                      "protect-main.json")))
     types = {r["type"] for r in rs["rules"]}
     assert {"pull_request", "non_fast_forward", "deletion"} <= types
@@ -957,7 +954,7 @@ def test_the_session_end_never_files_issues(make_args, monkeypatch):
 
 
 def test_template_asks_for_a_todo_file_per_issue(repo_root):
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     assert "`todo/<name>.md`" in t and "first heading is the" in t
     assert "fresh agent" in t
     for gone in ("Sandbox-Action", "random", "<YYYYMMDD>", "secrets.token_hex"):
@@ -965,7 +962,7 @@ def test_template_asks_for_a_todo_file_per_issue(repo_root):
 
 
 def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
-    t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
+    t = " ".join(open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read().split())
     assert "describe a problem and some potential solutions" in t
     assert "NOT a work order" in t and "don't dictate" in t
 
@@ -973,7 +970,7 @@ def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
 def test_template_names_credits_as_a_way_work_is_lost(repo_root):
     """Running out of credits ends a session like a crash; the sandbox CLAUDE.md
     must say so inside the ephemerality section, where the push habits are."""
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     start = t.index("## This session is entirely ephemeral")
     section = t[start:t.index("\n## ", start + 1)]
     assert "credits" in section.lower()
@@ -981,33 +978,56 @@ def test_template_names_credits_as_a_way_work_is_lost(repo_root):
 
 
 # --- the checker inside the sandbox (plan 4d) -------------------------------------- #
-def test_session_tool_modules_cover_the_checkers_whole_import_graph(repo_root):
-    """If sandbox_check (or anything it imports) gains a MODULE-LEVEL import, the
-    copy in the sandbox must too, or `sandbox-check` dies there with ImportError.
-    Function-level imports (sandbox_github in --post-status, sandbox_land in
-    sandbox_actions.run) are the GitHub paths a session never takes there."""
+def _module_level_imports(path):
     import ast
-    seen, todo = set(), ["sandbox_check"]
-    while todo:
-        mod = todo.pop()
-        if mod in seen:
-            continue
-        seen.add(mod)
-        tree = ast.parse(open(os.path.join(repo_root, mod + ".py")).read())
-        for node in ast.iter_child_nodes(tree):
-            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
-                     else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
-            todo += [n for n in names if os.path.exists(os.path.join(repo_root, n + ".py"))]
-    assert seen == set(cs.SESSION_TOOL_MODULES)
+    tree = ast.parse(open(path).read())
+    out = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Import):
+            out += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out += [node.module + "." + a.name for a in node.names] + [node.module]
+    return out
 
 
-def test_session_tool_files_are_exactly_the_modules_plus_an_executable_wrapper(repo_root):
+def test_portable_imports_only_stdlib_and_itself(repo_root):
+    """Everything under portable/ is copied into the sandbox and run by CI
+    with no third-party packages and no launcher modules. A MODULE-LEVEL import
+    of anything else makes `sandbox-check` die there with ImportError.
+    Function-level imports are the GitHub paths a session never takes there."""
+    import glob
+    import sys
+    pkg = os.path.join(repo_root, "claude_sandbox")
+    assert os.path.getsize(os.path.join(pkg, "__init__.py")) == 0   # copied too
+    files = glob.glob(os.path.join(pkg, "portable", "*.py"))
+    assert files
+    for f in files:
+        for name in _module_level_imports(f):
+            top = name.split(".")[0]
+            ok = (top in sys.stdlib_module_names
+                  or name == "claude_sandbox" or name.startswith("claude_sandbox.portable"))
+            assert ok, f"{os.path.relpath(f, repo_root)} imports {name}"
+
+
+def test_the_checker_script_imports_only_portable(repo_root):
+    names = _module_level_imports(os.path.join(repo_root, "scripts", "sandbox_check.py"))
+    ours = [n for n in names if n.startswith("claude_sandbox")]
+    assert ours and all(n.startswith("claude_sandbox.portable") for n in ours)
+
+
+def test_session_tool_files_are_the_script_the_portable_package_and_an_executable_wrapper(repo_root):
+    import glob
     files = cs.session_tool_files(repo_root)
     paths = [p for p, _, _ in files]
-    assert paths == ([f"{cs.SESSION_TOOL_DIR}/{m}.py" for m in cs.SESSION_TOOL_MODULES]
+    portable = sorted(os.path.basename(f) for f in glob.glob(
+        os.path.join(repo_root, "claude_sandbox", "portable", "*.py")))
+    d = cs.SESSION_TOOL_DIR
+    assert paths == ([f"{d}/scripts/sandbox_check.py", f"{d}/claude_sandbox/__init__.py"]
+                     + [f"{d}/claude_sandbox/portable/{n}" for n in portable]
                      + [cs.SESSION_TOOL_BIN])
     modes = {p: m for p, _, m in files}
-    assert modes[cs.SESSION_TOOL_BIN] == "0755" and modes[paths[0]] == "0644"
+    assert modes[cs.SESSION_TOOL_BIN] == "0755" and modes[paths[0]] == "0755"
+    assert modes[paths[1]] == "0644"
     assert files[0][1].startswith(b'"""sandbox_check.py')
 
 
@@ -1042,7 +1062,7 @@ def test_install_session_tools_is_two_execs_and_one_tar_stream(make_args, monkey
         assert set(members) == {p.lstrip("/") for p, _, _ in cs.session_tool_files(repo_root)}
         wrapper = members[cs.SESSION_TOOL_BIN.lstrip("/")]
         assert wrapper.mode == 0o755 and members[
-            f"{cs.SESSION_TOOL_DIR.lstrip('/')}/sandbox_check.py"].mode == 0o644
+            f"{cs.SESSION_TOOL_DIR.lstrip('/')}/scripts/sandbox_check.py"].mode == 0o755
         assert all(m.uid == 0 and m.gid == 0 and m.mtime == 0 for m in members.values())
         assert tar.extractfile(wrapper).read() == cs.SESSION_TOOL_WRAPPER.encode()
 
@@ -1265,7 +1285,7 @@ def test_landing_is_called_from_exactly_one_place():
 def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
     """The unconditional rule (spec 07). A later trim of sandbox_CLAUDE.md must
     not drop it; it is the same in every repo and names no repo's weak points."""
-    t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
+    t = " ".join(open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read().split())
     assert ("Nothing from this sandbox may run in a trusted or privileged "
             "execution context") in t and "before a human has reviewed it" in t
     for example in ("a workflow that must run on push", "a setup script that must "
@@ -1281,7 +1301,7 @@ def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
 # --------------------------------------------------------------------------- #
 # final check: run `check:` when Claude exits, resume on failure
 # --------------------------------------------------------------------------- #
-CHECK = {"name": "tests", "path": "final-check.sh", "args": [], "env": {},
+CHECK = {"name": "tests", "path": "scripts/final-check.sh", "args": [], "env": {},
          "timeout": 60}
 
 
@@ -1382,15 +1402,15 @@ def test_select_variant_refuses_unbalanced_markers(bad):
 
 def test_template_variants_name_only_real_backends(repo_root):
     import re
-    import sandbox_backend_local
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    from claude_sandbox.backends import local as sandbox_backend_local
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     kinds = set(re.findall(r"^<!-- if ([a-z]+) -->$", t, re.M))
     assert kinds == {bg.GitHubBackend.kind, sandbox_backend_local.LocalBackend.kind}
 
 
 def _render_kind(repo_root, kind):
     return cs.render_claude_md(
-        open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read(),
+        open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read(),
         cs.parse_probe("sudo=yes\ntools=git\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/r", "o/r", False, "- deps",
         session="quirky-hopper", disk_note="- disk", kind=kind,

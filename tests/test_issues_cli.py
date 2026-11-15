@@ -1,7 +1,7 @@
 """The sandbox_issues command line (`run` and `main`): real git, fake GitHub."""
 import pytest
 
-import sandbox_issues as si
+from claude_sandbox.github import issues as si
 from test_issues import Api, GH, Repo, path, text
 
 

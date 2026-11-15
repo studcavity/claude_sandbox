@@ -43,5 +43,5 @@ binaries:
 # session with the output (README: "final check:").
 check:
   - name: lint-and-tests
-    path: final-check.sh
+    path: scripts/final-check.sh
     timeout: 1800

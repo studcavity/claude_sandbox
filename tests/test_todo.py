@@ -1,9 +1,7 @@
 """The follow-up request format (`todo/<name>.md`), pure rules."""
 import pytest
 
-import sandbox_todo as st
-
-
+from claude_sandbox.portable import todo as st
 @pytest.mark.parametrize("path,name", [
     ("todo/fix-ci.md", "fix-ci"), ("todo/a.md", "a"), ("todo/0-x.md", "0-x"),
     ("todo/" + "a" * 80 + ".md", "a" * 80),

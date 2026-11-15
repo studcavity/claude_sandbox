@@ -4,10 +4,10 @@ import os
 
 import pytest
 
-import claude_sandbox as cs
-import sandbox_backend_github as bg
-import sandbox_hardening as sh
-from sandbox_github import GitHubError
+from claude_sandbox import cli as cs
+from claude_sandbox.backends import github as bg
+from claude_sandbox.github import hardening as sh
+from claude_sandbox.github.gh import GitHubError
 
 WF = "/repos/o/r/actions/permissions/workflow"
 
@@ -190,7 +190,7 @@ def test_the_preflight_runs_the_check(box, monkeypatch):
 def test_nothing_the_check_found_reaches_the_sessions_claude_md(box, repo_root, monkeypatch):
     """A list of the repo's weak points is a map for a prompt-injected session:
     the rendered CLAUDE.md is the same with a clean repo and a bad one."""
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
 
     def render():
         return cs.render_claude_md(

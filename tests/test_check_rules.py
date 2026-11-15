@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-import sandbox_check as sc
+from claude_sandbox.portable import check as sc
 
 AWS = "AKIA" + "IOSFODNN7EXAMPLE"   # assembled: nothing token-shaped in the source
 GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0" * 2
@@ -23,15 +23,15 @@ def test_subject_rules(subject, expect):
 
 
 @pytest.mark.parametrize("files,msg,errors", [
-    ({"sandbox_images.py"}, "feat: x", 1),
-    ({"sandbox_images.py"}, "feat: x\n\nVerified: smoke", 0),
-    ({"sandbox_deps.py"}, "feat: x\n\nNot verified: no incus here", 0),
-    ({"sandbox_deps.py"}, "feat: x\n\nnot verified: lower case", 0),
-    ({"sandbox_images.py"}, "feat: x\n\nNot verified against real incus", 0),   # CLAUDE.md wording
-    ({"sandbox_images.py"}, "feat: x\n\nVerified inside a sandbox without nesting", 0),
-    ({"sandbox_containers.py", "other.py"}, "feat: x\n\nVerifiedish", 1),
-    ({"sandbox_deps.py"}, "feat: x\n\nwe never verified this", 1),         # mid-sentence isn't a claim
-    ({"pkg/sandbox_containers.py"}, "feat: x", 1),      # by file name, any directory
+    ({"claude_sandbox/container/images.py"}, "feat: x", 1),
+    ({"claude_sandbox/container/images.py"}, "feat: x\n\nVerified: smoke", 0),
+    ({"claude_sandbox/container/deps.py"}, "feat: x\n\nNot verified: no incus here", 0),
+    ({"claude_sandbox/container/deps.py"}, "feat: x\n\nnot verified: lower case", 0),
+    ({"claude_sandbox/container/images.py"}, "feat: x\n\nNot verified against real incus", 0),   # CLAUDE.md wording
+    ({"claude_sandbox/container/images.py"}, "feat: x\n\nVerified inside a sandbox without nesting", 0),
+    ({"claude_sandbox/container/incus.py", "other.py"}, "feat: x\n\nVerifiedish", 1),
+    ({"claude_sandbox/container/deps.py"}, "feat: x\n\nwe never verified this", 1),         # mid-sentence isn't a claim
+    ({"incus.py", "container/incus.py"}, "feat: x", 0),   # the full repo path only
     ({"sandbox_check.py"}, "feat: x", 0),
 ])
 def test_real_run_rule(files, msg, errors):
@@ -219,9 +219,9 @@ def test_secret_in_message_is_an_error(repo):
 
 
 def test_sensitive_file_needs_a_verification_line(repo):
-    repo.commit("feat: change images", {"sandbox_images.py": "x", "tests/t.py": "x"})
+    repo.commit("feat: change images", {"claude_sandbox/container/images.py": "x", "tests/t.py": "x"})
     assert any(s == sc.ERROR and "real run" in t for s, t in texts())
-    repo.commit("feat: again\n\nNot verified: no incus", {"sandbox_images.py": "y"})
+    repo.commit("feat: again\n\nNot verified: no incus", {"claude_sandbox/container/images.py": "y"})
     assert not any("real run" in t for s, t in texts("main~1", "main"))
 
 

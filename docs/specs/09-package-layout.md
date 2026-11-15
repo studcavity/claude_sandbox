@@ -1,7 +1,11 @@
 # Spec 09: a package layout instead of 30 flat modules
 
-Source: user request (session agile-hamilton). Status: **PR 1 in progress**
-(the move); PR 2 (below) not started. Settled with the user: grouped
+Source: user request (session agile-hamilton). Status: **PR 1 implemented**
+(the move, branch `sbx/agile-hamilton/package-layout`); PR 2 (below) not
+started, and **stacked on PR 1** (branch from it, not from `main`: both touch
+the same lines, so the merge-conflict risk of parallel branches is high).
+Spec 05 says stacked PRs get no CI (the workflows run only for PRs based on
+`main`), so PR 2 is checked locally and re-based onto `main` once PR 1 merges. Settled with the user: grouped
 subpackages, `scripts/sandbox_check.py` beside the shell scripts, `rulesets/`
 under `config/`, a pure move first and the clean-up in a second PR.
 
@@ -31,10 +35,13 @@ structure.
     modules that also run in CI and inside the sandbox). Replaces a test that
     pinned a copy list to an import graph with a directory-level rule.
   - Launcher-wide modules stay at the package top.
-- **`scripts/`** holds `smoke.sh`, `final-check.sh` and `sandbox_check.py`
-  (the commit checker is a standalone program run by CI and copied into the
-  sandbox, not a library module). The checker finds the package by putting the
-  repo root (the parent of its own directory) on `sys.path`.
+- **`scripts/`** holds `smoke.sh`, `final-check.sh` and `sandbox_check.py`.
+  **Deviation found while moving:** the launcher also imports the checker as
+  a library (`backends/local.py` calls `check_findings`), so the logic lives
+  in `claude_sandbox/portable/check.py` and `scripts/sandbox_check.py` is its
+  thin command line, which finds the package by putting the repo root (the
+  parent of its own directory) on `sys.path`. The sandbox gets all of
+  `portable/`, so the old hand-kept copy list is gone.
 - **`config/rulesets/`** replaces `rulesets/`.
 - **`claude_sandbox/data/`** holds what the code reads at run time:
   `sandbox_CLAUDE.md`, `sandbox_ref_deps.md`, `templates/`. File names are
@@ -68,7 +75,8 @@ structure.
 | `sandbox_protect`, `_hardening`, `_land`, `_issues`, `_labels`, `_templates` | `github/protect.py`, `hardening.py`, `land.py`, `issues.py`, `labels.py`, `templates.py` |
 | `sandbox_names`, `_todo`, `_untrusted` | `portable/names.py`, `todo.py`, `untrusted.py` |
 | `sandbox_bootstrap`, `_claude_config`, `_sessions`, `_provenance`, `_timing`, `_update`, `_util` | `bootstrap.py`, `claude_config.py`, `sessions.py`, `provenance.py`, `timing.py`, `update.py`, `util.py` |
-| `sandbox_check.py`, `smoke.sh`, `final-check.sh` | `scripts/` |
+| `sandbox_check.py` | `portable/check.py` + `scripts/sandbox_check.py` (entry) |
+| `smoke.sh`, `final-check.sh` | `scripts/` |
 | `rulesets/` | `config/rulesets/` |
 | `sandbox_CLAUDE.md`, `sandbox_ref_deps.md`, `templates/` | `claude_sandbox/data/` |
 
@@ -93,6 +101,11 @@ structure.
    them (other repos are unaffected: the convention is unchanged). They can
    still be applied by hand with `gh api ... --input config/rulesets/<file>`,
    as the README documents. Decide in PR 2 (below).
+4. **`NEEDS_REAL_RUN`** in the checker now matches full repo paths
+   (`claude_sandbox/container/incus.py`, `images.py`, `deps.py`), not base
+   names, and the pre-push hook matches the same paths.
+5. **`claude_sandbox_deps.yaml`** (`check:` path, now `scripts/final-check.sh`)
+   also changes, which holds the PR for review too.
 
 ## Verification
 

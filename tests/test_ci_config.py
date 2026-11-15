@@ -17,9 +17,9 @@ STRICT = "set -euo pipefail"
 
 
 def shell_scripts(root):
-    found = [os.path.join(root, p) for p in ("run.sh", "smoke.sh")]
+    found = [os.path.join(root, p) for p in ("run.sh", "scripts/smoke.sh")]
     found += sorted(glob.glob(os.path.join(root, ".githooks", "*")))
-    found += sorted(glob.glob(os.path.join(root, "*.sh")))
+    found += sorted(glob.glob(os.path.join(root, "scripts", "*.sh")))
     return sorted(set(found))
 
 
@@ -57,6 +57,7 @@ def hook_repo(tmp_path, repo_root):
     base = git("rev-parse", "HEAD")
 
     def commit_touching(path, message):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / path).write_text("changed")
         git("add", "."), git("commit", "-qm", message)
         return git("rev-parse", "HEAD")
@@ -72,13 +73,13 @@ def hook_repo(tmp_path, repo_root):
 
 def test_hook_warns_on_unverified_container_code(hook_repo):
     base, commit_touching, push = hook_repo
-    rc, err = push(commit_touching("sandbox_images.py", "tweak images"), base)
+    rc, err = push(commit_touching("claude_sandbox/container/images.py", "tweak images"), base)
     assert rc == 0 and "WARNING" in err and "smoke.sh" in err
 
 
 def test_hook_silent_when_verified_or_unrelated(hook_repo):
     base, commit_touching, push = hook_repo
-    rc, err = push(commit_touching("sandbox_deps.py",
+    rc, err = push(commit_touching("claude_sandbox/container/deps.py",
                                    "x\n\nVerified: ./smoke.sh"), base)
     assert (rc, err) == (0, "")
     head = commit_touching("docs.md", "docs only")
@@ -120,8 +121,8 @@ def test_mypy_catches_an_attribute_shadowing_a_method(repo_root, tmp_path):
 def test_mypy_passes_on_the_repo(repo_root):
     p = subprocess.run(
         [sys.executable, "-m", "mypy", "--cache-dir", os.devnull,
-         *sorted(os.path.basename(f) for f in
-                 glob.glob(os.path.join(repo_root, "*.py")))],
+         "claude_sandbox", *sorted(glob.glob(
+             os.path.join(repo_root, "scripts", "*.py")))],
         capture_output=True, text=True, cwd=repo_root)
     assert p.returncode == 0, p.stdout
 
@@ -153,3 +154,17 @@ def test_ci_runs_mypy_and_the_smoke_step(workflow):
 def test_dev_requirements_include_mypy(repo_root):
     reqs = open(os.path.join(repo_root, "requirements-dev.txt")).read()
     assert "mypy" in reqs
+
+
+# -- package layout (spec 09) ----------------------------------------------- #
+def test_package_init_files_stay_empty(repo_root):
+    """claude_sandbox/__init__.py is copied into the sandbox beside portable/
+    and must not import anything; the subpackage ones are empty too."""
+    for sub in ("", "backends", "container", "github", "portable"):
+        init = os.path.join(repo_root, "claude_sandbox", sub, "__init__.py")
+        assert os.path.getsize(init) == 0, init
+
+
+def test_nothing_but_the_package_lives_at_the_root_as_python(repo_root):
+    """The root is for entry shims, docs and config, not modules."""
+    assert glob.glob(os.path.join(repo_root, "*.py")) == []

@@ -1,5 +1,5 @@
 """Opt-in tests against a REAL container. Skipped unless CS_INTEGRATION=1 and
-incus (or lxc) is installed. Run with `./smoke.sh` or
+incus (or lxc) is installed. Run with `./scripts/smoke.sh` or
 `CS_INTEGRATION=1 python -m pytest -m incus`.
 
 CS_INTEGRATION_IMAGE overrides the image (default images:alpine/edge)."""
@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from sandbox_containers import Container
+from claude_sandbox.container.incus import Container
 
 pytestmark = pytest.mark.incus
 

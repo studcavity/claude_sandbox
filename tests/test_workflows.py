@@ -32,8 +32,9 @@ def test_checker_code_comes_from_the_base_not_the_pr(wf):
     (run,) = [s["run"] for s in wf["jobs"]["commit-metadata"]["steps"]
               if "sandbox_check.py" in s.get("run", "")]
     # always the trusted checkout: no fallback to the PR's own copy
-    assert "../trusted/sandbox_check.py" in run
-    assert "pr/sandbox_check.py" not in run and "$src" not in run
+    assert "../trusted/scripts/sandbox_check.py" in run
+    assert "../trusted/sandbox_check.py" in run     # transitional fallback, spec 09
+    assert "pr/" not in run.replace("cd pr", "") and "$src" not in run
     # stdlib-only checker: nothing is installed (no PR-chosen packages)
     assert "pip install" not in run
 
@@ -75,7 +76,7 @@ def test_the_filer_runs_the_checked_out_default_branch_and_no_context_text(filer
     assert len(uses) == 1 and "ref" not in uses[0].get("with", {})
     for s in job["steps"]:
         assert "${{" not in s.get("run", "")      # context goes through env
-    run = [s["run"] for s in job["steps"] if "sandbox_issues.py" in s.get("run", "")]
+    run = [s["run"] for s in job["steps"] if "claude_sandbox.github.issues" in s.get("run", "")]
     assert run and "--since" in run[0] and "--last" in run[0]
 
 

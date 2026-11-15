@@ -4,9 +4,8 @@ import json
 
 import pytest
 
-import sandbox_deps
-import sandbox_images as im
-
+from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.container import images as im
 DAY = datetime.timedelta(days=1)
 SHA = "b" * 64
 

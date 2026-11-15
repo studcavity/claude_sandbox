@@ -3,8 +3,7 @@ import subprocess
 
 import pytest
 
-import sandbox_pool as sp
-
+from claude_sandbox.container import pool as sp
 GiB = sp.GiB
 
 

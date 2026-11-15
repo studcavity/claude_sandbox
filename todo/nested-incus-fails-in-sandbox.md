@@ -2,10 +2,10 @@
 
 ## Problem
 
-Spec 08 (the `--local` backend) changes `sandbox_volumes.py` (kept work
+Spec 08 (the `--local` backend) changes `container/volumes.py` (kept work
 volumes) and adds a recovery path that launches a helper container. The
 project rules require a real-incus run for that kind of change
-(`./smoke.sh`, `tests/integration`). A session tried to get one inside its
+(`./scripts/smoke.sh`, `tests/integration`). A session tried to get one inside its
 own sandbox (session gentle-germain, November 2026) and could not: incus
 installs and initialises, but no nested container ever starts. So the local
 backend's container side (bundle in over `incus exec` stdin, export,
@@ -50,7 +50,7 @@ gap.
 ## What "done" looks like
 
 A session started with the flags meant for this (e.g. `./run.sh
-studcavity/claude_sandbox --nesting`) can run `./smoke.sh` (or
+studcavity/claude_sandbox --nesting`) can run `./scripts/smoke.sh` (or
 `CS_INTEGRATION=1 python -m pytest tests/integration -m incus`) to
 completion inside the sandbox, and the README/CLAUDE.md say which flags that
 takes.
@@ -67,7 +67,7 @@ takes.
 - **Accept that container changes are verified on the host only**, and say
   so in CLAUDE.md, so sessions stop trying.
 
-- **Make `final-check.sh`'s incus probe launch something.** It decides
+- **Make `scripts/final-check.sh`'s incus probe launch something.** It decides
   whether to run `tests/integration` with `incus info`, which succeeds once
   incus is initialised even when no container can start (exactly the state
   above). Every integration test then fails with the `forkstart` error
@@ -83,7 +83,7 @@ namespaces, more mounts). It is already an opt-in flag; keep it opt-in.
 
 ## Also outstanding from spec 08
 
-Run `./smoke.sh` on a real host for the local backend: `./run.sh --local
+Run `./scripts/smoke.sh` on a real host for the local backend: `./run.sh --local
 <a scratch git repo>`, commit in the session, exit, and check that the branch
 appears under `sbx/<session>/` with a review report; then kill a container
 mid-session and check that `./run.sh --local <repo> --recover` imports its

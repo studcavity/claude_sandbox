@@ -3,9 +3,8 @@ import os
 
 import pytest
 
-import sandbox_deps
-import sandbox_host as sh
-
+from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.container import host as sh
 GOOD = {"name": "probe", "vendor_id": "2E8A", "product_id": "000C",
         "description": "Pico debug probe (CMSIS-DAP), SWD"}
 
@@ -55,7 +54,7 @@ def test_deps_file_rejects_usb_and_host_file_never_touches_cache_key():
         sandbox_deps.parse("usb: []")
     base = sandbox_deps.parse("apt: [git]")
     import inspect
-    import sandbox_images
+    from claude_sandbox.container import images as sandbox_images
     assert "sandbox_host" not in inspect.getsource(sandbox_images)
     assert sandbox_deps.cache_key(base)
 

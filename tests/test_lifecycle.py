@@ -11,12 +11,12 @@ import types
 
 import pytest
 
-import claude_sandbox as cs
-import sandbox_backend_github as bg
-import sandbox_github
-import sandbox_land
-import sandbox_sessions
-from sandbox_github import GitHubError
+from claude_sandbox import cli as cs
+from claude_sandbox.backends import github as bg
+from claude_sandbox.github import gh as sandbox_github
+from claude_sandbox.github import land as sandbox_land
+from claude_sandbox import sessions as sandbox_sessions
+from claude_sandbox.github.gh import GitHubError
 
 
 def test_no_instance_attribute_shadows_a_method(make_args):
@@ -166,7 +166,7 @@ def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
 def test_the_sessions_signing_key_is_recorded_and_its_prs_get_provenance(world, monkeypatch):
     """The public signing key is kept on the host at launch; after teardown
     (the private half is gone) every PR the landing opened is checked."""
-    import sandbox_provenance
+    from claude_sandbox import provenance as sandbox_provenance
     posted = []
 
     def post_session(repo, landed, **kw):
@@ -184,7 +184,7 @@ def test_the_sessions_signing_key_is_recorded_and_its_prs_get_provenance(world, 
 
 
 def test_no_provenance_flag_skips_the_status(world, monkeypatch):
-    import sandbox_provenance
+    from claude_sandbox import provenance as sandbox_provenance
     called = []
     monkeypatch.setattr(sandbox_provenance, "post_session",
                         lambda *a, **k: called.append(1) or [])
@@ -194,7 +194,7 @@ def test_no_provenance_flag_skips_the_status(world, monkeypatch):
 
 def test_a_new_session_never_reuses_a_name_with_a_recorded_key(make_args, monkeypatch):
     """Its key would otherwise vouch for the old session's branches."""
-    import sandbox_provenance
+    from claude_sandbox import provenance as sandbox_provenance
     sandbox_provenance.save_key("o/r", "quirky-hopper", PUB)
     seen = []
     monkeypatch.setattr(cs.sandbox_sessions, "pick_name",
@@ -245,7 +245,7 @@ def test_crash_after_launch_still_lands_and_tears_down(world, monkeypatch):
 
 
 def test_a_provenance_failure_never_breaks_landing_or_teardown(world, monkeypatch):
-    import sandbox_provenance
+    from claude_sandbox import provenance as sandbox_provenance
     monkeypatch.setattr(sandbox_provenance, "post_session",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cs.main(argv(world)) == 0
@@ -263,7 +263,7 @@ def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
 
 
 def test_timings_are_off_by_default_and_leave_no_global_behind(world, capsys):
-    import sandbox_timing
+    from claude_sandbox import timing as sandbox_timing
     assert cs.main(argv(world)) == 0
     assert "timings" not in capsys.readouterr().err
     assert sandbox_timing.ACTIVE is None
@@ -296,7 +296,7 @@ def test_an_unwritable_json_path_is_a_warning_not_a_failure(world, capsys):
 
 # --- prefetch wiring (plan 1b) -------------------------------------------------- #
 def test_launch_starts_the_prefetch_and_always_clears_it(world, monkeypatch):
-    import sandbox_github
+    from claude_sandbox.github import gh as sandbox_github
     seen = []
     monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
     cleared = []
@@ -306,7 +306,7 @@ def test_launch_starts_the_prefetch_and_always_clears_it(world, monkeypatch):
 
 
 def test_no_prefetch_flag_starts_nothing_but_still_clears(world, monkeypatch):
-    import sandbox_github
+    from claude_sandbox.github import gh as sandbox_github
     seen, cleared = [], []
     monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
     monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
@@ -395,7 +395,7 @@ def test_failed_final_check_resumes_the_same_session_before_teardown(
         world, monkeypatch):
     """Exiting Claude runs `check:` in the live container; a failure reopens
     the conversation with the output, and only a pass lets teardown happen."""
-    check = {"name": "tests", "path": "final-check.sh", "args": [], "env": {},
+    check = {"name": "tests", "path": "scripts/final-check.sh", "args": [], "env": {},
              "timeout": 60}
 
     def load_deps(self):
@@ -448,7 +448,7 @@ def local_world(monkeypatch, tmp_path):
     work directory, and every GitHub call made fatal: local mode must never
     reach GitHub."""
     import subprocess as sp
-    import sandbox_backend_local as lb
+    from claude_sandbox.backends import local as lb
     for k, v in dict(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
                      GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
                      GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e").items():

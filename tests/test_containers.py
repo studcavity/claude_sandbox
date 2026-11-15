@@ -3,9 +3,7 @@ import subprocess
 
 import pytest
 
-import sandbox_containers as sc
-
-
+from claude_sandbox.container import incus as sc
 @pytest.fixture
 def calls(monkeypatch):
     seen = []
