@@ -21,6 +21,20 @@ the code-layout table.
 - `sandbox_host.py`: `claude_sandbox_host.yaml` (USB requests) and approval.
 - `sandbox_deps.py`: `claude_sandbox_deps.yaml` schema, downloads, archives.
 - `sandbox_util.py`: `log`, `run`, `sigint_to_child`.
+- `sandbox_check.py`: the commit linter (also run in CI, and copied into the
+  sandbox as `sandbox-check`), `--post-status` / `--override` (the
+  `sandbox/check` commit status), `--file-issues`. **Stdlib-only**, and so is
+  everything it imports at module level (`sandbox_actions`, `sandbox_labels`,
+  `sandbox_names`, `sandbox_templates`, `sandbox_untrusted`): a test pins the
+  list the launcher copies into the sandbox to that import graph.
+- `sandbox_actions.py`: `Sandbox-Action` trailers -> issues (spec in the
+  docstring); `sandbox_record.py`, `sandbox_untrusted.py`, `sandbox_labels.py`,
+  `sandbox_templates.py` (+ `templates/`), `sandbox_names.py`: small pure
+  helpers. Session text is untrusted: sanitise with `sandbox_untrusted`, never
+  paste it into GitHub raw.
+- `sandbox_timing.py`: the `--timings` stopwatch; stages are explicit
+  `with sandbox_timing.stage(...)` blocks, never wrappers assigned onto the
+  `Sandbox` instance (shadowing a method crashed every launch once).
 - `sandbox_CLAUDE.md`: `string.Template` rendered into the sandbox's
   `~/.claude/CLAUDE.md`. Write `$$` for a literal dollar sign.
 

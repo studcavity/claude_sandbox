@@ -59,7 +59,14 @@ On every launch the program:
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
 | `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
-| `sandbox_land.py` | host-side: open PRs for a session's branches, hold privileged ones |
+| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
+| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--post-status` (the `sandbox/check` merge gate, `--override` to break glass), `--file-issues` (post-merge filer) |
+| `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
+| `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
+| `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
+| `sandbox_templates.py` | validated `templates/pr.md` and `templates/issue.md` |
+| `sandbox_names.py` | stdlib-only: session-name and branch-root rules shared with the checker |
+| `sandbox_timing.py` | `--timings`: stages and call counts |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
