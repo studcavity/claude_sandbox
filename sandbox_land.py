@@ -20,6 +20,7 @@ import urllib.parse
 
 import sandbox_deps
 import sandbox_host
+import sandbox_labels
 import sandbox_record
 import sandbox_untrusted
 from sandbox_github import gh_api
@@ -96,6 +97,23 @@ def record_section(rec):
     if not rec.verified and not rec.not_verified:
         out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
     return "\n".join(out)
+
+
+def label_pr(repo, pr, session):
+    """Label a PR we just opened `sandbox` and `session:<id>`. Best effort: a
+    PR without labels is still a PR."""
+    tail = (pr.get("html_url") or "").rstrip("/").rsplit("/", 1)[-1]
+    number = pr.get("number") or (tail if tail.isdigit() else None)
+    names = [sandbox_labels.SANDBOX]
+    if sandbox_labels.session_label(session):
+        names.append(sandbox_labels.session_label(session))
+    if not number:
+        return
+    try:
+        sandbox_labels.ensure(gh_api, repo, names)
+        gh_api("POST", f"/repos/{repo}/issues/{number}/labels", {"labels": names})
+    except RuntimeError:
+        pass
 
 
 def pr_text(session, branch, subjects, record=None):
@@ -188,6 +206,7 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
     pr = gh_api("POST", f"/repos/{repo}/pulls",
                 {"title": title, "head": branch, "base": base, "body": body,
                  "maintainer_can_modify": False})
+    label_pr(repo, pr, session)
     return Landed(branch, base, "opened", pr["html_url"], inc["ahead_by"])
 
 

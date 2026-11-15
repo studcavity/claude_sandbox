@@ -72,6 +72,7 @@ class Api:
                    "repo": {"full_name": repo}}, "html_url": "https://github.com/o/r/pull/1"}
         self.head_after, self.fail_post = head_after, fail_post
         self.reads, self.posts = 0, []
+        self.label_calls, self.deletes, self.fail_labels = [], [], False
 
     def __call__(self, method, path, body=None, raw=False):
         if method == "GET" and path == "/repos/o/r/pulls/1":
@@ -81,6 +82,11 @@ class Api:
             return self.pr
         if method == "GET" and path == "/user":
             return {"login": LOGIN}
+        if method in ("POST", "DELETE") and path.endswith(("/labels", "/labels/check-failed")):
+            if self.fail_labels:
+                raise RuntimeError("HTTP 403")
+            (self.label_calls if method == "POST" else self.deletes).append((path, body))
+            return {}
         if method == "POST":
             if self.fail_post:
                 raise RuntimeError("HTTP 500")
@@ -342,3 +348,51 @@ def test_one_prs_failure_is_reported_and_does_not_stop_the_others():
     assert "#7: failed (PR #7 comes from a fork)" in text and "--pr 7" in text
     assert "#8: success" in text and "--pr 8" not in text
     assert sc.format_status_outcomes([]) == ""
+
+
+# --- the check-failed label (plan 4b) ------------------------------------------- #
+def labelled(api):
+    return [b["labels"] for p, b in api.label_calls if "/issues/" in p]
+
+
+def test_a_red_status_adds_check_failed(pr):
+    api, url, _ = pr(["fixup! x"])
+    go(api, url)
+    assert labelled(api) == [["check-failed"]]
+    assert api.deletes == []
+
+
+def test_a_green_status_removes_check_failed(pr):
+    api, url, _ = pr(["feat: ok"])
+    go(api, url)
+    assert api.deletes == [("/repos/o/r/issues/1/labels/check-failed", None)]
+    assert labelled(api) == []
+
+
+def test_override_turns_the_label_off(pr):
+    api, url, _ = pr(["fixup! x"])
+    go(api, url, override="reviewed by hand, fine")
+    assert api.deletes and labelled(api) == []
+
+
+def test_a_crashed_checker_is_labelled_failed_too(pr, monkeypatch):
+    api, url, _ = pr(["feat: x"])
+    monkeypatch.setattr(sc, "check_findings", lambda *a, **k: 1 / 0)
+    go(api, url)
+    assert labelled(api) == [["check-failed"]]
+
+
+def test_label_trouble_never_changes_the_status_or_exit_code(pr):
+    api, url, _ = pr(["fixup! x"])
+    api.fail_labels = True
+    rc, _ = go(api, url)
+    assert rc == 1 and api.status()["state"] == "failure"
+
+
+def test_local_range_mode_touches_no_labels(tmp_path, monkeypatch):
+    r = Repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    r.commit("feat: a", {"a.txt": "1"})
+    api = Api("0" * 40, r.git("rev-parse", "HEAD").strip(), "x")
+    sc.post_status_run("o/r", base="main~1", head="main", api=api, out=lambda s: None)
+    assert api.label_calls == [] and api.deletes == []

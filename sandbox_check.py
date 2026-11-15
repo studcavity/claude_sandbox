@@ -67,6 +67,7 @@ import sys
 import urllib.parse
 
 import sandbox_actions
+import sandbox_labels
 import sandbox_names
 import sandbox_untrusted
 
@@ -340,6 +341,22 @@ def fetch_pr(url, number, base_sha, dest):
                          f"{(e.stderr or '').strip()[-200:]}") from None
 
 
+def sync_check_label(api, repo, pr, state):
+    """`check-failed` on the PR while its status is red, removed when it turns
+    green (re-run or override). Best effort and never fatal: the status is the
+    gate, the label is a convenience."""
+    try:
+        if state in ("failure", "error"):
+            sandbox_labels.ensure(api, repo, [sandbox_labels.CHECK_FAILED])
+            api("POST", f"/repos/{repo}/issues/{pr}/labels",
+                {"labels": [sandbox_labels.CHECK_FAILED]})
+        else:
+            api("DELETE", f"/repos/{repo}/issues/{pr}/labels/"
+                f"{sandbox_labels.CHECK_FAILED}")
+    except RuntimeError:
+        pass  # 404 on removal just means it wasn't there
+
+
 def post_status_run(repo, pr=None, base=None, head=None, branch=None,
                     override=None, strict=False, api=None, url=None,
                     out=print, result=None):
@@ -395,6 +412,8 @@ def post_status_run(repo, pr=None, base=None, head=None, branch=None,
                 {"body": override_comment(login, override, sha, findings)})
     except RuntimeError as e:
         raise CheckError(f"couldn't post the status: {e}") from None
+    if pr:
+        sync_check_label(api, repo, pr, state)
     out(f"posted {STATUS_CONTEXT} {state} on {sha[:7]}: {desc}")
     if result is not None:
         result.update(state=state, description=desc, sha=sha)
