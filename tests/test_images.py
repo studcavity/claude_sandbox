@@ -66,7 +66,8 @@ def cli_calls(monkeypatch):
 def builds(monkeypatch):
     seen = []
     monkeypatch.setattr(im, "build_image",
-                        lambda cli, src, alias, prefix, provision, replace=False:
+                        lambda cli, src, alias, prefix, provision, replace=False,
+                        root_size=None:
                         seen.append((src, alias, replace)))
     return seen
 
@@ -173,3 +174,22 @@ def test_base_image_prune_keeps_other_sources_recent_bases(now):
     imgs["claude-sandbox-old"] = now - datetime.timedelta(days=30)
     assert im.images_to_prune(imgs, im.MAX_BASE_IMAGES,
                               "claude-sandbox-new") == ["claude-sandbox-old"]
+
+
+def test_build_image_caps_root_disk_of_build_container(monkeypatch):
+    launches = []
+    class B:
+        def __init__(self, cli, name): self.name = name
+        def launch(self, source, ephemeral, root_size=None):
+            launches.append(root_size)
+        def wait_network(self): pass
+        def root(self, *a, **kw): pass
+        def delete(self): pass
+    monkeypatch.setattr(im, "Container", B)
+    monkeypatch.setattr(im, "run", lambda *a, **kw: None)
+    im.build_image("incus", "src", "a", "p-", lambda b: None, root_size="30GiB")
+    assert launches == ["30GiB"]
+
+
+def test_base_setup_caps_journal():
+    assert "SystemMaxUse=100M" in im.BASE_ROOT_SETUP

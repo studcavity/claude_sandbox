@@ -1,10 +1,13 @@
 """Tests for claude_sandbox: CLI parsing, pure helpers, Sandbox lifecycle."""
+import argparse
 import os
 import re
 import stat
 import subprocess
 
 import pytest
+
+import sandbox_volumes
 
 import claude_sandbox as cs
 
@@ -208,7 +211,7 @@ def test_launch_runs_self_check_right_after_network(make_args, monkeypatch,
                                                     fake_box):
     box = _sandbox(make_args, monkeypatch)
     order = []
-    fake_box.launch = lambda image, ephemeral, config=None: order.append("launch")
+    fake_box.launch = lambda image, ephemeral, config=None, root_size=None: order.append("launch")
     fake_box.wait_network = lambda: order.append("network")
     fake_box.self_check = lambda: order.append("self_check")
     fake_box.root = lambda script, **kw: order.append("root")
@@ -622,3 +625,54 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
 def test_template_documents_image_key(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     assert "\nimage: images:ubuntu/24.04" in t and "--image" in t
+
+
+# --------------------------------------------------------------------------- #
+# disk quotas and volumes
+# --------------------------------------------------------------------------- #
+def test_size_arg():
+    assert cs.size_arg("30GiB") == "30GiB"
+    assert cs.size_arg("0") is None
+    for bad in ("", "-1GiB", "lots", "30 GiB; rm", "0GiB"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            cs.size_arg(bad)
+
+
+def test_disk_flags_default_and_disable():
+    a = cs.build_parser().parse_args(["r"])
+    assert (a.disk_size, a.volume_size) == (cs.DEFAULT_DISK_SIZE,
+                                            cs.DEFAULT_VOLUME_SIZE)
+    a = cs.build_parser().parse_args(["--disk-size", "0", "--volume-size", "0", "r"])
+    assert a.disk_size is None and a.volume_size is None
+
+
+def test_launch_passes_root_size(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, disk_size="30GiB")
+    seen = {}
+    fake_box.launch = lambda image, ephemeral, config=None, root_size=None: \
+        seen.update(root_size=root_size)
+    fake_box.wait_network = fake_box.self_check = lambda: None
+    fake_box.root = lambda script, **kw: None
+    box.box = fake_box
+    box.launch("img")
+    assert seen == {"root_size": "30GiB"}
+
+
+def test_repo_workdir():
+    assert cs.repo_workdir("me/proj") == "/home/ubuntu/proj"
+    assert cs.repo_workdir(None) == "/home/ubuntu"
+
+
+def test_disk_note_reflects_mounted_volumes(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, disk_size="30GiB", volume_size="20GiB")
+    assert "Everything shares that one disk" in box.disk_note()
+    m = sandbox_volumes.plan("c", "/home/ubuntu/p", "20GiB")
+    box.volumes = sandbox_volumes.Volumes("incus", fake_box, m, "20GiB")
+    box.volumes.created = [m[0].volume]
+    note = box.disk_note()
+    assert "30GiB" in note and "`/tmp`" in note and "/home/ubuntu/p" not in note
+
+
+def test_claude_md_stresses_ephemeral_disk(repo_root):
+    md = _render(repo_root, [])
+    assert "entirely ephemeral" in md and "wip/" in md

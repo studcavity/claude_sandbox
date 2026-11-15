@@ -55,6 +55,7 @@ import argparse
 import functools
 import getpass
 import os
+import re
 import shlex
 import string
 import subprocess
@@ -70,6 +71,8 @@ if __name__ == "__main__":
 
 import sandbox_deps
 import sandbox_host
+import sandbox_pool
+import sandbox_volumes
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
 from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
@@ -92,6 +95,12 @@ TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
 DEFAULT_GITHUB_USER = "studcavity"
 DEFAULT_GIT_EMAIL = "353176155+studcavity@users.noreply.github.com"
 DEFAULT_IMAGE = "images:ubuntu/26.04"  # Ubuntu 26.04 LTS
+# Storage quotas (incus sizes). The root disk was 10GiB by default, which a
+# deps install or a nested incus overran. Quotas are caps, not allocations, so
+# these cost nothing until used, and they bound what one session can take from
+# the host's pool. 0 disables.
+DEFAULT_DISK_SIZE = "30GiB"
+DEFAULT_VOLUME_SIZE = "20GiB"
 DEFAULT_CLI = "incus"
 
 DEFAULT_TOKEN_FILE = os.path.join(
@@ -221,12 +230,13 @@ def access_lines(workdir, repo, branch, read_only):
 
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
-                     deps_note, usb_devices=(), cli="incus"):
+                     deps_note, usb_devices=(), cli="incus",
+                     disk_note=""):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb); write $$ for a literal dollar sign. `facts` comes from
+    $deps_file, $host_file, $usb, $disk); write $$ for a literal dollar sign. `facts` comes from
     parse_probe().
     """
     branch = facts["branch"]
@@ -243,6 +253,7 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         deps=deps_note,
         deps_file=sandbox_deps.DEPS_FILE,
         host_file=sandbox_host.HOST_FILE,
+        disk=disk_note or "- Disk limits are unknown; check `df -h`.",
         usb=sandbox_host.usb_section(usb_devices, cli, container,
                                      facts["usb"]) or "No USB devices were requested.",
     )
@@ -313,6 +324,21 @@ def launch_config(args):
     return {"security.nesting": "true"} if args.nesting else {}
 
 
+def size_arg(text):
+    """argparse type for sizes: an incus size like 30GiB, or 0 to disable.
+    Returns None for 0 so callers can treat it as "no quota"."""
+    if text.strip() == "0":
+        return None
+    if not re.fullmatch(r"[1-9][0-9]*(\.[0-9]+)?(B|[kMGTPE]i?B?)", text.strip()):
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a size like 30GiB (or 0 for no limit)")
+    return text.strip()
+
+
+def repo_workdir(repo):
+    return f"{HOME}/{repo.split('/')[1]}" if repo else HOME
+
+
 class Sandbox:
     def __init__(self, args):
         self.args = args
@@ -326,6 +352,7 @@ class Sandbox:
         self.deps_baked = False
         self.image = None
         self.usb_devices = []
+        self.volumes = sandbox_volumes.Volumes(self.cli, self.box, [], None)
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{sandbox_deps.DEPS_FILE}`.")
 
@@ -338,7 +365,8 @@ class Sandbox:
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
         log(f"launching ephemeral container {self.name} ({image})")
-        self.box.launch(image, ephemeral=True, config=launch_config(self.args))
+        self.box.launch(image, ephemeral=True, config=launch_config(self.args),
+                        root_size=self.args.disk_size)
         self.container_up = True
         self.box.wait_network()
         self.box.self_check()  # fail fast, before any real work
@@ -356,6 +384,27 @@ class Sandbox:
                           "(apt-get update -qq && apt-get install -y -qq tmux)",
                           capture=True)
             self.box.user("cat > ~/.tmux.conf", input=TMUX_CONF)
+
+    def attach_volumes(self):
+        """Mount size-capped volumes over /tmp and the clone directory."""
+        mounts = sandbox_volumes.plan(self.name, repo_workdir(self.args.repo),
+                                      self.args.volume_size)
+        self.volumes = sandbox_volumes.Volumes(
+            self.cli, self.box, mounts, self.args.volume_size)
+        self.volumes.attach()
+
+    def disk_note(self):
+        """Facts about this session's disks for the sandbox CLAUDE.md."""
+        a = self.args
+        root = (f"The root disk is capped at **{a.disk_size}**" if a.disk_size
+                else "The root disk has no launcher-imposed cap")
+        mounted = {m.path: m for m in self.volumes.mounts
+                   if m.volume in self.volumes.created}
+        vols = ", ".join(f"`{p}`" for p in mounted)
+        return (f"- {root}. " + (
+            f"{a.volume_size} volumes are mounted separately at {vols}, so "
+            "filling one does not break the others or the OS."
+            if mounted else "Everything shares that one disk."))
 
     def setup_nesting(self):
         """With --nesting, make a preinstalled incus usable inside the sandbox."""
@@ -532,7 +581,7 @@ class Sandbox:
     def clone(self):
         if not self.args.repo:
             return HOME
-        repo_dir = f"{HOME}/{self.args.repo.split('/')[1]}"
+        repo_dir = repo_workdir(self.args.repo)
         log(f"cloning {self.args.repo}")
         self.box.user(f"git clone git@github.com:{self.args.repo}.git "
                       f"{shlex.quote(repo_dir)}")
@@ -557,7 +606,8 @@ class Sandbox:
                               repo=self.args.repo,
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
-                              usb_devices=self.usb_devices, cli=self.cli)
+                              usb_devices=self.usb_devices, cli=self.cli,
+                              disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
                       input=md)
 
@@ -632,6 +682,7 @@ class Sandbox:
         if self.container_up:
             self.box.delete()
             log(f"destroyed container {self.name}")
+        self.volumes.delete()  # only once the instance no longer uses them
 
 
 # --------------------------------------------------------------------------- #
@@ -702,6 +753,22 @@ def build_parser():
                         "(opus, sonnet, haiku) or a full model ID "
                         f"(default: $CLAUDE_SANDBOX_MODEL or {DEFAULT_MODEL}); "
                         "'default' leaves the choice to Claude Code")
+    p.add_argument("--disk-size", type=size_arg, default=DEFAULT_DISK_SIZE,
+                   metavar="SIZE",
+                   help="storage quota for the root disk of the sandbox and "
+                        f"of image builds (default: {DEFAULT_DISK_SIZE}; 0 = "
+                        "no limit; needs a pool with quota support)")
+    p.add_argument("--volume-size", type=size_arg, default=DEFAULT_VOLUME_SIZE,
+                   metavar="SIZE",
+                   help="quota for each separate volume mounted over /tmp and "
+                        "the clone directory, so a full one can't take down "
+                        f"the OS (default: {DEFAULT_VOLUME_SIZE}; 0 = keep "
+                        "everything on the root disk)")
+    p.add_argument("--grow-pool", type=size_arg, metavar="SIZE",
+                   help="first grow the incus storage pool to SIZE (loop-"
+                        "backed pools only; changes the host, shared by all "
+                        "sandboxes). Without it the launcher only checks "
+                        "free space and tells you the command")
     p.add_argument("--no-deps", action="store_true",
                    help=f"don't install the repo's {sandbox_deps.DEPS_FILE}")
     p.add_argument("--usb", action="append", default=[], metavar="VID:PID",
@@ -791,6 +858,11 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
 
+    pool_err = sandbox_pool.check(args.cli, args.grow_pool)
+    if pool_err:
+        print(f"error: {pool_err}", file=sys.stderr)
+        return 1
+
     try:
         if not args.setup_token:
             box.resolve_usb()  # prompt now, not after a long image build
@@ -799,10 +871,12 @@ def main(argv=None):
         image = source
         if not args.no_cache:
             image = ensure_base_image(args.cli, source,
-                                      args.max_age, args.rebuild)
+                                      args.max_age, args.rebuild,
+                                      args.disk_size)
         if box.deps and not args.no_cache:
             baked = ensure_deps_image(args.cli, image, box.deps,
-                                      args.max_age, args.rebuild)
+                                      args.max_age, args.rebuild,
+                                      args.disk_size)
             if baked:
                 image, box.deps_baked = baked, True
                 box.deps_note += ("\n(Preinstalled in a cached image; edits "
@@ -811,6 +885,7 @@ def main(argv=None):
         if args.setup_token:
             box.install_claude()
             return box.setup_token()
+        box.attach_volumes()  # before the clone, so it lands on its own volume
         box.install_deps()  # before any credential is in the container
         box.setup_nesting()
         box.attach_usb()

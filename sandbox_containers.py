@@ -15,11 +15,13 @@ class Container:
     def __init__(self, cli, name):
         self.cli, self.name = cli, name
 
-    def launch(self, image, ephemeral, config=None):
+    def launch(self, image, ephemeral, config=None, root_size=None):
+        """root_size (e.g. "30GiB") caps the root disk with a storage quota."""
         cfg = [a for k, v in (config or {}).items()
                for a in ("-c", f"{k}={v}")]
+        dev = ["--device", f"root,size={root_size}"] if root_size else []
         run([self.cli, "launch", image, self.name]
-            + (["--ephemeral"] if ephemeral else []) + cfg)
+            + (["--ephemeral"] if ephemeral else []) + cfg + dev)
 
     def delete(self):
         run([self.cli, "delete", "--force", self.name], check=False, capture=True)

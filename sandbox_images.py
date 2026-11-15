@@ -16,7 +16,7 @@ IMAGE_PREFIX = "claude-sandbox-"
 # Per-repo images with the deps baked in. The prefix must not start with
 # IMAGE_PREFIX: base-image cleanup deletes every other image under its prefix.
 DEPS_IMAGE_PREFIX = "claude-sandboxdeps-"
-MAX_DEPS_IMAGES = 8  # keep the newest N; older ones are deleted
+MAX_DEPS_IMAGES = 4  # keep the newest N; older ones are deleted (each is GBs)
 # Base images, one per source image (repos may pick different Ubuntu releases):
 # keep the newest N so alternating repos don't rebuild each other's base.
 MAX_BASE_IMAGES = 4
@@ -46,6 +46,10 @@ BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
                    + " ".join(BASE_PACKAGES) + " && "
                    # Debian/Ubuntu ship fd as fdfind
                    "ln -sf /usr/bin/fdfind /usr/local/bin/fd && "
+                   # a chatty service must not eat the root disk
+                   "mkdir -p /etc/systemd/journald.conf.d && "
+                   "printf '[Journal]\\nSystemMaxUse=100M\\nRuntimeMaxUse=50M\\n' "
+                   "> /etc/systemd/journald.conf.d/size.conf && "
                    + BASE_APT_CLEAN)
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
 # Reset per-instance identity so every container launched from the image
@@ -112,7 +116,8 @@ def _age(created):
     return f"{age.days}d {age.seconds // 3600}h"
 
 
-def build_image(cli, source, alias, prefix, provision, replace=False):
+def build_image(cli, source, alias, prefix, provision, replace=False,
+                root_size=None):
     """Launch `source`, run provision(container), publish it as `alias`.
 
     The build container is always deleted, even on failure. With replace,
@@ -121,7 +126,7 @@ def build_image(cli, source, alias, prefix, provision, replace=False):
     """
     build = Container(cli, f"{prefix}build-{uuid.uuid4().hex[:8]}")
     try:
-        build.launch(source, ephemeral=False)
+        build.launch(source, ephemeral=False, root_size=root_size)
         build.wait_network()
         provision(build)
         build.root(BASE_CLEANUP, check=False, capture=True)
@@ -140,7 +145,7 @@ def delete_images(cli, aliases, what="image"):
         log(f"removed stale {what} {stale}")
 
 
-def ensure_base_image(cli, source, max_age_days, rebuild):
+def ensure_base_image(cli, source, max_age_days, rebuild, root_size=None):
     alias = base_alias(source)
     images = cached_images(cli)
     created = images.get(alias)
@@ -159,7 +164,7 @@ def ensure_base_image(cli, source, max_age_days, rebuild):
 
     log(f"building base image {alias} from {source} (one-time)")
     build_image(cli, source, alias, IMAGE_PREFIX, provision,
-                replace=alias in images)
+                replace=alias in images, root_size=root_size)
     # Older recipes pile up; bound them, but keep other sources' recent bases.
     now = datetime.datetime.now(datetime.timezone.utc)
     delete_images(cli, images_to_prune({**images, alias: now},
@@ -206,7 +211,8 @@ def apply_deps(box, deps):
             box.root_argv(["rm", "-rf", scratch], capture=True)
 
 
-def ensure_deps_image(cli, base, deps, max_age_days, rebuild):
+def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
+                      root_size=None):
     """Alias of a per-deps image derived from `base`, building it if needed;
     None when these deps must be installed per launch instead.
 
@@ -240,7 +246,7 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild):
 
         log(f"building deps image {alias} (one-time per change)")
         build_image(cli, base, alias, DEPS_IMAGE_PREFIX, provision,
-                    replace=created is not None)
+                    replace=created is not None, root_size=root_size)
 
         # Bound disk use: keep the newest MAX_DEPS_IMAGES (never this one).
         images = cached_images(cli, DEPS_IMAGE_PREFIX)

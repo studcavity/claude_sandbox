@@ -55,6 +55,8 @@ On every launch the program:
 | `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
+| `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
+| `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
@@ -158,6 +160,23 @@ id map), makes the incus socket world-accessible (the sandbox is throwaway and
 `ubuntu` already has passwordless sudo) and runs `incus admin init --minimal`.
 Without `--nesting` nothing changes. Trade-off: nesting loosens the sandbox's
 isolation from the host a little, so use it only for repos that need it.
+
+## disk space
+Every sandbox, image build and cached image shares one incus storage pool. A
+default loop-backed pool is small (10GiB), so a few deps images can fill it and
+break launches for everyone; per-container limits can't help then. The launcher:
+- checks the pool before building or launching and stops with the exact
+  `incus storage set <pool> size=50GiB` command when under 4GiB is free
+  (`--grow-pool SIZE` runs it for you; it changes the host, so it is opt-in);
+- caps the root disk of sandboxes and image builds (`--disk-size`, default
+  30GiB) and mounts separate capped volumes over `/tmp` and the clone
+  directory (`--volume-size`, default 20GiB), so a runaway build fills its own
+  volume rather than the OS. They are deleted at exit, and volumes leaked by a
+  crashed launcher are swept on the next launch. `0` disables either;
+  quotas need a pool driver that supports them (btrfs, zfs, lvm);
+- keeps at most 4 deps images, and caps the journal at 100MB in the base image.
+The sandbox CLAUDE.md tells Claude the session is ephemeral and to free space
+and push a `wip/` branch immediately when a disk fills.
 
 ## repo dependencies
 A repo can put a `claude_sandbox_deps.yaml` at the root of its default branch

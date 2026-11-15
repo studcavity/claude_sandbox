@@ -33,6 +33,12 @@ def test_launch_passes_config(calls):
                            "-c", "security.nesting=true"]
 
 
+def test_launch_caps_root_disk(calls):
+    sc.Container("incus", "box").launch("img", True, root_size="30GiB")
+    assert calls[0][0] == ["incus", "launch", "img", "box", "--ephemeral",
+                           "--device", "root,size=30GiB"]
+
+
 def test_root_argv_passes_env_and_cwd_without_shell(calls):
     sc.Container("lxc", "box").root_argv(["echo", "a b"], env={"K": "v"},
                                          cwd="/tmp")

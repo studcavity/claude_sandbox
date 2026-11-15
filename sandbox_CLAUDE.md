@@ -17,6 +17,27 @@ $access
 - Nested containers are only possible through Incus, and only if the sandbox
   was launched with `--nesting` and the repo's deps installed `incus`.
 
+## Disk space: this session is entirely ephemeral
+$disk
+- Everything on this disk dies with the session. Running out of space is an
+  emergency, not an inconvenience: the sandbox can stop working mid-task and
+  **all unpushed work is gone**.
+- Check early and now and then: `df -h / /tmp $home` (and `du -xh --max-depth=1`
+  on whatever is growing). Treat >80% used as a reason to act.
+- If a disk is full or nearly full, **stop and mitigate before doing anything
+  else**: delete what you can regenerate (`apt-get clean`, `pip cache purge`,
+  `rm -rf ~/.cache/*`, build output, `node_modules`, `target/`, `.venv`
+  you can recreate, files in `/tmp`), then continue.
+- Before any large download, build or install, and whenever space is tight,
+  **commit and push your non-private work to a `wip/<topic>` branch right
+  away** (`git push origin HEAD:wip/<topic>`), even if it is unfinished.
+  Don't wait for a good stopping point. Never push secrets or anything the
+  user wouldn't want in the repo.
+- Keep large generated artifacts out of git and out of the working copy where
+  you can (write them under `/tmp`, stream instead of storing, clean up as
+  you go). If a task truly needs more space than the limits allow, tell the
+  user and suggest relaunching with a larger `--disk-size` / `--volume-size`.
+
 ## Tooling
 - Available: $tools.
 - Ubuntu blocks system-wide `pip install` (PEP 668). Create a venv first

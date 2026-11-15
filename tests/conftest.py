@@ -59,8 +59,16 @@ def make_args(tmp_path):
                     usb=[], no_usb=False,
                     usb_allow=str(tmp_path / "usb_allow"),
                     claude_md=os.path.join(REPO_ROOT, "sandbox_CLAUDE.md"),
-                    setup_token=False,
+                    setup_token=False, disk_size=None, volume_size=None,
                     token_file=str(tmp_path / "oauth_token"))
         base.update(kw)
         return argparse.Namespace(**base)
     return _make
+
+
+@pytest.fixture(autouse=True)
+def no_real_pool_check(monkeypatch, request):
+    """main() checks the incus pool; never let unit tests reach a real one."""
+    if request.module.__name__ != "test_pool":
+        import sandbox_pool
+        monkeypatch.setattr(sandbox_pool, "check", lambda cli, grow_to=None: None)
