@@ -79,6 +79,16 @@ Rules:
 - Don't rewrite or force-push commits that are already on the remote unless
   the user explicitly asks. Rewrite local, unpushed commits freely to keep
   history clean.
+- Never rewrite history at or beyond a fork boundary. If this repo is a fork
+  (or otherwise contains commits that came from another repo, e.g. upstream
+  commits pulled into a fork), only treat commits that we authored in this
+  repo as ours to rewrite. Commits inherited from upstream are off limits for
+  rebase, squash, amend, reword, drop or reorder, even if the user asks for
+  "rewrite history" or "clean up history" in general: scope the rewrite to our
+  own commits on top of the boundary (e.g. `git rebase <fork-point>`, never
+  `--root`), find the boundary with `git merge-base` against the upstream
+  remote or by inspecting authorship, and if the boundary is unclear, ask
+  before touching anything.
 
 ## Git: commit and push early and often
 Because the sandbox can vanish at any time, lean towards committing and
