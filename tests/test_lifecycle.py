@@ -387,3 +387,51 @@ def test_owner_lookup_failure_fails_closed(world, monkeypatch):
                         lambda repo: (_ for _ in ()).throw(GitHubError("x", 500)))
     assert cs.main(argv(world)) == 0
     assert "projects" not in json.loads(sent[0])[".claude.json"]
+
+
+def test_failed_final_check_resumes_the_same_session_before_teardown(
+        world, monkeypatch):
+    """Exiting Claude runs `check:` in the live container; a failure reopens
+    the conversation with the output, and only a pass lets teardown happen."""
+    check = {"name": "tests", "path": "final-check.sh", "args": [], "env": {},
+             "timeout": 60}
+
+    def load_deps(self):
+        self.deps = {"image": None, "apt": [], "scripts": [], "binaries": [],
+                     "setup": [], "check": [check]}
+    monkeypatch.setattr(cs.Sandbox, "load_deps", load_deps)
+    monkeypatch.setattr(cs.Sandbox, "install_deps", lambda self: None)
+    events, outcomes = [], [(1, "FAILED tests/test_x.py::test_y"), (0, "ok")]
+    monkeypatch.setattr(cs.subprocess, "run",
+                        lambda cmd, **k: events.append(("claude", cmd)))
+
+    def stream(cmd, **kw):
+        code, out = outcomes.pop(0)
+        events.append(("check", code))
+        return code, out
+    monkeypatch.setattr(cs, "run_streaming", stream)
+    monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    monkeypatch.setattr(FakeContainer, "delete",
+                        lambda self, *a, **k: events.append(("delete", 0)),
+                        raising=False)
+
+    assert cs.main(argv(world)) == 0
+
+    kinds = [k for k, _ in events]
+    assert kinds == ["claude", "check", "claude", "check", "delete"]
+    first, second = events[0][1], events[2][1]
+    assert "--continue" not in " ".join(first)
+    assert "--continue" in " ".join(second)
+    assert "FAILED tests/test_x.py::test_y" in " ".join(second)
+
+
+def test_no_final_check_flag_goes_straight_to_teardown(world, monkeypatch):
+    monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: setattr(
+        self, "deps", {"image": None, "apt": [], "scripts": [], "binaries": [],
+                       "setup": [], "check": [{"name": "t", "path": "c.sh",
+                                               "args": [], "env": {},
+                                               "timeout": 5}]}))
+    monkeypatch.setattr(cs.Sandbox, "install_deps", lambda self: None)
+    monkeypatch.setattr(cs, "run_streaming",
+                        lambda *a, **k: pytest.fail("ran the check"))
+    assert cs.main(argv(world, "--no-final-check")) == 0

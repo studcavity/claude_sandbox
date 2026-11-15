@@ -461,6 +461,9 @@ binaries:                   # -> /usr/local/bin/<name>
 setup:                      # repo scripts run on every launch, see below
   - name: toolchain
     path: tools/setup.sh
+check:                      # final gate when you exit Claude, see below
+  - name: tests
+    path: tools/final-check.sh
 ```
 Install order is apt, binaries, scripts. `--no-deps` skips all of it. Two
 optional metadata keys, `last_generated` (quoted ISO 8601 UTC timestamp) and
@@ -500,6 +503,25 @@ the clone, after the clone and **before Claude's credentials are copied in**
 failure or timeout doesn't abort the launch; it is logged and listed in the
 sandbox CLAUDE.md so the session can tell you. `setup:` is not part of the cache
 key, so scripts should be idempotent and fast when already done.
+
+### final `check:` (a pre-commit hook for the sandbox)
+Exiting Claude used to mean teardown at once. Scripts under `check:` (same
+entry shape as `setup:`) now run first, in the still-live container, in the
+clone, in order, each under its `timeout`, streaming their output to your
+terminal. If one fails, you are asked `Resume the Claude session to fix it?
+[Y/n]`; yes reopens the same conversation (`claude --continue`, so no new
+session and no adopting branches) with a prompt holding each failing script's
+last ~6000 characters of output. Claude fixes, commits and pushes (the deploy
+key is still valid), you exit, and the check runs again, until it passes or you
+say no. Answering no, or having no terminal, tears down as before with a
+warning in the log (what was pushed still becomes a PR). Ctrl-C during the
+check skips it and tears down. `--no-final-check`, `--no-deps` and `--shell`
+skip it.
+
+Point `check:` at one script that runs the repo's whole lint and test suite
+and exits non-zero on any failure. Only the script's *path* comes from the
+default branch; its contents come from the session's checkout, so this catches
+honest mistakes. It isn't a security boundary: the PR's CI is the real gate.
 
 Every sandbox gets `/etc/claude-sandbox`, and the sandbox CLAUDE.md tells the
 session to put this guard at the top of any script that could be hazardous

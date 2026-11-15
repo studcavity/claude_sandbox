@@ -30,6 +30,9 @@ setup:                     # repo scripts run in the container every launch (see
     args: []               # optional, argv for the script
     env: {}                # optional, same restrictions as scripts' env
     timeout: 1800          # optional seconds, 1-3600 (default 1800)
+check:                     # final gate run when Claude exits (see below); same keys as setup
+  - name: tests
+    path: tools/final-check.sh
 ```
 
 Rules:
@@ -84,3 +87,13 @@ clone as the working directory, at the start of **every** launch, as
   downloads (see how to check a `sha256`, above).
 
 The guard every hazardous `setup:` script needs is in `~/.claude/CLAUDE.md`.
+
+### Final check (`check:`)
+Same entry shape as `setup:`, but run **when the user exits Claude**, in this
+container, in the clone, before anything is torn down (deploy key still live).
+Entries run in order, no stdin, each under its `timeout`. If any fails and the
+user agrees, the launcher reopens this conversation (`claude --continue`) with
+the failing scripts' output tail, so fix it, re-run the script until it
+passes, commit and push; never weaken the check. Point `check:` at one script
+that runs the repo's full lint + test suite and exits non-zero on any failure.
+`--no-final-check` and `--no-deps` skip it.

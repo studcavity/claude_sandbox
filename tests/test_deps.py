@@ -264,3 +264,31 @@ def test_image_does_not_change_the_cache_key_but_is_in_the_summary():
     assert d.cache_key(a) == d.cache_key(b) is not None
     assert any("images:ubuntu/24.04" in l for l in d.summary(b))
     assert d.cache_key(d.parse("image: images:ubuntu/24.04")) is None  # nothing to bake
+
+
+# --------------------------------------------------------------------------- #
+# check: final gate when Claude exits (same entry shape as setup:)
+# --------------------------------------------------------------------------- #
+def test_check_parses_like_setup_and_is_independent_of_it():
+    parsed = d.parse("check:\n  - {name: t, path: tools/final.sh, timeout: 60}\n"
+                     "setup:\n  - {name: t, path: tools/setup.sh}\n")
+    assert parsed["check"] == [{"name": "t", "path": "tools/final.sh",
+                                "args": [], "env": {}, "timeout": 60}]
+    assert [s["path"] for s in parsed["setup"]] == ["tools/setup.sh"]
+    assert d.parse("apt: [git]")["check"] == []
+
+
+@pytest.mark.parametrize("entry", [
+    "{name: a, path: ../x.sh}", "{name: a, path: /abs.sh}",
+    "{name: a, path: x.sh, timeout: 0}", "{name: a, path: x.sh, extra: 1}",
+    "{name: a, path: x.sh, env: {LD_PRELOAD: x}}",
+])
+def test_check_rejects_bad_entries_naming_the_section(entry):
+    with pytest.raises(DepsError, match="check"):
+        d.parse(f"check:\n  - {entry}\n")
+
+
+def test_check_is_never_baked_and_is_summarised():
+    assert d.cache_key(d.parse("check:\n  - {name: a, path: x.sh}\n")) is None
+    parsed = d.parse("check:\n  - {name: a, path: tools/final.sh}\n")
+    assert any("tools/final.sh" in l and "exit" in l for l in d.summary(parsed))

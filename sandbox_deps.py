@@ -124,8 +124,32 @@ def _env(item, where):
     return {k: str(v) for k, v in env.items()}
 
 
+def _repo_scripts(doc, key):
+    """The `setup:` / `check:` section: repo scripts run in the container, as
+    the session user, in the clone (never baked into an image)."""
+    out = []
+    for i, s in enumerate(_section(doc, key)):
+        w = f"{key}[{i}]"
+        _check_keys(s, w, ("name", "path"), ("args", "env", "timeout"))
+        timeout = s.get("timeout", SETUP_TIMEOUT_DEFAULT)
+        if (not isinstance(timeout, int) or isinstance(timeout, bool)
+                or not 1 <= timeout <= SETUP_TIMEOUT_MAX):
+            raise DepsError(f"{w}: timeout must be 1-{SETUP_TIMEOUT_MAX} seconds")
+        path = _str(s, "path", w, SETUP_PATH_RE)
+        if any(seg in (".", "..") for seg in path.split("/")):
+            raise DepsError(f"{w}: invalid path: {path!r}")
+        out.append({"name": _str(s, "name", w, NAME_RE), "path": path,
+                    "args": _args(s, w), "env": _env(s, w),
+                    "timeout": timeout})
+    if len(out) > MAX_SETUP:
+        raise DepsError(f"{key}: at most {MAX_SETUP} entries")
+    if len({s["name"] for s in out}) != len(out):
+        raise DepsError(f"{key}: duplicate names")
+    return out
+
+
 def parse(raw):
-    """bytes/str -> {"apt", "scripts", "binaries", "setup", + metadata}."""
+    """bytes/str -> {"apt", "scripts", "binaries", "setup", "check", + metadata}."""
     if isinstance(raw, bytes):
         if len(raw) > MAX_DEPS_FILE:
             raise DepsError(f"{DEPS_FILE} is larger than {MAX_DEPS_FILE} bytes")
@@ -140,7 +164,7 @@ def parse(raw):
     if doc is None:
         doc = {}
     _check_keys(doc, DEPS_FILE, (),
-                ("image", "apt", "scripts", "binaries", "setup",
+                ("image", "apt", "scripts", "binaries", "setup", "check",
                  "last_generated", "platform"))
 
     last_generated = doc.get("last_generated")
@@ -196,26 +220,10 @@ def parse(raw):
     if len(set(names)) != len(names):
         raise DepsError("binaries: duplicate names")
 
-    setup = []
-    for i, s in enumerate(_section(doc, "setup")):
-        w = f"setup[{i}]"
-        _check_keys(s, w, ("name", "path"), ("args", "env", "timeout"))
-        timeout = s.get("timeout", SETUP_TIMEOUT_DEFAULT)
-        if (not isinstance(timeout, int) or isinstance(timeout, bool)
-                or not 1 <= timeout <= SETUP_TIMEOUT_MAX):
-            raise DepsError(f"{w}: timeout must be 1-{SETUP_TIMEOUT_MAX} seconds")
-        path = _str(s, "path", w, SETUP_PATH_RE)
-        if any(seg in (".", "..") for seg in path.split("/")):
-            raise DepsError(f"{w}: invalid path: {path!r}")
-        setup.append({"name": _str(s, "name", w, NAME_RE), "path": path,
-                      "args": _args(s, w), "env": _env(s, w),
-                      "timeout": timeout})
-    if len(setup) > MAX_SETUP:
-        raise DepsError(f"setup: at most {MAX_SETUP} entries")
-    if len({s["name"] for s in setup}) != len(setup):
-        raise DepsError("setup: duplicate names")
+    setup = _repo_scripts(doc, "setup")
+    check = _repo_scripts(doc, "check")
     return {"image": image, "apt": apt, "scripts": scripts,
-            "binaries": binaries, "setup": setup,
+            "binaries": binaries, "setup": setup, "check": check,
             "last_generated": last_generated, "platform": platform}
 
 
@@ -224,7 +232,7 @@ def cache_key(deps):
     baked into a cached image.
 
     Only the install sections feed the key (comments, ordering of keys, the
-    metadata fields, `setup` (runs per launch, never baked) and `image` don't;
+    metadata fields, `setup`/`check` (run in the container, never baked) and `image` don't;
     the image is already part of the deps image's alias via the base image). Scripts without a sha256 are whatever the URL
     serves at build time, and a cached image would freeze that with no way to
     notice, so such deps are never cached.
@@ -255,6 +263,11 @@ def summary(deps):
         out.append("setup (run in the container at the start of every launch, "
                    "after the clone): " + ", ".join(
                        f"`{s['path']}`" for s in deps["setup"]))
+    if deps.get("check"):
+        out.append("check (the launcher runs these when you exit Claude, in "
+                   "this container; if any fails you are resumed with the "
+                   "output so you can fix it): " + ", ".join(
+                       f"`{s['path']}`" for s in deps["check"]))
     return out
 
 
