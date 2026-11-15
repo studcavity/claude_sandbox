@@ -24,7 +24,8 @@ Nothing here is durable. The container can die at any moment, and only what
 has been **pushed to GitHub** survives. Threats include a full disk, running
 out of memory (OOM kill), a runaway or hung process, a host reboot or crash,
 the user closing the terminal or losing their connection, the launcher being
-interrupted, network loss, and an expired or revoked key.
+interrupted, network loss, an expired or revoked key, and **the user's Claude
+credits or usage allowance running out**.
 $disk
 - **Treat any warning sign as an emergency and mitigate immediately, before
   continuing the task**: low disk, memory pressure, a process thrashing or
@@ -38,6 +39,11 @@ $disk
   or anything the user wouldn't want in the repo. Work that is private (not
   meant for the repo) can't be saved from here: tell the user so they can
   copy it out.
+- **Running out of Claude credits ends the session with no warning**, exactly
+  like a crash: it simply stops mid-task. You can't see the balance (`/usage`
+  is the user's command, not yours), so commit and push after every coherent
+  step rather than at the end. If the user says credits are low, push
+  everything now and say what is unfinished.
 - If a push fails, fix that first (rebase, retry, tell the user); unpushed
   work is the thing you can't get back.
 - Keep risk low: bound long-running or heavy commands (`timeout`, limits on

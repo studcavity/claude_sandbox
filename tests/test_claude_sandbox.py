@@ -836,3 +836,13 @@ def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
     t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
     assert "describe a problem and some potential solutions" in t
     assert "NOT a work order" in t and "must not dictate" in t
+
+
+def test_template_names_credits_as_a_way_work_is_lost(repo_root):
+    """Running out of credits ends a session like a crash; the sandbox CLAUDE.md
+    must say so inside the ephemerality section, where the push habits are."""
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    start = t.index("## This session is entirely ephemeral")
+    section = t[start:t.index("\n## ", start + 1)]
+    assert "credits" in section.lower()
+    assert "no warning" in section and "commit and push after every coherent" in section
