@@ -284,7 +284,7 @@ def test_template_covers_branches_and_status_checks(repo_root):
         t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
         "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
     assert "stack" not in md.lower()  # spec 05: every PR targets the default
-    assert "sbx/quirky-hopper/<task>" in md
+    assert "sbx/quirky-hopper/02-<task>" in md
     assert "never push to it" in md and "strands every open PR" in md
     assert "(`o/r`)" in md
     assert not __import__("re").search(r"\$[a-z_{]", md)

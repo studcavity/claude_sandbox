@@ -98,6 +98,13 @@ def test_session_branches_filters_to_exact_prefix(monkeypatch):
     assert sl.session_branches("o/r", "s") == ["sbx/s/work"]
 
 
+def test_session_branches_are_sorted_alphanumerically(monkeypatch):
+    monkeypatch.setattr(sl, "gh_api", Api({}, branches=[
+        "sbx/s/10-c", "sbx/s/02-b", "sbx/s/01-a", "sbx/s/work"]))
+    assert sl.session_branches("o/r", "s") == [
+        "sbx/s/01-a", "sbx/s/02-b", "sbx/s/10-c", "sbx/s/work"]
+
+
 def test_land_opens_pr_with_safe_fields(monkeypatch):
     api = Api({})
     monkeypatch.setattr(sl, "gh_api", api)
