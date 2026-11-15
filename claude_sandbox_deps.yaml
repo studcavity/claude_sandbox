@@ -1,0 +1,24 @@
+# Tooling installed into the sandbox before the session starts.
+# Format and rules: see "repo dependencies" in README.md. Any invalid entry
+# aborts the launch; skip this file with --no-deps.
+# Install order: apt, binaries, scripts.
+
+# Debian/Ubuntu packages (optionally pinned: name=version).
+apt:
+  - shfmt
+
+# Prebuilt binaries -> /usr/local/bin/<name>. sha256 is required and covers
+# the downloaded file (here, the archive); archive_path picks the file inside.
+binaries:
+  - name: shellcheck
+    url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+    sha256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+    archive_path: shellcheck-v0.10.0/shellcheck
+
+# Remote install scripts, run as root with bash. sha256 is optional but
+# recommended; without it the script is whatever the URL serves at launch.
+# Installers that pick their own destination need pointing at a system dir.
+# scripts:
+#   - name: arduino-cli
+#     url: https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh
+#     env: {BINDIR: /usr/local/bin}
