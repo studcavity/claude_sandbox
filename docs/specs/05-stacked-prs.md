@@ -60,8 +60,20 @@ baseRefName`, on a host) before choosing.
   the session's own unreviewed branch, and a branch could weaken the rules
   it is judged by. The checker must instead come from the default branch,
   for example by checking out `github.event.repository.default_branch`.
-  `tests.yml` running a branch's own code is normal, but it then runs on
-  more events. Changes under `.github/` are held for manual review.
+  Changes under `.github/` are held for manual review.
+
+  **Caveat: more runs of unreviewed code.** On every same-repo PR,
+  `tests.yml` already runs code the session wrote (pytest, `conftest.py`,
+  anything they import) before a human has reviewed it. GitHub has no
+  setting that requires approval for runs from same-repo branches: its
+  approval settings apply only to fork PRs (spec 07). Option B adds more
+  events and more PRs that do this. That is acceptable under the rule
+  "nothing runs in a trusted execution context before review" only while
+  those runs are untrusted: a read-only `GITHUB_TOKEN`, no secrets they can
+  reach, and no way to post or approve anything that gates a merge. Spec 07
+  is how a repo gets there and checks it. Choose B only together with 07,
+  or after checking those conditions by hand for every repo that uses
+  stacking. Option A does not add any runs.
 - **C. Keep stacking in the launcher, but have it run the checks.** The
   host posts statuses for stacked PRs only. This works only if spec 01
   keeps a host-posted gate.
