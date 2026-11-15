@@ -70,6 +70,28 @@ Rules:
   use official upstream URLs, keep entries minimal, and call out each change
   in the commit message and to the user.
 
+## Missing sandbox capabilities
+If the task needs something this sandbox doesn't provide (access to a device,
+a permission or capability the container lacks, a host service, nested
+containers, credentials, a tool that can't be installed here, etc.), don't
+silently work around it, fake it, or give up. Instead:
+- Confirm it really is a sandbox limitation, not something you can fix inside
+  the container (e.g. by installing a package or using a venv).
+- Review the `studcavity/claude_sandbox` repository (the launcher that creates
+  this sandbox) to see whether the launcher could grant it: clone it
+  read-only into the scratchpad or another throwaway directory, never into
+  the working copy, and never push to it. If it can't be cloned from here
+  (the deploy key is scoped to this repo only), say so and base the plan on
+  what you know.
+- Draft a plan for adding the capability to the launcher: what is missing and
+  why the task needs it, which files would change and how, security and
+  isolation trade-offs (what this would expose from the host), and how to
+  verify it works. If the repo shows no safe way to add it, say that instead.
+- Give the plan to the user as a single self-contained block they can copy
+  and paste into a session in the `claude_sandbox` repo, written so that
+  session needs none of this conversation's context. Don't try to implement
+  it yourself, and tell the user what you couldn't do in the meantime.
+
 ## Git: linear history is paramount
 - Never create merge commits. Integrate upstream changes with
   `git pull --rebase` (git is configured with `pull.rebase=true` and
