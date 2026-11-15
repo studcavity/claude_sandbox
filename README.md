@@ -55,9 +55,9 @@ On every launch the program:
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
 | `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
-| `sandbox_actions.py` | host-side: files an issue for each `todo/` file a commit adds |
+| `sandbox_issues.py` | files an issue for each `todo/` file a commit adds to the default branch (the post-merge filer, run by `file-issues.yml` or by hand) |
 | `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
-| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--file-issues` (post-merge filer) |
+| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`) |
 | `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
 | `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
 | `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
@@ -96,11 +96,20 @@ Any number of sandboxes can run on one repo at once.
 - **Follow-up issues.** A session adds `todo/<name>.md` (`<name>`: lowercase
   letters, digits, `-`) to a commit to ask for an issue: the first heading is
   the title, the file is the body, the path is its identity. `sandbox_check.py`
-  (CI) checks the name, size and heading; after the PRs, the launcher files an
-  issue per new file and comments on the commit with the link (that comment,
-  and a marker on the issue, are the idempotency record, so re-running never
-  duplicates). A later edit is ignored, deleting a file closes nothing, and a
-  path added again after deletion is a new request. `--no-actions` skips this.
+  (CI) checks the name, size and heading. The issue is filed **only after the
+  file reaches the default branch**, so a human has reviewed the text before it
+  is published, and a request whose PR is never merged is never filed (delete
+  the file before merge to withdraw it). The filer is `sandbox_issues.py`,
+  run by `.github/workflows/file-issues.yml` on every push to `main` (issues
+  come from `github-actions[bot]`; the job's only write permission is
+  `issues: write`), or by hand in a checkout:
+  `python sandbox_issues.py OWNER/REPO --since REV [--dry-run]`. The one
+  ledger is a marker on the last line of each issue, so running it twice over
+  a range files nothing new. A later edit is ignored, deleting a file closes
+  nothing, and a path added again after deletion is a new request. A repo
+  without the workflow (and `sandbox_issues.py`) files nothing unless someone
+  runs it. The launcher no longer files anything when a session ends, and the
+  old `--no-actions`, `--max-actions` and `--max-issues` flags are gone.
 - **Exit summary.** The launcher prints every branch with its PR number,
   target, commit count and URL, or why none was opened:
   ```

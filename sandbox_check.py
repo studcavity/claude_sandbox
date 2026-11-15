@@ -1,22 +1,12 @@
 """sandbox_check.py - lint the work record of a range of commits (CI).
 
     python sandbox_check.py BASE HEAD [--strict]
-    python sandbox_check.py --file-issues OWNER/REPO [--since REV | --last N] [--dry-run]
 
 Prints GitHub annotations (`::error::`, `::warning::`, `::notice::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
 (with --strict, any warning too). The format of a follow-up request
 (`todo/<name>.md`) lives in `sandbox_todo`; the other rules are below. This
 file is git plumbing plus small pure rules, and is stdlib-only.
-
---file-issues: the post-merge filer. The launcher files issues for `todo/`
-requests when a session ends, from its UNMERGED branches. Commits that reach the default
-branch without that run (launcher crashed, --no-actions, merged first, pushed
-by other tooling) are never filed; this scans commits already on the current
-branch (run it in a checkout of the repo) with the same parser, handlers,
-sanitising, secret scan, labels and dedupe as the launcher, so running it twice
-or alongside the launcher is safe. --dry-run lets reads through and records,
-but never performs, a write.
 
 Rules and severities
   error  merge commit (history must stay linear)
@@ -52,7 +42,6 @@ import re
 import subprocess
 import sys
 
-import sandbox_actions
 import sandbox_todo
 import sandbox_untrusted
 
@@ -242,70 +231,6 @@ def check_range(base, head):
     return [(f.sha, f.text) for f in check_findings(base, head)
             if f.severity == ERROR]
 
-class CheckError(ValueError):
-    """A refusal, with a message meant for the person running us."""
-
-
-# --- post-merge filing (plan 5e) --------------------------------------------- #
-DEFAULT_LAST = 50
-
-
-def read_commit_files(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
-    """[(sha, [files the commit ADDED])], oldest first, for `since..head` or
-    the last N commits. Only `todo/` markdown is listed: it's all the filer
-    needs."""
-    for r in (since or "", head):
-        if r.startswith("-"):
-            raise CheckError(f"not a revision: {r!r}")
-    args = ["rev-list", "--reverse"]
-    args += [f"{since}..{head}"] if since else [f"--max-count={int(last)}", head]
-    out = []
-    for sha in git(*args, cwd=cwd).split():
-        names = git("diff-tree", "-r", "-z", "--no-commit-id", "--name-only",
-                    "--diff-filter=A", "--no-renames", "--root", sha, cwd=cwd)
-        out.append((sha, [n for n in names.split("\0")
-                          if n and sandbox_todo.is_candidate(n)]))
-    return out
-
-
-class DryRunApi:
-    """Reads go through; every write is recorded and answered with a stub."""
-
-    def __init__(self, api):
-        self.api, self.writes = api, []
-
-    def __call__(self, method, path, body=None, raw=False):
-        if method == "GET":
-            return self.api(method, path, body, raw=raw)
-        self.writes.append((method, path, body))
-        return {"html_url": "(dry run: not created)"}
-
-
-def file_issues_run(repo, since=None, last=DEFAULT_LAST, dry_run=False,
-                    api=None, cwd=None, out=print, limits=None):
-    """Scan commits for added `todo/` requests and file them -> exit code
-    (0 ok, 1 if any item failed)."""
-    import sandbox_github
-    sandbox_github.validate_repo(repo)
-    api = api or sandbox_github.gh_api
-    if dry_run:
-        api = DryRunApi(api)
-    requests = sandbox_actions.requests_from(
-        read_commit_files(since, last, cwd=cwd))
-    outcomes = sandbox_actions.execute(
-        sandbox_actions.Context(repo, "all", [], api, None, limits), requests)
-    if dry_run:
-        for method, path, body in api.writes:
-            if path.endswith("/issues") and method == "POST":
-                out(f"would file: {body['title']!r} "
-                    f"labels={','.join(body['labels'])}")
-    text = sandbox_actions.format_outcomes(outcomes)
-    out(text or "no todo/ requests found in "
-        + (f"{since}..HEAD" if since else f"the last {last} commits"))
-    return 1 if any(o.status == "failed" for o in outcomes) else 0
-
-
-
 # --- output ---------------------------------------------------------------- #
 def _escape(s, prop=False):
     """Escape workflow-command syntax so text from a commit can't forge or
@@ -332,38 +257,7 @@ def main(argv=None):
     ap.add_argument("head", nargs="?")
     ap.add_argument("--strict", action="store_true",
                     help="treat warnings as errors")
-    ap.add_argument("--file-issues", metavar="OWNER/REPO",
-                    help="file issues for the todo/ files commits on the "
-                    "current branch add (post-merge filer)")
-    ap.add_argument("--since", metavar="REV",
-                    help="with --file-issues: scan REV..HEAD")
-    ap.add_argument("--last", type=int, default=DEFAULT_LAST, metavar="N",
-                    help=f"with --file-issues: scan the last N commits "
-                    f"(default {DEFAULT_LAST}; ignored with --since)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="with --file-issues: show what would be filed")
-    ap.add_argument("--max-actions", type=int, metavar="N",
-                    default=sandbox_actions.MAX_ACTIONS,
-                    help="with --file-issues: items to carry out (default %(default)s)")
-    ap.add_argument("--max-issues", type=int, metavar="N",
-                    default=sandbox_actions.MAX_ISSUES_PER_SESSION,
-                    help="with --file-issues: issues one session may have "
-                    "(default %(default)s)")
     a = ap.parse_args(argv)
-    if a.file_issues:
-        if a.base or a.head:
-            ap.error("--file-issues stands alone (use --since/--last/--dry-run)")
-        if a.last < 1 or a.max_actions < 1 or a.max_issues < 1:
-            ap.error("--last, --max-actions and --max-issues must be at least 1")
-        try:
-            return file_issues_run(a.file_issues, a.since, a.last, a.dry_run,
-                                   limits={"actions": a.max_actions,
-                                           "issues": a.max_issues})
-        except CheckError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-    if (a.since or a.dry_run) and not a.file_issues:
-        ap.error("--since and --dry-run need --file-issues OWNER/REPO")
     if not (a.base and a.head):
         ap.error("BASE and HEAD are required")
     findings = check_findings(a.base, a.head)

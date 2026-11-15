@@ -857,34 +857,13 @@ def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
     assert rs["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"]
 
 
-def test_actions_run_after_prs_even_with_no_pr_and_honour_no_actions(
-        make_args, monkeypatch):
-    got = []
-    monkeypatch.setattr(cs.sandbox_actions, "run",
-                        lambda *a, **kw: got.append((a, kw)) or [])
-    monkeypatch.setattr(cs.sandbox_land, "land",
-                        lambda *a: pytest.fail("landed"))
-    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=True,
-                   name="quirky-hopper")
-    box.key_id = 1
-    box.land()
-    # the caps travel from the flags to the filer
-    assert got == [(("o/r", "quirky-hopper"),
-                    {"limits": {"actions": 25, "issues": 10}})]
-    got.clear()
-    box.args.no_actions = True
-    box.land()
-    assert got == []
-
-
-def test_action_failure_never_blocks_teardown(make_args, monkeypatch):
-    def boom(*a):
-        raise cs.GitHubError("down", 0)
-    monkeypatch.setattr(cs.sandbox_actions, "run", boom)
-    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: [])
-    box = _sandbox(make_args, monkeypatch, repo="o/r")
-    box.key_id = 1
-    box.land()
+def test_the_session_end_never_files_issues(make_args, monkeypatch):
+    """Follow-ups are filed only after merge (sandbox_issues); the launcher
+    has no filing step, flag or cap any more."""
+    assert not hasattr(cs, "sandbox_actions") and not hasattr(cs, "report_actions")
+    for flag in ("--no-actions", "--max-actions", "--max-issues"):
+        with pytest.raises(SystemExit):
+            cs.build_parser().parse_args(["o/r", flag] + (["3"] if flag != "--no-actions" else []))
 
 
 def test_template_asks_for_a_todo_file_per_issue(repo_root):

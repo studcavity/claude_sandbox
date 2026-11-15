@@ -4,7 +4,7 @@ One table, so an issue filed from a `todo/` file and a PR opened at
 session exit are labelled the same way. Stdlib only. Labels are created on
 first use, best effort: a repo that refuses (no push access) still gets the
 issue or PR, which is why nothing here may be the only record of anything
-(the issue marker and the commit comment are).
+(the issue marker is).
 """
 import re
 

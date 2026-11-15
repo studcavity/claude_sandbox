@@ -241,7 +241,7 @@ def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
     assert cs.main(argv(world, "--timings")) == 0
     err = capsys.readouterr().err
     for stage in ("github login + scopes", "container launch + boot", "clone",
-                  "session (interactive)", "land: PRs, statuses, actions", "teardown"):
+                  "session (interactive)", "land: PRs, provenance", "teardown"):
         assert stage in err
     assert "the session prompt appeared after" in err
 

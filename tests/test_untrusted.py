@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-import sandbox_actions as sa
+import sandbox_issues as si
 import sandbox_land as sl
 import sandbox_untrusted as su
 
@@ -32,12 +32,12 @@ HOSTILE = [
 
 @pytest.mark.parametrize("text,limit", list(itertools.product(HOSTILE, (1, 7, 80, 1000))))
 def test_cleaners_match_the_implementations_they_replaced(text, limit):
-    assert sa.clean_block(text, limit) == old_clean_block(text, limit)
+    assert si.clean_block(text, limit) == old_clean_block(text, limit)
     assert sl.clean_text(text, limit) == old_clean_text(text, limit)
 
 
 def test_clean_line_still_builds_on_clean_block():
-    assert sa.clean_line("a\nb @x\x00", 50) == " ".join(
+    assert si.clean_line("a\nb @x\x00", 50) == " ".join(
         old_clean_block("a\nb @x\x00", 100).split())[:50]
 
 
@@ -90,13 +90,13 @@ def test_entropy_orders_obvious_cases():
 
 
 # --- wired into issue filing ---------------------------------------------- #
-from test_actions import A, Api, ctx, req  # noqa: E402
-from test_actions import text as brief  # noqa: E402
+from test_issues import A, Api, req, text as brief  # noqa: E402
 
 
 def test_issue_with_a_secret_is_held_back_and_reported_not_filed():
-    api = Api(todos={"leak": brief("Rotate it", f"found {GH} in the log")})
-    out = sa.execute(ctx(api), [req("leak"), req("fine")])
+    api = Api()
+    out = si.execute(api, "o/r", [req("leak", body=brief("Rotate it", f"found {GH} in the log")),
+                                  req("fine")])
     by_path = {o.path: o for o in out}
     assert by_path["todo/leak.md"].status == "rejected"
     assert "GitHub token" in by_path["todo/leak.md"].detail
@@ -104,25 +104,24 @@ def test_issue_with_a_secret_is_held_back_and_reported_not_filed():
     assert by_path["todo/fine.md"].status == "done"  # one bad item never blocks others
     assert len(api.posts("/issues")) == 1            # only the clean one was filed
     assert not any(GH in str(c) for c in api.calls)  # the secret was never sent anywhere
-    assert len(api.posts("/comments")) == 1          # the rejected item isn't marked done
 
 
 def test_secret_in_the_title_is_caught_too():
-    api = Api(todos={"t": f"# key {GH}\n"})
-    assert sa.execute(ctx(api), [req("t")])[0].status == "rejected"
+    api = Api()
+    assert si.execute(api, "o/r", [req("t", body=f"# key {GH}\n")])[0].status == "rejected"
     assert api.posts("/issues") == []
 
 
-def test_rejection_is_visible_in_the_exit_summary():
-    out = sa.format_outcomes([sa.Outcome(A, "todo/leak.md", "rejected",
+def test_rejection_is_visible_in_the_summary():
+    out = si.format_outcomes([si.Outcome(A, "todo/leak.md", "rejected",
                                          "not filed: todo/leak.md appears to contain GitHub token")])
     assert "REJECTED (policy)" in out and "GitHub token" in out
     assert A[:7] in out
 
 
 def test_a_file_without_a_title_stays_silent_unlike_policy_rejections():
-    api = Api(todos={"e": "no heading\n"})
-    assert sa.execute(ctx(api), [req("e")]) == []
+    api = Api()
+    assert si.execute(api, "o/r", [req("e", body="no heading\n")]) == []
 
 
 # --- issue references ------------------------------------------------------ #
@@ -136,8 +135,8 @@ def test_issue_references_in_session_text_dont_autolink(text):
     import re
     live = re.compile(r"(?i)(#|\bGH-)\d")
     for out in (su.block(text, 200), su.one_line(text, 200),
-                sa.clean_block(text, 200), sl.clean_text(text, 200),
-                sa.clean_line(text, 200)):
+                si.clean_block(text, 200), sl.clean_text(text, 200),
+                si.clean_line(text, 200)):
         assert not live.search(out), out
         assert out.replace(su.ZWSP, "") == text.replace("\n", " ") or \
             out.replace(su.ZWSP, "").split() == text.split()

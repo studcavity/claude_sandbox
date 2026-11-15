@@ -1,6 +1,6 @@
 import pytest
 
-import sandbox_actions as sa
+import sandbox_issues as si
 import sandbox_land as sl
 import sandbox_record as sr
 import sandbox_templates as st
@@ -13,7 +13,7 @@ def tdir(tmp_path, **files):
 
 
 GOOD_PR = "$session $branch $record $subjects $more untrusted"
-GOOD_ISSUE = "$commit $session $item $body untrusted"
+GOOD_ISSUE = "$commit $item $body untrusted"
 
 
 def test_the_shipped_templates_load():
@@ -40,15 +40,15 @@ def test_unknown_names_and_missing_files_are_refused(tmp_path):
 
 
 def test_braced_placeholders_and_escaped_dollars_work(tmp_path):
-    d = tdir(tmp_path, **{"issue.md": "${commit}x $session $item $body untrusted $$5\n"})
-    assert st.render("issue.md", d, commit="c", session="s", item="i", body="b") \
-        == "cx s i b untrusted $5"
+    d = tdir(tmp_path, **{"issue.md": "${commit}x $item $body untrusted $$5\n"})
+    assert st.render("issue.md", d, commit="c", item="i", body="b") \
+        == "cx i b untrusted $5"
 
 
 def test_values_are_not_expanded_again(tmp_path):
     d = tdir(tmp_path, **{"issue.md": GOOD_ISSUE})
-    out = st.render("issue.md", d, commit="$session", session="S", item="$$", body="${item}")
-    assert out.startswith("$session S $$ ${item} untrusted")
+    out = st.render("issue.md", d, commit="$item", item="$$", body="${item}")
+    assert out.startswith("$item $$ ${item} untrusted")
 
 
 def test_a_missing_value_fails_loudly(tmp_path):
@@ -62,18 +62,18 @@ def test_one_trailing_newline_is_dropped_but_not_more(tmp_path):
 
 
 # --- golden parity with the code the templates replaced ------------------------- #
-def old_issue(sha, session, item, body, marker):
-    return (f"Follow-up requested by commit {sha} (session `{session}`), "
-            f"item `{item}`.\n\n{body}\n\n---\n"
-            "Filed by claude_sandbox from a `todo/` file. The text "
-            "above was written by an AI session and is untrusted.\n" + marker)
+def old_issue(sha, item, body, marker):
+    return (f"Follow-up requested by commit {sha}, item `{item}`.\n\n{body}"
+            "\n\n---\nFiled by claude_sandbox from a `todo/` file that "
+            "reached the default branch. The text above was written by an AI "
+            "session and is untrusted.\n" + marker)
 
 
 def test_issue_body_is_exactly_the_documented_text():
-    sha, marker = "a" * 40, f"<!-- {sa.MARKER} sha={'a' * 40} id=i1 -->"
-    got = st.render("issue.md", commit=sha, session="sess", item="i1",
+    sha, marker = "a" * 40, f"<!-- {si.MARKER} sha={'a' * 40} id=i1 -->"
+    got = st.render("issue.md", commit=sha, item="i1",
                     body="the body") + "\n" + marker
-    assert got == old_issue(sha, "sess", "i1", "the body", marker)
+    assert got == old_issue(sha, "i1", "the body", marker)
 
 
 def old_pr(session, branch, shown, record_text, more):
@@ -99,8 +99,8 @@ def test_pr_body_is_byte_identical_to_the_old_inline_text(n_subjects, with_recor
 
 
 def test_the_marker_is_always_the_last_line_whatever_the_template_says():
-    from test_actions import A, Api, req
+    from test_issues import A, Api, req
     api = Api()
-    sa.execute(sa.Context("o/r", "sess", [], api), [req("i1")])
+    si.execute(api, "o/r", [req("i1")])
     body = api.issues[0]["body"]
-    assert body.splitlines()[-1] == f"<!-- {sa.MARKER} sha={A} id=i1 -->"
+    assert body.splitlines()[-1] == f"<!-- {si.MARKER} sha={A} id=i1 -->"
