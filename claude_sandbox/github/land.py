@@ -196,7 +196,8 @@ def session_branches(repo, session=None, api=None):
     refs = (api or gh_api)("GET", f"/repos/{repo}/git/matching-refs/heads/"
                          f"{_q(prefix)}?per_page=100") or []
     names = [r["ref"][len("refs/heads/"):] for r in refs]
-    return [n for n in names if n.startswith(prefix)]
+    # Alphanumeric, so "01-x" lands before "02-y" whatever order GitHub lists.
+    return sorted(n for n in names if n.startswith(prefix))
 
 
 def _compare_path(repo, default, branch):
