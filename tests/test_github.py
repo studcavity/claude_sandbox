@@ -1,8 +1,6 @@
-"""Tests for sandbox_github: repo validation, token lookup, API client."""
-import io
+"""Tests for sandbox_github: repo resolution and the gh-CLI-via-invoke client."""
 import json
-import subprocess
-import urllib.error
+import shlex
 
 import pytest
 
@@ -21,91 +19,119 @@ def test_validate_repo_rejects(repo):
         g.validate_repo(repo)
 
 
-def test_github_token_prefers_env(monkeypatch):
-    monkeypatch.setenv("GITHUB_TOKEN", "t1")
-    monkeypatch.setenv("GH_TOKEN", "t2")
-    assert g.github_token() == "t1"
+def test_resolve_repo():
+    assert g.resolve_repo("proj", "me") == "me/proj"
+    assert g.resolve_repo("org/proj", "me") == "org/proj"
+    for bad in ("..", ".", "a b", "x;y", "a/b/c", "a/.."):
+        with pytest.raises(ValueError):
+            g.resolve_repo(bad, "me")
 
 
-def test_github_token_falls_back_to_gh(monkeypatch):
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("GH_TOKEN", raising=False)
-    monkeypatch.setattr(g, "run", lambda *a, **k: subprocess.CompletedProcess(
-        a, 0, stdout="tok\n"))
-    assert g.github_token() == "tok"
+class Result:
+    def __init__(self, stdout="", stderr="", exited=0):
+        self.stdout, self.stderr, self.exited = stdout, stderr, exited
+
+    @property
+    def failed(self):
+        return self.exited != 0
 
 
-def test_github_token_missing_exits(monkeypatch):
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("GH_TOKEN", raising=False)
+@pytest.fixture
+def gh(monkeypatch):
+    """Replace invoke's Context with one that records commands and replies
+    with whatever the test queues."""
+    calls, replies = [], []
 
-    def no_gh(*a, **k):
-        raise FileNotFoundError
-    monkeypatch.setattr(g, "run", no_gh)
-    with pytest.raises(SystemExit):
-        g.github_token()
-
-
-class _Resp(io.BytesIO):
-    headers = {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        pass
+    class FakeContext:
+        def run(self, command, **kw):
+            stdin = kw["in_stream"]
+            calls.append({"argv": shlex.split(command), "kw": kw,
+                          "stdin": stdin.read() if stdin else stdin})
+            return replies.pop(0)
+    monkeypatch.setattr(g, "Context", FakeContext)
+    return calls, replies
 
 
-def test_gh_api_sends_auth_and_body(monkeypatch):
-    seen = {}
-
-    def fake_urlopen(req, timeout):
-        seen["req"] = req
-        return _Resp(b'{"id": 7}')
-    monkeypatch.setattr(g.urllib.request, "urlopen", fake_urlopen)
-    assert g.gh_api("POST", "/user/keys", "TOKEN", {"key": "k"}) == {"id": 7}
-    req = seen["req"]
-    assert req.full_url == g.API + "/user/keys"
-    assert req.get_method() == "POST"
-    assert req.headers["Authorization"] == "Bearer TOKEN"
-    assert json.loads(req.data) == {"key": "k"}
+def test_gh_api_builds_argv_and_sends_body_on_stdin(gh):
+    calls, replies = gh
+    replies.append(Result('{"id": 7}'))
+    assert g.gh_api("POST", "/user/keys", {"key": "k; rm -rf ~"}) == {"id": 7}
+    c = calls[0]
+    assert c["argv"] == ["gh", "api", "-X", "POST", "/user/keys",
+                         "--input", "-"]
+    assert json.loads(c["stdin"]) == {"key": "k; rm -rf ~"}  # data, not argv
+    assert c["kw"]["hide"] and c["kw"]["warn"] and c["kw"]["timeout"] == g.TIMEOUT
+    assert c["kw"]["env"]["GH_PROMPT_DISABLED"] == "1"
 
 
-def test_gh_api_raw_and_empty(monkeypatch):
-    monkeypatch.setattr(g.urllib.request, "urlopen",
-                        lambda req, timeout: _Resp(b"raw bytes"))
-    assert g.gh_api("GET", "/x", "t", raw=True) == b"raw bytes"
-    monkeypatch.setattr(g.urllib.request, "urlopen",
-                        lambda req, timeout: _Resp(b""))
-    assert g.gh_api("DELETE", "/x", "t") is None
+def test_gh_api_quotes_hostile_paths(gh):
+    calls, replies = gh
+    replies.append(Result("{}"))
+    g.gh_api("GET", "/repos/a/b; touch /tmp/x")
+    assert calls[0]["argv"][4] == "/repos/a/b; touch /tmp/x"  # one argv item
+    assert calls[0]["stdin"] is False  # never inherit the terminal's stdin
 
 
-def test_gh_api_http_error_carries_code(monkeypatch):
-    def fail(req, timeout):
-        raise urllib.error.HTTPError(req.full_url, 404, "nf", {},
-                                     io.BytesIO(b"Not Found"))
-    monkeypatch.setattr(g.urllib.request, "urlopen", fail)
+def test_gh_api_raw_and_empty(gh):
+    calls, replies = gh
+    replies += [Result("raw bytes"), Result("")]
+    assert g.gh_api("GET", "/x", raw=True) == b"raw bytes"
+    assert "Accept: application/vnd.github.raw+json" in calls[0]["argv"]
+    assert g.gh_api("DELETE", "/x") is None
+
+
+def test_gh_api_http_error_carries_code(gh):
+    _, replies = gh
+    replies.append(Result(stdout='{"message":"Not Found"}',
+                          stderr="gh: Not Found (HTTP 404)", exited=1))
     with pytest.raises(g.GitHubError) as e:
-        g.gh_api("GET", "/missing", "t")
+        g.gh_api("GET", "/missing")
     assert e.value.code == 404 and "Not Found" in str(e.value)
 
 
-class _Headers(_Resp):
-    def __init__(self, headers):
-        super().__init__(b"{}")
-        self.headers = headers
+def test_gh_missing_is_a_clear_error(gh):
+    _, replies = gh
+    replies.append(Result(stderr="bash: gh: command not found", exited=127))
+    with pytest.raises(g.GitHubError, match="not installed"):
+        g.github_login()
 
 
-@pytest.mark.parametrize("header, expect", [
-    ("repo, workflow, admin:public_key", {"repo", "workflow", "admin:public_key"}),
-    ("", set()),
-    (None, None),
+def test_not_logged_in_error_is_surfaced(gh):
+    _, replies = gh
+    replies.append(Result(stderr="To get started with GitHub CLI, please run:  "
+                                 "gh auth login", exited=4))
+    with pytest.raises(g.GitHubError, match="gh auth login") as e:
+        g.github_login()
+    assert e.value.code == 0
+
+
+def test_timeout_becomes_github_error(monkeypatch):
+    class Slow:
+        def run(self, *a, **k):
+            raise g.CommandTimedOut(None, 60)
+    monkeypatch.setattr(g, "Context", Slow)
+    with pytest.raises(g.GitHubError, match="timed out"):
+        g.gh_api("GET", "/x")
+
+
+def test_github_login(gh):
+    calls, replies = gh
+    replies.append(Result("studcavity\n"))
+    assert g.github_login() == "studcavity"
+    assert calls[0]["argv"] == ["gh", "api", "user", "--jq", ".login"]
+
+
+@pytest.mark.parametrize("headers, expect", [
+    ("X-Oauth-Scopes: repo, workflow, admin:public_key",
+     {"repo", "workflow", "admin:public_key"}),
+    ("x-oauth-scopes: ", set()),
+    ("Content-Type: application/json", None),
 ])
-def test_token_scopes(monkeypatch, header, expect):
-    headers = {} if header is None else {"X-OAuth-Scopes": header}
-    monkeypatch.setattr(g.urllib.request, "urlopen",
-                        lambda req, timeout: _Headers(headers))
-    assert g.token_scopes("t") == expect
+def test_token_scopes(gh, headers, expect):
+    _, replies = gh
+    replies.append(Result(f"HTTP/2.0 200 OK\n{headers}\n\n"
+                          '{"X-Oauth-Scopes": "from the body, not a header"}'))
+    assert g.token_scopes() == expect
 
 
 def test_workflow_push_warning():

@@ -7,7 +7,7 @@ What it does:
   2. Generates an SSH key *inside* the container. The private key never
      touches the host.
   3. Registers the public key with GitHub, either as a deploy key on one
-     repo (--repo, recommended) or as an account key (default).
+     repo (recommended) or, only with --account-key, as an account key.
   4. Installs Claude Code and drops you into it (or a shell with --shell).
      Packages and Claude Code are baked into a cached local image
      (claude-sandbox-<hash>) on first run, so later launches skip the
@@ -19,7 +19,10 @@ What it does:
   5. On exit (normal, error, Ctrl-C, SIGTERM, SIGHUP) deletes the GitHub key
      and destroys the container.
 
-GitHub auth: set GITHUB_TOKEN / GH_TOKEN, or be logged in with `gh`.
+GitHub auth: all GitHub calls go through the host's `gh` CLI (run locally with
+invoke), so log in with `gh auth login` (or set GH_TOKEN / GITHUB_TOKEN for gh).
+No token is handled by this program. The launcher refuses to run when gh is
+logged in as anyone but --github-user (override: --no-user-check).
   - Keys inherit the token's scopes when pushing: without `workflow`
     (gh auth refresh -s workflow) the sandbox can't push .github/workflows/
     changes. The launcher warns at startup when that's the case.
@@ -37,11 +40,16 @@ Claude auth, first match wins:
   - Otherwise, run /login inside Claude Code.
 Secrets are piped into the container over stdin, never put on a command line.
 
+Before launching, it checks whether this checkout is behind its upstream and,
+on a terminal, offers to `git pull` (skip with --no-update-check). On first run
+it creates ./venv from requirements.txt and re-runs itself inside it.
+
 Examples:
-  ./claude_sandbox.py --repo myuser/myproject      # deploy key + clone
-  ./claude_sandbox.py                              # account-wide key
-  ./claude_sandbox.py --repo me/proj --model opus  # pick the session model
-  ./claude_sandbox.py --cli incus --image images:ubuntu/24.04 --repo me/proj
+  ./claude_sandbox.py myproject                    # deploy key + clone of <github-user>/myproject
+  ./claude_sandbox.py other-user/proj              # a repo under another owner
+  ./claude_sandbox.py proj --model opus            # pick the session model
+  ./claude_sandbox.py --account-key                # no repo: account-wide key
+  ./claude_sandbox.py --setup-token                # one-time Claude login token
 """
 import argparse
 import functools
@@ -54,11 +62,18 @@ import signal
 import sys
 import uuid
 
+if __name__ == "__main__":
+    # Standard library only, before the third-party imports below: ensures a
+    # venv with requirements.txt and re-execs into it. Skipped on import (tests).
+    import sandbox_bootstrap
+    sandbox_bootstrap.ensure_venv(os.path.dirname(os.path.abspath(__file__)))
+
 import sandbox_deps
 import sandbox_host
+import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
-from sandbox_github import (GitHubError, gh_api, github_token, token_scopes,
-                            validate_repo, workflow_push_warning)
+from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
+                            token_scopes, validate_repo, workflow_push_warning)
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
 from sandbox_util import log, sigint_to_child
 
@@ -71,6 +86,13 @@ from sandbox_util import log, sigint_to_child
 # in the container; incus already sets LANG=C.UTF-8.)
 TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
                  "LC_TERMINAL", "LC_TERMINAL_VERSION")
+
+# Defaults for the maintainer's setup; each can be overridden by a flag or the
+# environment variable noted in --help.
+DEFAULT_GITHUB_USER = "studcavity"
+DEFAULT_GIT_EMAIL = "353176155+studcavity@users.noreply.github.com"
+DEFAULT_IMAGE = "images:ubuntu/24.04"
+DEFAULT_CLI = "incus"
 
 DEFAULT_TOKEN_FILE = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
@@ -237,10 +259,20 @@ def ask_usb(req):
         return False
 
 
-def check_workflow_scope(token):
+def check_expected_user(login, expected):
+    """Error text when gh is logged in as someone unexpected, else None."""
+    if login.lower() == expected.lower():
+        return None
+    return (f"gh is authenticated as {login!r}, expected {expected!r} "
+            "(--github-user); refusing to continue. Switch accounts with "
+            "`gh auth switch`, or pass --github-user / --no-user-check if "
+            "that is intended.")
+
+
+def check_workflow_scope():
     """Warn (never fail) if the sandbox won't be able to push workflow files."""
     try:
-        msg = workflow_push_warning(token_scopes(token))
+        msg = workflow_push_warning(token_scopes())
     except (GitHubError, OSError) as e:
         msg = workflow_push_warning(None) + f" ({e})"
     if msg:
@@ -287,9 +319,10 @@ class Sandbox:
                           f"`{sandbox_deps.DEPS_FILE}`.")
 
     @functools.cached_property
-    def token(self):
+    def login(self):
         # Looked up on first use so --setup-token works without GitHub auth.
-        return github_token()
+        # Also proves `gh` is installed and logged in, before anything is built.
+        return github_login()
 
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
@@ -334,7 +367,7 @@ class Sandbox:
             return None
         try:
             raw = gh_api("GET", f"/repos/{self.args.repo}/contents/{f}",
-                         self.token, raw=True)
+                         raw=True)
         except GitHubError as e:
             if e.code != 404:
                 raise
@@ -365,7 +398,7 @@ class Sandbox:
         if a.repo:
             try:
                 raw = gh_api("GET", f"/repos/{a.repo}/contents/"
-                             f"{sandbox_host.HOST_FILE}", self.token, raw=True)
+                             f"{sandbox_host.HOST_FILE}", raw=True)
                 requests = sandbox_host.parse(raw)["usb"]
             except GitHubError as e:
                 if e.code != 404:
@@ -437,19 +470,19 @@ class Sandbox:
 
         # Pin GitHub host keys from the API (over the host's TLS) instead of
         # trusting ssh-keyscan on first use.
-        meta = gh_api("GET", "/meta", self.token)
+        meta = gh_api("GET", "/meta")
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
         self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
         title = f"ephemeral {self.name}"
         if self.args.repo:
             log(f"adding deploy key to {self.args.repo}")
-            resp = gh_api("POST", f"/repos/{self.args.repo}/keys", self.token,
+            resp = gh_api("POST", f"/repos/{self.args.repo}/keys",
                           {"title": title, "key": pubkey,
                            "read_only": self.args.read_only})
         else:
             log("adding SSH key to your GitHub account")
-            resp = gh_api("POST", "/user/keys", self.token,
+            resp = gh_api("POST", "/user/keys",
                           {"title": title, "key": pubkey})
         self.key_id = resp["id"]
 
@@ -564,7 +597,7 @@ class Sandbox:
             path = (f"/repos/{self.args.repo}/keys/{self.key_id}"
                     if self.args.repo else f"/user/keys/{self.key_id}")
             try:
-                gh_api("DELETE", path, self.token)
+                gh_api("DELETE", path)
                 log(f"removed GitHub key {self.key_id}")
             except Exception as e:  # never skip container cleanup
                 log(f"WARNING: could not delete GitHub key {self.key_id}: {e}")
@@ -582,17 +615,43 @@ class Sandbox:
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--repo", help="owner/name: use a repo-scoped deploy key "
-                                  "and clone it (recommended)")
+    p.add_argument("repository", nargs="?", metavar="REPOSITORY",
+                   help="repo to clone with a repo-scoped deploy key: a bare "
+                        "name is looked up under --github-user, owner/name "
+                        "is used as given")
+    p.add_argument("--repo", metavar="OWNER/NAME",
+                   help="same as REPOSITORY but requires the full owner/name")
+    p.add_argument("--account-key", action="store_true",
+                   help="no repo: register the key on your whole GitHub "
+                        "account instead (needs admin:public_key; the "
+                        "sandbox can then push to any repo you can). "
+                        "Required to run without a repository")
+    p.add_argument("--github-user", metavar="USER",
+                   default=os.environ.get("CLAUDE_SANDBOX_GITHUB_USER")
+                   or DEFAULT_GITHUB_USER,
+                   help="GitHub account for bare repo names, and the only "
+                        "account `gh` may be logged in as (default: "
+                        f"$CLAUDE_SANDBOX_GITHUB_USER or {DEFAULT_GITHUB_USER})")
+    p.add_argument("--no-user-check", action="store_true",
+                   help="don't require gh to be logged in as --github-user")
+    p.add_argument("--no-update-check", action="store_true",
+                   help="don't check whether this checkout is behind its "
+                        "upstream (and offer to git pull)")
     p.add_argument("--read-only", action="store_true",
                    help="make the deploy key read-only (no push)")
-    p.add_argument("--image", default="ubuntu:24.04",
-                   help="image to launch (default: ubuntu:24.04; "
-                        "Incus users want images:ubuntu/24.04)")
-    p.add_argument("--cli", default="lxc", choices=["lxc", "incus"])
+    p.add_argument("--image", default=DEFAULT_IMAGE,
+                   help=f"image to launch (default: {DEFAULT_IMAGE})")
+    p.add_argument("--cli", default=DEFAULT_CLI, choices=["incus", "lxc"],
+                   help=f"container CLI (default: {DEFAULT_CLI})")
     p.add_argument("--name", help="container name (default: random)")
-    p.add_argument("--git-name", help="git user.name inside the sandbox")
-    p.add_argument("--git-email", help="git user.email inside the sandbox")
+    p.add_argument("--git-name", metavar="NAME",
+                   help="git user.name inside the sandbox "
+                        "(default: --github-user)")
+    p.add_argument("--git-email", metavar="EMAIL",
+                   default=os.environ.get("CLAUDE_SANDBOX_GIT_EMAIL")
+                   or DEFAULT_GIT_EMAIL,
+                   help="git user.email inside the sandbox (default: "
+                        f"$CLAUDE_SANDBOX_GIT_EMAIL or {DEFAULT_GIT_EMAIL})")
     p.add_argument("--shell", action="store_true",
                    help="open a login shell instead of launching claude")
     p.add_argument("--tmux", action="store_true",
@@ -650,22 +709,57 @@ def build_parser():
     return p
 
 
+def normalize_args(args):
+    """Resolve the repository and defaults in place; ValueError on bad input.
+
+    A repository is required unless --setup-token (no GitHub involved) or the
+    explicit --account-key (an account-wide key is a much bigger grant, so it
+    is never the silent result of forgetting the repo).
+    """
+    if args.repository and args.repo:
+        raise ValueError("give the repository once: either REPOSITORY or --repo")
+    if args.repo:
+        args.repo = validate_repo(args.repo)
+    elif args.repository:
+        args.repo = resolve_repo(args.repository, args.github_user)
+    if args.account_key and args.repo:
+        raise ValueError("--account-key and a repository are mutually exclusive")
+    if not (args.repo or args.account_key or args.setup_token):
+        raise ValueError("a repository is required (or --account-key to use "
+                         "an account-wide key, or --setup-token)")
+    args.git_name = args.git_name or args.github_user
+    return args
+
+
 def main(argv=None):
     p = build_parser()
     args = p.parse_args(argv)
-    if args.repo:
-        try:
-            validate_repo(args.repo)
-        except ValueError as e:
-            p.error(f"--repo: {e}")
+    try:
+        normalize_args(args)
+    except ValueError as e:
+        p.error(str(e))
     if not os.path.isfile(args.claude_md):
         p.error(f"--claude-md: no such file: {args.claude_md}")
 
+    if not args.no_update_check:
+        sandbox_update.check_for_updates(
+            os.path.dirname(os.path.abspath(__file__)), sys.argv,
+            interactive=sys.stdin.isatty(), ask=input)
+
     box = Sandbox(args)
     if not args.setup_token:
-        box.token  # fail fast, before building or launching anything
+        try:
+            login = box.login  # fail fast, before building or launching anything
+        except GitHubError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        if not args.no_user_check:
+            bad = check_expected_user(login, args.github_user)
+            if bad:
+                print(f"error: {bad}", file=sys.stderr)
+                return 1
         if not args.read_only:
-            check_workflow_scope(box.token)
+            check_workflow_scope()
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)

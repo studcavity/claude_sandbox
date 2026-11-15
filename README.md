@@ -13,36 +13,45 @@ repo-scoped GitHub deploy key. The key and container are destroyed on exit.
     sudo ufw route allow in on <bridge>
     sudo ufw route allow out on <bridge>
 ```
-- `gh` on host
-- authenticated to an account w/ `gh auth login`
+- `gh` on host (every GitHub call goes through it; keep it updated)
+- authenticated to the account you launch as, with `gh auth login`
 - optional: `gh auth refresh -s workflow` so the sandbox can push changes to
   `.github/workflows/` (the launcher warns at startup when it can't; this lets
   sandboxed sessions edit CI, which can read the repo's Actions secrets)
 
 ## usage
-Edit `github_user` and `git_email` at the top of `run.sh`, then:
 ```
-./run.sh <repository> [extra flags]
+./run.sh <repository> [flags]       # same as: python3 claude_sandbox.py ...
+./run.sh --setup-token              # one-time Claude login token
 ```
-`run.sh` first checks whether this checkout is behind its upstream. If so it
-lists the new commits and, on a terminal, asks `git pull now? [y/N]` (it uses
-`git pull --ff-only`, then restarts itself; a failed or declined pull just
-continues). Without a terminal it only prints the notice. Pass
-`--no-update-check` (anywhere in the args; `run.sh` consumes it) to skip the
-check and its `git fetch`.
+`run.sh` is only a shim that `exec`s `claude_sandbox.py`; everything below is
+the program. `<repository>` is a bare name (looked up under `--github-user`) or
+`owner/name`. Defaults: `--github-user studcavity` (`$CLAUDE_SANDBOX_GITHUB_USER`),
+`--git-email` the maintainer's noreply address (`$CLAUDE_SANDBOX_GIT_EMAIL`),
+`--git-name` the github user, `--cli incus`, `--image images:ubuntu/24.04`.
+Running without a repository is refused unless you pass `--account-key`
+(an account-wide key can push to every repo you can).
 
-`run.sh` checks that `gh` is logged in as the expected user, sets up a
-`venv` from `requirements.txt`, and runs `claude_sandbox.py` against
-`<github_user>/<repository>`. Any extra flags go to `claude_sandbox.py`
-(see `python3 claude_sandbox.py --help`).
+On every launch the program:
+1. creates `./venv` from `requirements.txt` if needed (re-installing only when
+   that file changed) and re-runs itself inside it;
+2. checks whether this checkout is behind its upstream. If so it lists the new
+   commits and, on a terminal, asks `git pull now? [y/N]` (`git pull --ff-only`,
+   then restarts itself; a failed or declined pull just continues; without a
+   terminal it only prints the notice). Skip with `--no-update-check`;
+3. checks, through `gh`, that you are logged in as `--github-user` and exits
+   otherwise (skip with `--no-user-check`; not done for `--setup-token`).
 
 ## code layout
 | file | role |
 | --- | --- |
-| `claude_sandbox.py` | CLI entry point, `Sandbox` lifecycle, pure rendering helpers |
+| `run.sh` | thin shim: `exec`s `claude_sandbox.py` |
+| `claude_sandbox.py` | CLI entry point and defaults, `Sandbox` lifecycle, pure rendering helpers |
+| `sandbox_bootstrap.py` | stdlib-only: create `venv/`, install requirements, re-exec |
+| `sandbox_update.py` | offer to `git pull` when this checkout is behind |
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |
-| `sandbox_containers.py` | `Container`: thin wrapper over `lxc`/`incus` |
-| `sandbox_github.py` | GitHub REST client, token lookup, repo-name validation |
+| `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
+| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_util.py` | logging, subprocess and signal helpers |

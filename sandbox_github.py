@@ -1,16 +1,19 @@
-"""sandbox_github.py - minimal GitHub REST client and token lookup (host side)."""
+"""sandbox_github.py - GitHub access via the host's `gh` CLI (run with invoke)."""
+import io
 import json
-import os
 import re
-import subprocess
-import sys
-import urllib.error
-import urllib.request
+import shlex
 
-from sandbox_util import run
+from invoke import Context
+from invoke.exceptions import CommandTimedOut
 
-API = "https://api.github.com"
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+TIMEOUT = 60
+# Never let gh prompt or phone home while we drive it non-interactively.
+GH_ENV = {"GH_PROMPT_DISABLED": "1", "GH_NO_UPDATE_NOTIFIER": "1",
+          "GH_SPINNER_DISABLED": "1", "NO_COLOR": "1"}
+_HTTP_RE = re.compile(r"\(HTTP (\d{3})\)")
 
 
 def validate_repo(repo):
@@ -20,14 +23,13 @@ def validate_repo(repo):
     return repo
 
 
-def github_token():
-    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if tok:
-        return tok
-    try:
-        return run(["gh", "auth", "token"], capture=True).stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        sys.exit("No GitHub token: set GITHUB_TOKEN or run `gh auth login`.")
+def resolve_repo(name, user):
+    """'name' -> 'user/name'; 'owner/name' is kept. Validated either way."""
+    if "/" not in name:
+        if not NAME_RE.match(name) or name in (".", ".."):
+            raise ValueError(f"not a valid repository name: {name!r}")
+        name = f"{user}/{name}"
+    return validate_repo(name)
 
 
 class GitHubError(RuntimeError):
@@ -36,43 +38,67 @@ class GitHubError(RuntimeError):
         self.code = code
 
 
-def _request(method, path, token, body=None, raw=False):
-    """Call the GitHub API; returns (body bytes, response headers)."""
-    req = urllib.request.Request(
-        API + path,
-        method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": ("application/vnd.github.raw+json" if raw
-                       else "application/vnd.github+json"),
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+# GitHub is reached only through the `gh` CLI, driven locally with invoke. gh
+# owns authentication (its own login, or GH_TOKEN/GITHUB_TOKEN), the API
+# version and TLS, and is kept current by the host's package manager, so this
+# module holds no token and no HTTP client to maintain.
+def _gh(args, body=None):
+    """Run `gh <args>` locally (no shell parsing of our strings) -> Result."""
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.read(), r.headers
-    except urllib.error.HTTPError as e:
-        raise GitHubError(f"GitHub {method} {path} -> {e.code}: "
-                          f"{e.read().decode(errors='replace')}", e.code) from None
+        return Context().run(
+            shlex.join(["gh", *args]), hide=True, warn=True, env=GH_ENV,
+            timeout=TIMEOUT,
+            in_stream=io.StringIO(body) if body is not None else False)
+    except CommandTimedOut:
+        raise GitHubError(f"gh {args[0]} timed out after {TIMEOUT}s", 0) from None
 
 
-def gh_api(method, path, token, body=None, raw=False):
-    """Call the GitHub API; raw=True returns the response body as bytes."""
-    data, _ = _request(method, path, token, body, raw)
+def _fail(args, r):
+    if r.exited == 127:
+        raise GitHubError("the GitHub CLI `gh` is not installed on the host; "
+                          "install it and run `gh auth login`", 0)
+    text = (r.stderr.strip() or r.stdout.strip())[:500]
+    m = _HTTP_RE.search(r.stderr)
+    raise GitHubError(f"gh {' '.join(args[:3])} failed: {text}",
+                      int(m.group(1)) if m else 0)
+
+
+def gh_api(method, path, body=None, raw=False):
+    """Call the GitHub API through `gh api`; raw=True returns bytes."""
+    args = ["api", "-X", method, path]
     if raw:
-        return data
-    return json.loads(data) if data else None
+        args += ["-H", "Accept: application/vnd.github.raw+json"]
+    if body is not None:
+        args += ["--input", "-"]
+    r = _gh(args, json.dumps(body) if body is not None else None)
+    if r.failed:
+        _fail(args, r)
+    if raw:
+        return r.stdout.encode()
+    return json.loads(r.stdout) if r.stdout.strip() else None
 
 
-def token_scopes(token):
-    """OAuth scopes of a classic/OAuth token, or None if GitHub doesn't say
+def github_login():
+    """Login of the account `gh` is authenticated as (also proves auth works)."""
+    args = ["api", "user", "--jq", ".login"]
+    r = _gh(args)
+    if r.failed:
+        _fail(args, r)
+    return r.stdout.strip()
+
+
+def token_scopes():
+    """OAuth scopes of gh's token, or None if GitHub doesn't say
     (fine-grained tokens and GitHub App tokens send no X-OAuth-Scopes)."""
-    _, headers = _request("GET", "/", token)
-    scopes = headers.get("X-OAuth-Scopes")
-    if scopes is None:
-        return None
-    return {s.strip() for s in scopes.split(",") if s.strip()}
+    args = ["api", "-i", "/"]
+    r = _gh(args)
+    if r.failed:
+        _fail(args, r)
+    for line in r.stdout.split("\n\n", 1)[0].splitlines():
+        name, _, value = line.partition(":")
+        if name.strip().lower() == "x-oauth-scopes":
+            return {s.strip() for s in value.split(",") if s.strip()}
+    return None
 
 
 WORKFLOW_FIX = ("to allow it, run `gh auth refresh -s workflow` on the host "

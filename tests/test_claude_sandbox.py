@@ -16,7 +16,11 @@ def test_parser_defaults(monkeypatch):
     monkeypatch.delenv("CLAUDE_SANDBOX_MODEL", raising=False)
     args = cs.build_parser().parse_args([])
     assert args.model == cs.DEFAULT_MODEL
-    assert args.cli == "lxc" and args.max_age == 7
+    assert args.cli == "incus" and args.max_age == 7
+    assert args.image == "images:ubuntu/24.04"
+    assert args.github_user == "studcavity"
+    assert args.git_email == cs.DEFAULT_GIT_EMAIL
+    assert args.repository is None and not args.account_key
     assert os.path.isfile(args.claude_md)
 
 
@@ -27,6 +31,11 @@ def test_parser_model_from_env(monkeypatch):
 
 @pytest.mark.parametrize("argv, msg", [
     (["--repo", "not-a-repo"], "--repo"),
+    ([], "a repository is required"),
+    (["a/b", "--repo", "c/d"], "once"),
+    (["a/b", "--account-key"], "mutually exclusive"),
+    (["bad name"], "not a valid repository name"),
+    (["x/y/z"], "not a valid owner/name"),
     (["--claude-md", "/nonexistent/x.md"], "--claude-md"),
 ])
 def test_main_rejects_bad_args(argv, msg, capsys):
@@ -121,7 +130,7 @@ def test_render_claude_md_real_template(repo_root, repo, read_only, needle):
 def gh(monkeypatch):
     calls = []
 
-    def fake(method, path, token, body=None, raw=False):
+    def fake(method, path, body=None, raw=False):
         calls.append((method, path))
         if "/contents/" in path:
             raise cs.GitHubError("nf", 404)
@@ -132,7 +141,8 @@ def gh(monkeypatch):
 
 def _sandbox(make_args, monkeypatch, **kw):
     box = cs.Sandbox(make_args(**kw))
-    monkeypatch.setattr(cs.Sandbox, "token", "TOKEN", raising=False)
+    monkeypatch.setattr(cs.Sandbox, "login", cs.DEFAULT_GITHUB_USER,
+                        raising=False)
     return box
 
 
@@ -180,16 +190,16 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
 ])
 def test_check_workflow_scope_warns_only_on_failure(monkeypatch, capsys,
                                                     scopes, warned):
-    monkeypatch.setattr(cs, "token_scopes", lambda t: scopes)
-    cs.check_workflow_scope("t")
+    monkeypatch.setattr(cs, "token_scopes", lambda: scopes)
+    cs.check_workflow_scope()
     assert ("warning:" in capsys.readouterr().err) == warned
 
 
 def test_check_workflow_scope_never_raises(monkeypatch, capsys):
-    def down(t):
+    def down():
         raise cs.GitHubError("GitHub GET / -> 503", 503)
     monkeypatch.setattr(cs, "token_scopes", down)
-    cs.check_workflow_scope("t")
+    cs.check_workflow_scope()
     assert "couldn't verify" in capsys.readouterr().err
 
 
@@ -244,7 +254,7 @@ HOST_YAML = (b'usb:\n  - name: probe\n    vendor_id: "2e8a"\n'
 @pytest.fixture
 def gh_host(monkeypatch):
     """GitHub serving a host file that requests 2e8a:000c."""
-    def fake(method, path, token, body=None, raw=False):
+    def fake(method, path, body=None, raw=False):
         if path.endswith("/" + cs.sandbox_host.HOST_FILE):
             return HOST_YAML
         raise cs.GitHubError("nf", 404)
@@ -438,3 +448,118 @@ def test_template_documents_setup_and_the_hazard_guard(repo_root):
     assert guard in t and "Gate hazardous scripts" in t
     assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in t
     assert "\nsetup:" in t and cs.SANDBOX_MARKER == "/etc/claude-sandbox"
+
+
+# --------------------------------------------------------------------------- #
+# defaults, repository resolution and the gh user gate (formerly run.sh)
+# --------------------------------------------------------------------------- #
+def _norm(argv):
+    args = cs.build_parser().parse_args(argv)
+    return cs.normalize_args(args)
+
+
+def test_bare_repository_name_resolves_under_github_user():
+    a = _norm(["lightning-bugs"])
+    assert a.repo == "studcavity/lightning-bugs"
+    assert a.git_name == "studcavity"  # defaults to the github user
+    assert _norm(["other/proj", "--github-user", "me"]).repo == "other/proj"
+    assert _norm(["proj", "--github-user", "me"]).git_name == "me"
+    assert _norm(["proj", "--git-name", "Bob"]).git_name == "Bob"
+
+
+def test_bare_name_cannot_smuggle_a_path_or_option():
+    for bad in ("..", ".", "a b", "x;rm", "a/../b"):
+        with pytest.raises(ValueError):
+            _norm([bad])
+
+
+def test_account_wide_key_is_never_implicit():
+    with pytest.raises(ValueError, match="repository is required"):
+        _norm([])
+    assert _norm(["--account-key"]).repo is None
+    assert _norm(["--setup-token"]).repo is None  # no GitHub involved
+
+
+def test_github_user_and_email_defaults_come_from_env(monkeypatch):
+    monkeypatch.setenv("CLAUDE_SANDBOX_GITHUB_USER", "alice")
+    monkeypatch.setenv("CLAUDE_SANDBOX_GIT_EMAIL", "a@x")
+    a = _norm(["proj"])
+    assert (a.repo, a.git_email, a.git_name) == ("alice/proj", "a@x", "alice")
+
+
+def test_check_expected_user():
+    assert cs.check_expected_user("studcavity", "studcavity") is None
+    assert cs.check_expected_user("StudCavity", "studcavity") is None
+    msg = cs.check_expected_user("mallory", "studcavity")
+    assert "mallory" in msg and "studcavity" in msg and "--no-user-check" in msg
+
+
+@pytest.fixture
+def main_env(monkeypatch):
+    """main() with every side effect stubbed; records what ran."""
+    seen = {"launched": False, "update": 0}
+    monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
+                        lambda *a, **k: seen.__setitem__("update", seen["update"] + 1))
+    monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
+    monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
+    monkeypatch.setattr(cs, "ensure_base_image", lambda *a: "img")
+    monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: None)
+    monkeypatch.setattr(cs.Sandbox, "resolve_usb", lambda self: [])
+    monkeypatch.setattr(cs.Sandbox, "launch",
+                        lambda self, image: seen.__setitem__("launched", True)
+                        or (_ for _ in ()).throw(RuntimeError("stop here")))
+    monkeypatch.setattr(cs.Sandbox, "teardown", lambda self: None)
+    return seen
+
+
+def test_main_refuses_unexpected_gh_user(main_env, monkeypatch, capsys):
+    monkeypatch.setattr(cs.Sandbox, "login", "mallory", raising=False)
+    assert cs.main(["proj"]) == 1
+    assert "mallory" in capsys.readouterr().err
+    assert not main_env["launched"]
+
+
+def test_main_no_user_check_flag(main_env, monkeypatch):
+    monkeypatch.setattr(cs.Sandbox, "login", "mallory", raising=False)
+    cs.main(["proj", "--no-user-check"])
+    assert main_env["launched"]
+
+
+def test_main_reports_missing_gh_cleanly(main_env, monkeypatch, capsys):
+    def no_gh(self):
+        raise cs.GitHubError("the GitHub CLI `gh` is not installed", 0)
+    monkeypatch.setattr(cs.Sandbox, "login", property(no_gh), raising=False)
+    assert cs.main(["proj"]) == 1
+    assert "gh" in capsys.readouterr().err and not main_env["launched"]
+
+
+def test_setup_token_skips_the_gh_gate(main_env, monkeypatch):
+    def boom(self):
+        raise AssertionError("must not touch GitHub")
+    monkeypatch.setattr(cs.Sandbox, "login", property(boom), raising=False)
+    cs.main(["--setup-token"])
+    assert main_env["launched"]
+
+
+def test_update_check_runs_by_default_and_can_be_disabled(main_env):
+    cs.main(["proj"])
+    assert main_env["update"] == 1
+    cs.main(["proj", "--no-update-check"])
+    assert main_env["update"] == 1
+
+
+def test_update_check_happens_before_any_github_or_container_work(
+        main_env, monkeypatch):
+    order = []
+    monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
+                        lambda *a, **k: order.append("update"))
+    monkeypatch.setattr(cs.Sandbox, "login",
+                        property(lambda self: order.append("gh") or "studcavity"),
+                        raising=False)
+    cs.main(["proj"])
+    assert order[:2] == ["update", "gh"]
+
+
+def test_template_has_no_docker_references(repo_root):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    assert "docker" not in t.lower() and "podman" not in t.lower()

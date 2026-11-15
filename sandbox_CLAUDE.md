@@ -13,7 +13,8 @@ $access
 - User `$user` (uid $uid), home `$home`. $sudo
 - Outbound internet works. The host's files, credentials and services are
   not reachable from here, and nothing on the host sees your files.
-- Nested containers (Docker/Podman) are not set up.
+- Nested containers are only possible through Incus, and only if the sandbox
+  was launched with `--nesting` and the repo's deps installed `incus`.
 
 ## Tooling
 - Available: $tools.
