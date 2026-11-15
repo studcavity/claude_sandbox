@@ -321,3 +321,124 @@ def test_checked_tip_is_the_last_listed_commit():
     assert sl.checked_tip(c) == "2" * 40
     assert sl.checked_tip({"commits": [{"sha": "nope"}]}) is None
     assert sl.checked_tip({}) is None
+
+
+# -- the PR body's "not verified" section ------------------------------------ #
+GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0" * 2    # assembled: nothing token-shaped in source
+
+
+def test_only_not_verified_lines_are_lifted_with_their_commit():
+    got = sl.not_verified_lines([
+        ("aaaaaaa", "feat: x\n\nVerified: pyflakes\nNot verified against real incus\n"
+                    "Follow-up: run it on a host"),
+        ("bbbbbbb", "fix: y\n\nVerified inside a sandbox"),
+        ("ccccccc", "fix: z\n\n  not verified: lower case, indented")])
+    assert got == [("aaaaaaa", "Not verified against real incus"),
+                   ("ccccccc", "not verified: lower case, indented")]
+
+
+@pytest.mark.parametrize("line", [
+    "we never verified this", "unverified", "Verifiedish", "see: Not verified: x",
+    "Verified: fine", "Follow-up: not verified yet",
+])
+def test_only_lines_that_start_with_the_words_count(line):
+    assert sl.not_verified_lines([("aaaaaaa", f"feat: x\n\n{line}")]) == []
+
+
+def test_a_hostile_message_is_only_read_so_far():
+    late = "\n".join(["filler"] * sl.MAX_LINES_PER_MESSAGE + ["Not verified: too late"])
+    assert sl.not_verified_lines([("aaaaaaa", late)]) == []
+
+
+def body(items, subjects=("feat: one",)):
+    return sl.pr_text("sess", "sbx/sess/work", list(subjects), items)[1]
+
+
+def test_the_section_comes_before_the_subjects_and_is_labelled_untrusted():
+    b = body([("aaaaaaa", "Not verified: no incus")])
+    assert "### Not verified, according to the commits" in b
+    assert "`aaaaaaa` Not verified: no incus" in b and "(1)" in b
+    assert b.index("Not verified, according") < b.index("````")
+    assert "untrusted" in b
+
+
+def test_the_section_says_so_when_no_commit_has_a_caveat():
+    assert "No commit says anything is not verified" in body([])
+
+
+def test_long_lists_are_truncated_with_a_count():
+    items = [(f"{i:07x}", f"Not verified: item {i}") for i in range(15)]
+    b = body(items)
+    assert "(15)" in b and "...and 5 more" in b
+    assert "item 9" in b and "item 10" not in b
+
+
+def test_session_text_is_sanitised_in_the_section():
+    b = body([("aaaaaaa", "Not verified: ping @octocat `rm -rf` \x1b[31m")])
+    assert "@octocat" not in b and "`rm -rf`" not in b and "\x1b" not in b
+
+
+def test_a_credential_in_a_commit_message_is_withheld_not_copied_into_the_pr():
+    b = body([("aaaaaaa", f"Not verified: used {GH}")], subjects=[f"feat: add {GH}"])
+    assert GH not in b
+    assert b.count("[withheld: appears to contain GitHub token]") == 2
+
+
+def test_a_forged_sha_cannot_break_out_of_its_code_span():
+    b = body([("a`b`<script>", "Not verified: x")])
+    assert "<script>" not in b and "`?`" in b
+
+
+def test_without_caveats_the_body_has_no_section():
+    t, b = sl.pr_text("sess", "sbx/sess/work", ["feat: one"])
+    assert "Not verified" not in b and t == "[sess] feat: one"
+
+
+def test_land_branch_puts_the_commits_caveats_in_the_pr(monkeypatch):
+    c = cmp_()
+    c["commits"][0]["commit"]["message"] = "do it\n\nNot verified: needs a host"
+    api = Api(main_cmp(c))
+    monkeypatch.setattr(sl, "gh_api", api)
+    sl.land("o/r", "s")
+    assert "Not verified: needs a host" in api.posted[0]["body"]
+
+
+# --- proposed synopsis ------------------------------------------------------------ #
+SYN = "feat: x\n\nPR-Title: Add the thing\nPR-Summary: does a\nPR-Summary: because b\n"
+
+
+def syn_body(syn):
+    return sl.pr_text("sess", "sbx/sess/work", ["feat: one"], [], syn)[1]
+
+
+def test_synopsis_comes_from_the_newest_commit_that_has_a_title():
+    r = sl.synopsis([("aaaaaaa", SYN), ("bbbbbbb", "PR-Title: Better title\nPR-Summary: new"),
+                     ("ccccccc", "fix: z\n\nPR-Summary: orphan summary, no title")])
+    assert r == ("bbbbbbb", "Better title", ["new"])
+    assert sl.synopsis([("aaaaaaa", "feat: x")]) is None
+
+
+def test_body_shows_the_synopsis_as_untrusted_and_sanitised():
+    syn = sl.synopsis([("aaaaaaa", "feat: x\n\nPR-Title: ping @octocat `rm` fixes #12\n"
+                                   f"PR-Summary: leaked {GH}\nPR-Summary: ok\x1b[31m")])
+    b = syn_body(syn)
+    assert "### Proposed synopsis" in b and "untrusted" in b
+    assert b.index("Proposed synopsis") < b.index("Not verified, according")
+    assert "@octocat" not in b and "`rm`" not in b and "#12" not in b.replace("#​12", "")
+    assert GH not in b and "[withheld: appears to contain GitHub token]" in b
+    assert "\x1b" not in b
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], [], syn)
+    assert t.endswith(" [sess]") and "@octocat" not in t and "`" not in t
+    assert t.startswith("ping @​octocat")
+
+
+def test_no_synopsis_section_without_a_synopsis():
+    assert "Proposed synopsis" not in syn_body(None)
+
+
+def test_title_is_the_proposed_one_with_the_session_appended():
+    syn = sl.synopsis([("aaaaaaa", SYN)])
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one", "feat: two"], [], syn)
+    assert t == "Add the thing [sess]"
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], [], None)
+    assert t == "[sess] feat: one"          # no proposal: built from the subjects

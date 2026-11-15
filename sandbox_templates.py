@@ -4,7 +4,7 @@ The text lives in templates/*.md (string.Template, `$$` for a literal dollar
 sign) so it can change without touching code. What must NOT be editable by
 accident is checked on load:
   * every placeholder the code fills in is present (a template that drops
-    `$record` would silently stop showing reviewers the commits' caveats);
+    `$caveats` would silently stop showing reviewers the commits' caveats);
   * no placeholder the code doesn't fill in (a typo fails now, not at 2am);
   * the text still says the content is "untrusted".
 The ledger marker of an issue is NOT in the template: code appends it as
@@ -17,7 +17,7 @@ import string
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
 REQUIRED = {
-    "pr.md": {"session", "branch", "record", "subjects", "more"},
+    "pr.md": {"session", "branch", "caveats", "subjects", "more"},
     "issue.md": {"commit", "item", "body"},
 }
 

@@ -26,7 +26,6 @@ import urllib.parse
 import sandbox_deps
 import sandbox_host
 import sandbox_labels
-import sandbox_record
 import sandbox_templates
 import sandbox_untrusted
 from sandbox_github import GitHubError, gh_api
@@ -60,8 +59,12 @@ def clean_text(text, limit):
     return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
-MAX_RECORD_ITEMS = 10
-MAX_SUMMARY_LINES = sandbox_record.MAX_SUMMARY_LINES
+MAX_CAVEATS = 10
+MAX_SUMMARY_LINES = 8
+MAX_LINES_PER_MESSAGE = 400   # a commit message is read, not parsed forever
+_NOT_VERIFIED = re.compile(r"(?i)^\s*not\s+verified\b")
+_PR_TITLE = re.compile(r"(?i)^\s*pr-title\s*:\s*(\S.*)$")
+_PR_SUMMARY = re.compile(r"(?i)^\s*pr-summary\s*:\s*(\S.*)$")
 
 
 def safe_line(text, limit):
@@ -74,48 +77,71 @@ def safe_line(text, limit):
     return clean_text(text, limit)
 
 
-def record_section(rec):
-    """Markdown for what the commits say about their own verification and
-    follow-ups (see sandbox_record). Every line of session text is sanitised."""
-    out = ["### What the commits say", "",
-           "_Lifted from the commit messages by the launcher; untrusted like "
-           "everything below._", ""]
-
-    def sha(x):
-        return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
-
-    def block(title, items, fmt):
-        if not items:
-            return
-        out.append(f"**{title}** ({len(items)})")
-        out.extend("- " + fmt(i) for i in items[:MAX_RECORD_ITEMS])
-        if len(items) > MAX_RECORD_ITEMS:
-            out.append(f"- ...and {len(items) - MAX_RECORD_ITEMS} more")
-        out.append("")
-    block("Verified", rec.verified, lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Not verified", rec.not_verified,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Follow-ups", rec.follow_ups,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    if not rec.verified and not rec.not_verified:
-        out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
-    return "\n".join(out)
+def not_verified_lines(commits):
+    """[(short sha, full message)] -> [(short sha, line)]: every line that
+    starts with `Not verified`, oldest commit first. These are the caveats a
+    reviewer most needs, so they are lifted into the PR body; the rest of what
+    a commit says about itself stays in the commit."""
+    out: list = []
+    for sha, message in commits:
+        out.extend((sha, line.strip()) for line in
+                   message.splitlines()[:MAX_LINES_PER_MESSAGE]
+                   if _NOT_VERIFIED.match(line))
+    return out
 
 
-def synopsis_section(rec):
-    """Markdown for the session's own proposed title and summary, or "" when
-    its commits carry none. Sanitised like everything else from the session."""
-    if not rec or not rec.synopsis:
-        return ""
-    sha, title, summary = rec.synopsis
+def synopsis(commits):
+    """[(short sha, full message)], oldest first -> None, or (short sha,
+    proposed title, [summary lines]) from the newest commit that has a
+    `PR-Title:` line; a later commit's synopsis replaces an earlier one."""
+    found = None
+    for sha, message in commits:
+        title: str | None = None
+        summary: list[str] = []
+        for line in message.splitlines()[:MAX_LINES_PER_MESSAGE]:
+            if (m := _PR_TITLE.match(line)):
+                title = title or m.group(1).strip()
+            elif (m := _PR_SUMMARY.match(line)):
+                if len(summary) < MAX_SUMMARY_LINES:
+                    summary.append(m.group(1).strip())
+        if title:
+            found = (sha, title, summary)
+    return found
+
+
+def synopsis_section(syn):
+    """Markdown for the session's own proposed title and summary (see
+    synopsis). Sanitised like everything else from the session."""
+    sha, title, summary = syn
     if not re.fullmatch(r"[0-9a-f]{4,40}", sha or ""):
         sha = "?"
     out = ["### Proposed synopsis", "",
            f"_Proposed by the session in commit `{sha}`; untrusted like "
            "everything below. Its title is this PR's title._",
            "", f"**Proposed title:** {safe_line(title, 120)}", ""]
-    out.extend(f"- {safe_line(s, 200)}" for s in summary[:MAX_SUMMARY_LINES])
+    out.extend(f"- {safe_line(x, 200)}" for x in summary[:MAX_SUMMARY_LINES])
     return "\n".join(out) + "\n"
+
+
+def caveats_section(items):
+    """Markdown for the `Not verified` lines (see not_verified_lines). Every
+    line of session text is sanitised and secret-checked."""
+    out: list = ["### Not verified, according to the commits", "",
+           "_Lifted from the commit messages by the launcher; untrusted like "
+           "everything below._", ""]
+
+    def sha(x):
+        return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
+    if not items:
+        out += ["_No commit says anything is not verified._", ""]
+    else:
+        out.append(f"({len(items)})")
+        out.extend(f"- `{sha(s)}` {safe_line(t, 160)}"
+                   for s, t in items[:MAX_CAVEATS])
+        if len(items) > MAX_CAVEATS:
+            out.append(f"- ...and {len(items) - MAX_CAVEATS} more")
+        out.append("")
+    return "\n".join(out)
 
 
 def label_pr(repo, pr, session):
@@ -135,25 +161,25 @@ def label_pr(repo, pr, session):
         pass
 
 
-def pr_text(session, branch, subjects, record=None):
+def pr_text(session, branch, subjects, caveats=None, syn=None):
     """(title, body) for a session branch from its commit subjects (and, if
-    given, the Record of what its commits say about themselves). The title is
-    the session's proposed one plus ` [session]` when it proposed one, else
-    built from the subjects."""
+    given, its `Not verified` lines: see not_verified_lines). The title is the
+    session's proposed one (see synopsis) plus ` [session]` when it proposed
+    one, else built from the subjects."""
     tail = branch.split("/", 2)[-1]
     first = clean_text(subjects[0], 80) if subjects else tail
     title = f"[{session}] " + (first if len(subjects) == 1 else
                                f"{clean_text(tail, 40)} ({len(subjects)} commits)")
-    if record is not None and record.synopsis:
+    if syn:
         # The session's own title, sanitised; the session name goes last so
         # it is the launcher, not the session, that says whose PR this is.
-        title = f"{safe_line(record.synopsis[1], 100)} [{session}]"
+        title = f"{safe_line(syn[1], 100)} [{session}]"
     shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
     body = sandbox_templates.render(
         "pr.md", session=session, branch=clean_text(branch, 120),
-        record=((synopsis_section(record) + "\n" if record.synopsis else "")
-                + record_section(record) + "\n") if record is not None else "",
+        caveats=((synopsis_section(syn) + "\n" if syn else "")
+                 + (caveats_section(caveats) + "\n" if caveats is not None else "")),
         subjects=shown,
         more=f"\n...and {more} more commits.\n" if more > 0 else "")
     return title, body
@@ -210,10 +236,10 @@ def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
                       "exists", open_[0]["html_url"], cum["ahead_by"])
     subjects = [c["commit"]["message"].split("\n", 1)[0]
                 for c in cum.get("commits") or []]
-    record = sandbox_record.extract(
-        [((c.get("sha") or "")[:7], c["commit"]["message"])
-         for c in cum.get("commits") or []])
-    title, body = pr_text(session, branch, subjects, record)
+    messages = [((c.get("sha") or "")[:7], c["commit"]["message"])
+                for c in cum.get("commits") or []]
+    title, body = pr_text(session, branch, subjects, not_verified_lines(messages),
+                          synopsis(messages))
     pr = gh_api("POST", f"/repos/{repo}/pulls",
                 {"title": title, "head": branch, "base": default, "body": body,
                  "maintainer_can_modify": False})
