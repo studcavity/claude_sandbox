@@ -41,7 +41,7 @@ concurrency (plan 1b), and a clean way to file issues from plan 5's workflow.
 
 ## Status 2026-11-15: spike done, design changed
 A spike against a real local HTTPS server (kept as `tests/integration/
-test_ghclient.py` on branch impl-check) found that **a dict facade over
+test_ghclient.py`, now on main) found that **a dict facade over
 PyGithub's requester is unsafe**: it injects a `url` key into every dict,
 wraps raw file text in `{"data": ...}`, parses a raw JSON file into a dict
 (bytes lost) and corrupts binary. The launcher needs exact bytes for the deps

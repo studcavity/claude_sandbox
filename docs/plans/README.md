@@ -1,7 +1,6 @@
 # Implementation plans
 
-Most of this is now **built** (branch `sbx/relaxed-fermat/impl-check`, status
-below). Each file is self-contained so a fresh session can pick up what remains.
+Most of this is now **built and merged** (#7, on `main`; status below). Each file is self-contained so a fresh session can pick up what remains.
 Status is tracked here; update it in the commit that changes it. "Built" means
 implemented and unit/integration-tested here; almost nothing has run against a
 real incus or a real GitHub with this code, and each row says what is unproven.
@@ -20,12 +19,11 @@ real incus or a real GitHub with this code, and each row says what is unproven.
 | 5a-5d | stdlib checker, rules + allowlist, `--post-status`/`--override`, launcher posts it at exit | **built** | posting to a real PR with this code; ruleset not applied anywhere yet |
 | 5e | `--file-issues` | **built** | the optional rendered `main` workflow: not done |
 
-The branches form a stack. `credit-awareness` (a note in the sandbox CLAUDE.md
-that running out of credits loses work) is merged (#6). Next: `impl-check`
-(everything above), then `work` (first-run dialogs, `sandbox_claude_config.py`),
-which is stacked on it. `plans` (docs and the probe script) is independent.
-There is no `--low-credits` flag any more: it could only be as good as the user
-remembering to set it.
+Merged: `credit-awareness` (#6, a note in the sandbox CLAUDE.md that running
+out of credits loses work) and the implementation (#7, everything in the table).
+Still open: `work` (first-run dialogs, `sandbox_claude_config.py`), rebased onto
+`main`, and this `plans` branch (docs and the probe script). There is no
+`--low-credits` flag: it could only be as good as the user remembering to set it.
 From PR #4 (`1979267`): `Sandbox-Action` / `Sandbox-Session` trailers,
 `sandbox_actions.py`, `sandbox_check.py` plus the `commit-metadata` CI job, and
 repo-defined rulesets from `rulesets/*.json`. Probe for commit-status gating:
