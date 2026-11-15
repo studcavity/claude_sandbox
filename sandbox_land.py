@@ -19,6 +19,7 @@ import urllib.parse
 
 import sandbox_deps
 import sandbox_host
+import sandbox_untrusted
 from sandbox_github import gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
 
@@ -48,9 +49,7 @@ def sensitive_paths(files, extra=()):
 def clean_text(text, limit):
     """Make untrusted text safe to paste into a PR: one line, no control
     characters, no backticks (the body fences it), and no live @-mentions."""
-    t = "".join(c if c.isprintable() else " " for c in text)
-    t = " ".join(t.split()).replace("`", "'").replace("@", "@​")
-    return t if len(t) <= limit else t[:limit - 1] + "…"
+    return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
 def pr_text(session, branch, subjects):

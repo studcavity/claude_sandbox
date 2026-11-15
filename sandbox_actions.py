@@ -65,6 +65,7 @@ import re
 import urllib.parse
 
 import sandbox_names
+import sandbox_untrusted
 
 TRAILER = "Sandbox-Action"
 SESSION_TRAILER = "Sandbox-Session"
@@ -222,10 +223,7 @@ def parse_commits(commits):
 def clean_block(text, limit):
     """Untrusted multi-line text made safe to paste into GitHub: no control
     characters (newlines kept), no live @-mentions, bounded."""
-    t = "".join(c if c.isprintable() or c == "\n" else " "
-                for c in text.replace("\r", ""))
-    t = t.replace("@", "@​").strip()
-    return t if len(t) <= limit else t[:limit - 1] + "…"
+    return sandbox_untrusted.block(text, limit)
 
 
 def clean_line(text, limit):
@@ -236,7 +234,14 @@ def clean_line(text, limit):
 # A handler validates its own payload and raises Rejected (a no-op) when it
 # doesn't conform. ctx is a Context; all I/O goes through ctx.api.
 class Rejected(ValueError):
-    pass
+    """The payload doesn't conform: a silent no-op, by the spec."""
+
+
+class PolicyRejected(Rejected):
+    """The payload conforms but we refuse to publish it (e.g. it appears to
+    contain a credential). Unlike a malformed payload this is reported in the
+    exit summary, so the user knows an item was held back and why. The reason
+    names the kind of problem, never the offending text."""
 
 
 Context = collections.namedtuple("Context", "repo session branches api")
@@ -248,6 +253,10 @@ def _issue(ctx, a):
         raise Rejected("issue needs a title")
     if not isinstance(body, str):
         raise Rejected("issue body must be a string")
+    hits = sandbox_untrusted.find_secrets(f"{title}\n{body}")
+    if hits:
+        raise PolicyRejected("not filed: the text appears to contain "
+                             + ", ".join(hits))
     text = (
         f"Follow-up requested by commit {a.sha} (session `{ctx.session}`), "
         f"item `{a.id}`.\n\n"
@@ -334,6 +343,8 @@ def execute(ctx, actions):
             detail = HANDLERS[(a.type, a.v)](ctx, a)
             mark_done(ctx.api, ctx.repo, a, detail)
             out.append(Outcome(a.sha, a.id, a.type, "done", detail))
+        except PolicyRejected as e:
+            out.append(Outcome(a.sha, a.id, a.type, "rejected", str(e)))
         except Rejected:
             continue  # nonconforming payload: a no-op by spec
         except Exception as e:
@@ -376,7 +387,8 @@ def format_outcomes(outcomes):
     if not outcomes:
         return ""
     label = {"done": "filed", "exists": "already done",
-             "superseded": "resolved by a later commit", "failed": "FAILED"}
+             "superseded": "resolved by a later commit", "failed": "FAILED",
+             "rejected": "REJECTED (policy)"}
     lines = ["follow-up actions"]
     for o in outcomes:
         lines.append(f"  {label[o.status]:<26} {o.type} {o.sha[:7]}:{o.id}"
