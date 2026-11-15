@@ -75,6 +75,7 @@ import json
 import re
 import urllib.parse
 
+import sandbox_labels
 import sandbox_names
 import sandbox_untrusted
 
@@ -93,10 +94,6 @@ MARKER = "claude-sandbox:action"
 MAX_BRIEF = 6000          # chars of todo/<id>.md embedded in an issue
 MAX_BRIEF_BYTES = 40000   # bytes read from it before decoding
 MAX_LEDGER_PAGES = 5      # x100 issues scanned for an existing marker
-LABELS = {  # name -> (colour, description); created on first use
-    "sandbox": ("5319e7", "Filed by claude_sandbox from a session's commit"),
-    "follow-up": ("fbca04", "A follow-up a sandboxed session asked for"),
-}
 
 # sha: full commit sha; key: (type, v); data: the whole decoded object.
 Action = collections.namedtuple("Action", "sha id type v data")
@@ -329,20 +326,9 @@ def session_of(ctx, a):
 
 
 def ensure_labels(ctx, names):
-    """Create missing labels once per run. Best effort: a repo that refuses
-    (no push access) still gets the issue, and the commit comment remains a
-    second ledger."""
-    done = ctx.cache.setdefault("labels", set())
-    for name in names:
-        if name in done:
-            continue
-        color, desc = LABELS.get(name, ("ededed", "claude_sandbox session"))
-        try:
-            ctx.api("POST", f"/repos/{ctx.repo}/labels",
-                    {"name": name, "color": color, "description": desc})
-        except RuntimeError:
-            pass  # already exists (422) or not allowed: either way, carry on
-        done.add(name)
+    """Create missing labels once per run (best effort: see sandbox_labels)."""
+    sandbox_labels.ensure(ctx.api, ctx.repo, names,
+                          ctx.cache.setdefault("labels", set()))
 
 
 def fetch_brief(ctx, a):
@@ -392,7 +378,8 @@ def _issue(ctx, a):
                       f"{_defang(clean_block(brief, MAX_BRIEF))}\n\n"
                       f"[Full file at that commit](https://github.com/{ctx.repo}"
                       f"/blob/{a.sha}/{todo_path(a.id)})")
-    labels = ["sandbox", "follow-up"] + ([f"session:{session}"] if session else [])
+    labels = [sandbox_labels.SANDBOX, sandbox_labels.FOLLOW_UP] + (
+        [sandbox_labels.session_label(session)] if session else [])
     ensure_labels(ctx, labels)
     text = (
         f"Follow-up requested by commit {a.sha} (session `{session or ctx.session}`), "
