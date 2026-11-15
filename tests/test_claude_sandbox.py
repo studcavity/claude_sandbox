@@ -506,7 +506,7 @@ def main_env(monkeypatch):
                         lambda *a, **k: seen.__setitem__("update", seen["update"] + 1))
     monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
     monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
-    monkeypatch.setattr(cs, "ensure_base_image", lambda *a: "img")
+    monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: None)
     monkeypatch.setattr(cs.Sandbox, "resolve_usb", lambda self: [])
     monkeypatch.setattr(cs.Sandbox, "launch",
@@ -613,7 +613,7 @@ def test_deps_are_read_before_the_base_image_is_built():
 def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
     seen = {}
     monkeypatch.setattr(cs, "ensure_base_image",
-                        lambda cli, source, *a: seen.setdefault("source", source))
+                        lambda cli, source, *a, **k: seen.setdefault("source", source))
     parsed = cs.sandbox_deps.parse("image: images:ubuntu/24.04")
     monkeypatch.setattr(cs.Sandbox, "load_deps",
                         lambda self: setattr(self, "deps", parsed))

@@ -428,6 +428,66 @@ def prefetch_plan(args):
     return specs
 
 
+def refresh_argv(args, python, script):
+    """argv of the detached process that refreshes stale cached images: the
+    same image-relevant options, so it works out the same aliases."""
+    cmd = [python, script, "--refresh-images", "--cli", args.cli,
+           "--max-age", str(args.max_age),
+           "--hard-max-age", str(args.hard_max_age)]
+    if args.repo:
+        cmd += ["--repo", args.repo]
+    if args.image:
+        cmd += ["--image", args.image]
+    if args.disk_size:
+        cmd += ["--disk-size", str(args.disk_size)]
+    if args.no_deps:
+        cmd.append("--no-deps")
+    return cmd
+
+
+def refresh_log_path():
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "claude_sandbox", "image-refresh.log")
+
+
+def spawn_refresh(args):
+    """Start the refresher detached (its own session, output to a log) so the
+    launcher neither waits for it nor is held open by it."""
+    path = refresh_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "a") as logf:
+            subprocess.Popen(
+                refresh_argv(args, sys.executable, os.path.abspath(__file__)),
+                stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
+                start_new_session=True)
+    except OSError as e:
+        log(f"warning: couldn't start the background image refresh: {e}")
+        return
+    log(f"refreshing stale cached images in the background (log: {path})")
+
+
+def refresh_images(args):
+    """Rebuild whatever cached image is stale for this repo's settings, then
+    exit. Safe to run twice at once: each rebuild re-checks under the lock."""
+    box = Sandbox(args)
+    try:
+        box.load_deps()
+        source = box.choose_image()
+        image = ensure_base_image(args.cli, source, args.max_age, False,
+                                  args.disk_size, hard_max_age_days=args.hard_max_age,
+                                  refresh=True)
+        if box.deps:
+            ensure_deps_image(args.cli, image, box.deps, args.max_age, False,
+                              args.disk_size, hard_max_age_days=args.hard_max_age,
+                              refresh=True)
+    except (GitHubError, subprocess.CalledProcessError, RuntimeError, OSError) as e:
+        log(f"error: image refresh failed: {e}")
+        return 1
+    log("image refresh done")
+    return 0
+
+
 def action_limits(args):
     """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
     return {"actions": args.max_actions, "issues": args.max_issues}
@@ -1084,8 +1144,17 @@ def build_parser():
                    help="rebuild the cached base and deps images even if "
                         "they are fresh")
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
-                   help="rebuild the cached image when older than this "
-                        "(default: 7)")
+                   help="a cached image older than this is stale: it is still "
+                        "used (see --hard-max-age) and refreshed in the "
+                        "background (default: 7)")
+    p.add_argument("--hard-max-age", type=float, default=30, metavar="DAYS",
+                   help="a cached image older than this is rebuilt before "
+                        "launching; between --max-age and this it is used as "
+                        "is while a background process refreshes it "
+                        "(default: 30; 0 = always rebuild at --max-age)")
+    p.add_argument("--refresh-images", action="store_true",
+                   help="internal: rebuild stale cached images and exit (the "
+                        "launcher runs this detached after launching on one)")
     p.add_argument("--model", metavar="MODEL",
                    default=os.environ.get("CLAUDE_SANDBOX_MODEL")
                    or DEFAULT_MODEL,
@@ -1156,7 +1225,8 @@ def normalize_args(args):
         args.repo = resolve_repo(args.repository, args.github_user)
     if args.account_key and args.repo:
         raise ValueError("--account-key and a repository are mutually exclusive")
-    if not (args.repo or args.account_key or args.setup_token):
+    if not (args.repo or args.account_key or args.setup_token
+            or args.refresh_images):
         raise ValueError("a repository is required (or --account-key to use "
                          "an account-wide key, or --setup-token)")
     if args.land_all and not args.repo:
@@ -1197,6 +1267,8 @@ def main(argv=None):
 
 
 def _launch(args):
+    if args.refresh_images:
+        return refresh_images(args)
     if not args.no_update_check:
         with sandbox_timing.stage("update check (git fetch)"):
             sandbox_update.check_for_updates(
@@ -1260,21 +1332,26 @@ def _launch(args):
                 box.preflight_github()
         source = box.choose_image()
         image = source
+        stale: list = []
+        swr = dict(hard_max_age_days=args.hard_max_age or None,
+                   on_stale=lambda kind, alias: stale.append((kind, alias)))
         with sandbox_timing.stage("images (cache lookup / build)"):
             if not args.no_cache:
                 image = ensure_base_image(args.cli, source,
                                           args.max_age, args.rebuild,
-                                          args.disk_size)
+                                          args.disk_size, **swr)
             if box.deps and not args.no_cache:
                 baked = ensure_deps_image(args.cli, image, box.deps,
                                           args.max_age, args.rebuild,
-                                          args.disk_size)
+                                          args.disk_size, **swr)
                 if baked:
                     image, box.deps_baked = baked, True
                     box.deps_note += ("\n(Preinstalled in a cached image; edits "
                                       "to the file apply on the next launch.)")
         with sandbox_timing.stage("container launch + boot"):
             box.launch(image)
+        if stale and not args.setup_token:   # after the launch: never competes with it
+            spawn_refresh(args)
         if args.setup_token:
             box.install_claude()
             return box.setup_token()

@@ -106,6 +106,30 @@ def is_fresh(created, max_age_days, not_older_than=None, now=None):
     return not_older_than is None or created >= not_older_than
 
 
+def classify(created, max_age_days, hard_max_age_days=None, not_older_than=None,
+             now=None):
+    """'missing' | 'fresh' | 'stale' | 'expired' for an image built at `created`.
+
+    fresh    younger than max_age_days and not older than `not_older_than`;
+    stale    past max_age_days, or older than `not_older_than` (e.g. the base it
+             derives from), but younger than the hard cap: usable now, worth
+             refreshing in the background;
+    expired  at or past the hard cap (default: max_age_days, i.e. nothing is
+             ever merely stale and every caller rebuilds, as before).
+    """
+    if created is None:
+        return "missing"
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    hard = max(hard_max_age_days or 0, max_age_days)
+    age = now - created
+    if age >= datetime.timedelta(days=hard):
+        return "expired"
+    if (age >= datetime.timedelta(days=max_age_days)
+            or (not_older_than is not None and created < not_older_than)):
+        return "stale"
+    return "fresh"
+
+
 def images_to_prune(images, keep, current):
     """Oldest aliases to delete so at most `keep` remain; never `current`."""
     old = sorted((a for a in images if a != current), key=images.get)
@@ -156,8 +180,29 @@ def build_lock(alias):
         yield
 
 
-def ensure_base_image(cli, source, max_age_days, rebuild, root_size=None):
+def ensure_base_image(cli, source, max_age_days, rebuild, root_size=None, *,
+                      hard_max_age_days=None, on_stale=None, refresh=False):
+    """Alias of the base image for `source`, building it if needed.
+
+    With `hard_max_age_days` and `on_stale`, an image past max_age_days but
+    inside the hard cap is used as is and `on_stale("base", alias)` is called so
+    the caller can refresh it in the background; nobody waits for a rebuild
+    that isn't strictly needed. `refresh=True` is the background refresher
+    itself: it rebuilds a stale image (re-checking under the lock, so two
+    refreshers never build twice).
+    """
     alias = base_alias(source)
+    if not rebuild and not refresh:   # decide WITHOUT the lock: a refresher may hold it for minutes
+        created = cached_images(cli).get(alias)
+        state = classify(created, max_age_days, hard_max_age_days)
+        if state == "fresh" or (state == "stale" and on_stale):
+            if state == "stale":
+                log(f"using cached image {alias} (built {_age(created)} ago, past "
+                    f"{max_age_days}d: refreshing it in the background)")
+                on_stale("base", alias)
+            else:
+                log(f"using cached image {alias} (built {_age(created)} ago)")
+            return alias
     with build_lock(alias):
         return _ensure_base_image(cli, source, alias, max_age_days, rebuild,
                                   root_size)
@@ -165,6 +210,9 @@ def ensure_base_image(cli, source, max_age_days, rebuild, root_size=None):
 
 def _ensure_base_image(cli, source, alias, max_age_days, rebuild,
                        root_size=None):
+    """Under the lock only a FRESH image is reusable (a stale one reaches here
+    only when the caller can't use it, or is the refresher): re-checking here is
+    what stops two refreshers, or a launch racing a refresher, building twice."""
     images = cached_images(cli)
     created = images.get(alias)
 
@@ -230,7 +278,8 @@ def apply_deps(box, deps):
 
 
 def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
-                      root_size=None):
+                      root_size=None, *, hard_max_age_days=None, on_stale=None,
+                      refresh=False):
     """Alias of a per-deps image derived from `base`, building it if needed;
     None when these deps must be installed per launch instead.
 
@@ -239,6 +288,10 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
     keyed by the base image and the validated install sections, rebuilt when
     older than max_age_days (unpinned apt packages go stale) or older than the
     base image (so a refreshed Claude Code isn't shadowed), or on --rebuild.
+
+    As for the base image: with `hard_max_age_days` and `on_stale`, a stale one
+    (including one merely older than a freshly refreshed base) is used now and
+    refreshed in the background; `refresh=True` is that background refresher.
     """
     key = sandbox_deps.cache_key(deps)
     if key is None:
@@ -246,6 +299,19 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
             log("deps image cache off: an install script has no sha256 pin")
         return None
     alias = deps_alias(base, key)
+
+    if not rebuild and not refresh:   # decide without the lock (see ensure_base_image)
+        created = cached_images(cli, DEPS_IMAGE_PREFIX).get(alias)
+        state = classify(created, max_age_days, hard_max_age_days,
+                         cached_images(cli).get(base))
+        if state == "fresh" or (state == "stale" and on_stale):
+            if state == "stale":
+                log(f"using cached deps image {alias} (built {_age(created)} ago, "
+                    "older than allowed: refreshing it in the background)")
+                on_stale("deps", alias)
+            else:
+                log(f"using cached deps image {alias} (built {_age(created)} ago)")
+            return alias
 
     with build_lock(alias):
         created = cached_images(cli, DEPS_IMAGE_PREFIX).get(alias)

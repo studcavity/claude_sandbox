@@ -96,7 +96,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
     monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(cs.sandbox_pool, "check", lambda *a: None)
-    monkeypatch.setattr(cs, "ensure_base_image", lambda *a: "img")
+    monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     monkeypatch.setattr(cs.subprocess, "run",
@@ -235,3 +235,41 @@ def test_no_prefetch_flag_starts_nothing_but_still_clears(world, monkeypatch):
     monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
     assert cs.main(argv(world, "--no-prefetch")) == 0
     assert seen == [[]] and cleared == [1]
+
+
+# --- stale-while-revalidate wiring (plan 1c) ------------------------------------ #
+def test_a_stale_image_launches_now_and_spawns_the_refresh_after_the_launch(world, monkeypatch):
+    order = []
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, on_stale=None, **k: (on_stale("base", "x"), "img")[1])
+    monkeypatch.setattr(cs, "spawn_refresh", lambda args: order.append("refresh"))
+    orig = FakeContainer._ok
+
+    def spy(self, what, *a, **k):
+        if what == "launch":
+            order.append("launch")
+        return orig(self, what, *a, **k)
+    monkeypatch.setattr(FakeContainer, "_ok", spy)
+    assert cs.main(argv(world)) == 0
+    assert order == ["launch", "refresh"]       # never competes with the launch it follows
+
+
+def test_nothing_is_spawned_when_the_image_is_fresh(world, monkeypatch):
+    monkeypatch.setattr(cs, "spawn_refresh", lambda args: pytest.fail("spawned"))
+    assert cs.main(argv(world)) == 0
+
+
+def test_hard_max_age_zero_turns_the_feature_off(world, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, **k: seen.update(k) or "img")
+    assert cs.main(argv(world, "--hard-max-age", "0")) == 0
+    assert seen["hard_max_age_days"] is None
+
+
+def test_the_default_hard_cap_is_thirty_days(world, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, **k: seen.update(k) or "img")
+    cs.main(argv(world))
+    assert seen["hard_max_age_days"] == 30.0 and callable(seen["on_stale"])
