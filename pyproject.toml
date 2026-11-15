@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-sandbox"
+version = "0.0.0"  # not published: the version only exists so pip can install the checkout
+description = "Run a Claude Code session in a throwaway Incus/LXD container"
+requires-python = ">=3.12"
+# requirements.txt stays the one list: the launcher's venv bootstrap hashes it.
+dynamic = ["dependencies"]
+
+[project.scripts]
+claude-sandbox = "claude_sandbox.cli:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["claude_sandbox*"]
+
+[tool.setuptools.package-data]
+claude_sandbox = ["data/*.md", "data/templates/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = [
+    "incus: needs a real incus/lxc container (opt-in, CS_INTEGRATION=1)",
+    "smoke: real launch lifecycle in a real container, GitHub faked (CI runs it as its own step)",
+    "gh: drives the real gh binary (hermetic by default; CS_GH_LIVE=1 adds real GitHub)",
+]
+
+[tool.mypy]
+# check_untyped_defs is the point: most of this code is unannotated, and mypy
+# skips the bodies of unannotated functions by default. With it on, mypy
+# reports `Cannot assign to a method` for an instance attribute that shadows a
+# method (the bug that crashed every launch). tests/test_ci_config.py proves
+# the setting still catches that, so it can't be dropped quietly.
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true

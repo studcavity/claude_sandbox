@@ -152,3 +152,12 @@ Done in this order, one commit each. Item numbers refer to the list above.
   exactly (launching against this repo offers its own rulesets again; the
   launcher's `protect-main.json` was always one of them). `config/` is gone,
   because it held nothing else. `paths.RULESETS` points at the root again.
+- **Item 1: `pyproject.toml`.** Replaces `pytest.ini` and `mypy.ini`; adds
+  `[project]` metadata and a `claude-sandbox` console script
+  (`claude_sandbox.cli:main`). Dependencies are read from `requirements.txt`
+  (one list: the launcher's venv bootstrap hashes that file), so
+  `requirements*.txt` stay. `check_untyped_defs` is still pinned by
+  `tests/test_ci_config.py`, now read with `tomllib`. `ruff` was not added
+  (a new CI dependency for little gain over pyflakes); revisit on its own.
+  Checked: `pip install .` into a scratch venv installs the data files and
+  `claude-sandbox --help` runs.

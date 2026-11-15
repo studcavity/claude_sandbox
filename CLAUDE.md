@@ -62,7 +62,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest               # ~3s, includes a mypy run (hermetic gh tests need gh + openssl)
 python -m pyflakes claude_sandbox scripts tests/
-python -m mypy claude_sandbox scripts/*.py   # mypy.ini sets check_untyped_defs
+python -m mypy claude_sandbox scripts/*.py   # pyproject.toml sets check_untyped_defs
 shellcheck run.sh scripts/*.sh .githooks/*
 ```
 
@@ -88,7 +88,7 @@ at once.
 
 ### Safety nets (don't weaken these)
 `tests/test_ci_config.py` fails if one is dropped.
-- `mypy.ini` has `check_untyped_defs = True` (otherwise unannotated bodies are
+- `pyproject.toml` has `[tool.mypy] check_untyped_defs = true` (otherwise unannotated bodies are
   skipped and `self.x = ...` shadowing a method went unnoticed).
 - Every shell script starts with `set -euo pipefail`, and CI's default shell is
   `bash -euo pipefail {0}`. Never pipe into `grep -q` under pipefail; the
