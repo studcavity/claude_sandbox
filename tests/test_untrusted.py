@@ -127,3 +127,26 @@ def test_malformed_payloads_stay_silent_unlike_policy_rejections():
     api = Api()
     acts = sa.parse_commits([(A, msg(issue("e", "   ")))])
     assert sa.execute(ctx(api), acts) == []
+
+
+# --- issue references ------------------------------------------------------ #
+@pytest.mark.parametrize("text", [
+    "closes #12", "see other/repo#3", "fixes GH-7", "gh-7 too", "(#1)",
+    "#42 at the start",
+])
+def test_issue_references_in_session_text_dont_autolink(text):
+    """Session text must not reference (or, via `closes #N`, close) issues
+    under the user's identity."""
+    import re
+    live = re.compile(r"(?i)(#|\bGH-)\d")
+    for out in (su.block(text, 200), su.one_line(text, 200),
+                sa.clean_block(text, 200), sl.clean_text(text, 200),
+                sa.clean_line(text, 200)):
+        assert not live.search(out), out
+        assert out.replace(su.ZWSP, "") == text.replace("\n", " ") or \
+            out.replace(su.ZWSP, "").split() == text.split()
+
+
+def test_hashes_that_arent_references_are_left_alone():
+    for text in ("# heading", "C# code", "#fff colour", "issue#"):
+        assert su.block(text, 100) == text
