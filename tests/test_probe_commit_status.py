@@ -111,6 +111,17 @@ def test_requires_explicit_yes(env):
     assert not (state / "calls").exists()  # touched nothing
 
 
+def test_missing_tool_is_reported_before_anything_is_created(env):
+    import shutil
+    e, state = env
+    only_gh = os.path.join(os.path.dirname(e["PROBE"]), "bin")   # fake gh, no jq
+    e = dict(e, PATH=only_gh)
+    r = subprocess.run([shutil.which("bash"), e["PROBE"], "--yes"], env=e,
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1 and "missing required tool: jq" in r.stderr
+    assert not (state / "calls").exists()      # gh was never even invoked
+
+
 def test_rejects_bad_visibility(env):
     r, _ = run(env, "--yes", "--visibility", "internal")
     assert r.returncode == 2

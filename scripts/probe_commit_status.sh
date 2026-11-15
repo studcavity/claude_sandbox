@@ -49,7 +49,10 @@ while [ $# -gt 0 ]; do
 done
 [ "$YES" = 1 ] || usage
 case "$VIS" in public|private) ;; *) usage ;; esac
-command -v gh >/dev/null || { echo "gh is not installed" >&2; exit 1; }
+# Everything this script shells out to, checked before anything is created.
+for tool in gh jq base64 awk seq mktemp tr date; do
+  command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 1; }
+done
 gh auth status >/dev/null 2>&1 || { echo "gh is not logged in: run 'gh auth login'" >&2; exit 1; }
 
 RESULTS=()
