@@ -110,3 +110,31 @@ def test_a_forged_sha_cannot_break_out_of_its_code_span():
 def test_without_a_record_the_body_is_unchanged():
     t, b = sl.pr_text("sess", "sbx/sess/work", ["feat: one"])
     assert "What the commits say" not in b and t == "[sess] feat: one"
+
+
+# --- proposed synopsis ------------------------------------------------------------ #
+SYN = "feat: x\n\nPR-Title: Add the thing\nPR-Summary: does a\nPR-Summary: because b\n"
+
+
+def test_synopsis_comes_from_the_newest_commit_that_has_a_title():
+    r = rec(("aaaaaaa", SYN), ("bbbbbbb", "PR-Title: Better title\nPR-Summary: new"),
+            ("ccccccc", "fix: z\n\nPR-Summary: orphan summary, no title"))
+    assert r.synopsis == ("bbbbbbb", "Better title", ["new"])
+    assert rec(("aaaaaaa", "feat: x")).synopsis is None
+
+
+def test_body_shows_the_synopsis_as_untrusted_and_sanitised():
+    r = rec(("aaaaaaa", "feat: x\n\nPR-Title: ping @octocat `rm` fixes #12\n"
+                        f"PR-Summary: leaked {GH}\nPR-Summary: ok\x1b[31m"))
+    b = body(r)
+    assert "### Proposed synopsis" in b and "untrusted" in b
+    assert b.index("Proposed synopsis") < b.index("What the commits say")
+    assert "@octocat" not in b and "`rm`" not in b and "#12" not in b.replace("#​12", "")
+    assert GH not in b and "[withheld: appears to contain GitHub token]" in b
+    assert "\x1b" not in b
+    t, _ = sl.pr_text("sess", "sbx/sess/work", ["feat: one"], r)
+    assert t == "[sess] feat: one"          # the launcher keeps its own title
+
+
+def test_no_synopsis_section_without_a_synopsis():
+    assert "Proposed synopsis" not in body(rec(("aaaaaaa", "feat: x")))
