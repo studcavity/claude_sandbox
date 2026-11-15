@@ -82,6 +82,23 @@ binaries:                   # -> /usr/local/bin/<name>
 ```
 Install order is apt, binaries, scripts. Skip all of it with `--no-deps`.
 
+Two optional metadata keys record where the toolchain came from, so it can be
+reproduced later: `last_generated` (quoted ISO 8601 UTC timestamp) and
+`platform` (text, e.g. the output of `lsb_release -a` plus `uname -m`). They
+are validated but never executed and don't affect caching. The sandbox's
+CLAUDE.md tells the session to refresh both whenever it edits the file.
+
+Caching: the deps are baked into a per-repo local image
+(`claude-sandboxdeps-<hash>`, derived from the base image), so only the first
+launch after a change pays for the installs. The key covers the base image and
+the validated `apt`/`scripts`/`binaries` content (comments and metadata don't
+count). The image is rebuilt when older than `--max-age` days (unpinned apt
+packages go stale), when the base image was rebuilt after it, or with
+`--rebuild`; the newest 8 are kept. It is built in a throwaway container that
+has no credentials, from host-verified downloads. If any script lacks a
+`sha256`, that repo is not cached (the script would be frozen at build time)
+and everything installs per launch as before. `--no-cache` disables it.
+
 Hardening:
 - The host fetches the file through the GitHub API, validates it against a
   strict schema (unknown keys, odd names, `-`-prefixed apt specs, loader/shell

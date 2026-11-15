@@ -9,10 +9,15 @@ pushes the verified bytes into the container. Design rules:
   * the GitHub token is never sent to a download host
   * binaries must carry a sha256; it is checked on the host before the bytes
     reach the container. Scripts may carry one (recommended).
+  * `last_generated` and `platform` are inert metadata for humans/LLMs (when
+    the file was written and on what OS); they are validated, never executed,
+    and never part of the image cache key.
 """
+import datetime
 import hashlib
 import hmac
 import io
+import json
 import re
 import tarfile
 import urllib.parse
@@ -25,6 +30,10 @@ DEPS_FILE = "claude_sandbox_deps.yaml"
 MAX_DEPS_FILE = 256 * 1024
 MAX_SCRIPT = 1024 * 1024
 MAX_BINARY = 256 * 1024 * 1024
+MAX_PLATFORM = 4096
+# Bump when the install steps in claude_sandbox.py change, so cached
+# per-repo images built by the old steps are not reused.
+INSTALL_RECIPE_VERSION = "1"
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 # Debian package name, optional =version. No leading '-' (option injection).
@@ -34,6 +43,11 @@ ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 # Variables that change how bash/the loader behave rather than configure a tool.
 ENV_DENY = re.compile(r"^(LD_.*|PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS4|"
                       r"PROMPT_COMMAND|CDPATH|GLOBIGNORE)$")
+
+
+# ISO 8601 date or date-time (UTC "Z" or numeric offset), nothing else.
+TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?"
+                    r"(Z|[+-]\d{2}:?\d{2})?)?$")
 
 
 class DepsError(RuntimeError):
@@ -99,7 +113,24 @@ def parse(raw):
         raise DepsError(f"{DEPS_FILE}: invalid YAML: {e}") from None
     if doc is None:
         doc = {}
-    _check_keys(doc, DEPS_FILE, (), ("apt", "scripts", "binaries"))
+    _check_keys(doc, DEPS_FILE, (),
+                ("apt", "scripts", "binaries", "last_generated", "platform"))
+
+    last_generated = doc.get("last_generated")
+    if isinstance(last_generated, (datetime.datetime, datetime.date)):
+        last_generated = last_generated.isoformat()  # unquoted YAML timestamp
+    if last_generated is not None and (
+            not isinstance(last_generated, str)
+            or not TIME_RE.match(last_generated)):
+        raise DepsError(f"last_generated: expected an ISO 8601 timestamp, "
+                        f"got {last_generated!r}")
+    platform = doc.get("platform")
+    if platform is not None and (
+            not isinstance(platform, str) or len(platform) > MAX_PLATFORM
+            or any(c < " " and c not in "\n\t" or c == "\x7f"
+                   for c in platform)):
+        raise DepsError(f"platform: expected text of at most {MAX_PLATFORM} "
+                        "characters with no control characters")
 
     apt = []
     for i, pkg in enumerate(_section(doc, "apt")):
@@ -141,7 +172,27 @@ def parse(raw):
     names = [b["name"] for b in binaries]
     if len(set(names)) != len(names):
         raise DepsError("binaries: duplicate names")
-    return {"apt": apt, "scripts": scripts, "binaries": binaries}
+    return {"apt": apt, "scripts": scripts, "binaries": binaries,
+            "last_generated": last_generated, "platform": platform}
+
+
+def cache_key(deps):
+    """Hex digest identifying what gets installed, or None if it must not be
+    baked into a cached image.
+
+    Only the install sections feed the key (comments, ordering of keys and
+    the metadata fields don't). Scripts without a sha256 are whatever the URL
+    serves at build time, and a cached image would freeze that with no way to
+    notice, so such deps are never cached.
+    """
+    if not (deps["apt"] or deps["scripts"] or deps["binaries"]):
+        return None
+    if any(s["sha256"] is None for s in deps["scripts"]):
+        return None
+    blob = json.dumps({k: deps[k] for k in ("apt", "scripts", "binaries")},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(
+        (INSTALL_RECIPE_VERSION + "\0" + blob).encode()).hexdigest()
 
 
 def summary(deps):

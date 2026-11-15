@@ -29,7 +29,9 @@ A repo can declare the tooling it needs in `$deps_file` at the root of its
 default branch. The launcher on the **host** reads it, validates it, downloads
 everything and checks checksums, then installs it into the container *before*
 your session starts. You can't re-run that from inside, so changes take effect
-the next time the user launches a sandbox.
+the next time the user launches a sandbox. The launcher bakes the result into
+a cached per-repo image, so the first launch after a change is slower (it
+rebuilds) and later ones are fast. A script without `sha256` disables that cache.
 
 If you need a tool that isn't installed:
 - If `sudo` works, install it now so you can keep going, **and** add it to
@@ -50,6 +52,9 @@ scripts:                   # remote install script, run as root with bash
     sha256: <64 hex>       # optional but strongly recommended
     args: []               # optional, argv for the script
     env: {BINDIR: /usr/local/bin}   # optional; installers need a system dir
+last_generated: "2026-11-15T10:30:00Z"   # optional metadata, see below
+platform: |                # optional metadata, see below
+  Ubuntu 24.04.5 LTS (noble), x86_64
 binaries:                  # installed to /usr/local/bin/<name>, mode 0755
   - name: shellcheck
     url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
@@ -65,6 +70,13 @@ Rules:
   it from your own download (`sha256sum`), say so to the user, because that
   only proves the file hasn't changed since you looked at it.
 - A script without `sha256` runs whatever the URL serves at launch time.
+- Whenever you create or edit this file, also set `last_generated` (UTC
+  ISO 8601 in quotes, from `date -u +%Y-%m-%dT%H:%M:%SZ`) and `platform` (the
+  real output of `lsb_release -a`, or `cat /etc/os-release` if that is
+  missing, plus `uname -m`, pasted as a `|` block). Run the commands; never
+  guess or copy old values. They record when and on what OS the toolchain
+  was resolved (pinned versions, checksums, download URLs) so it can be
+  reproduced later. They are never executed and don't affect the image cache.
 - This file runs as root in every future sandbox for this repo, so treat edits
   as security-sensitive: add only what the user asked for or the task needs,
   use official upstream URLs, keep entries minimal, and call out each change

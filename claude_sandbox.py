@@ -13,6 +13,9 @@ What it does:
      (claude-sandbox-<hash>) on first run, so later launches skip the
      install. The image is rebuilt when the recipe or --image changes, when
      it is older than --max-age days, or on --rebuild. --no-cache disables it.
+     A repo's claude_sandbox_deps.yaml is baked into a second per-repo image
+     (claude-sandboxdeps-<hash>) the same way, unless it has an unpinned
+     install script; see README.md.
   5. On exit (normal, error, Ctrl-C, SIGTERM, SIGHUP) deletes the GitHub key
      and destroys the container.
 
@@ -38,6 +41,7 @@ Examples:
 """
 import argparse
 import datetime
+import fcntl
 import functools
 import getpass
 import hashlib
@@ -81,6 +85,14 @@ SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
 # Cached base image. The alias embeds a hash of the source image and the build
 # steps below, so editing either one triggers a rebuild automatically.
 IMAGE_PREFIX = "claude-sandbox-"
+# Per-repo images with the deps baked in. The prefix must not start with
+# IMAGE_PREFIX: base-image cleanup deletes every other image under its prefix.
+DEPS_IMAGE_PREFIX = "claude-sandboxdeps-"
+MAX_DEPS_IMAGES = 8  # keep the newest N; older ones are deleted
+BASE_APT_CLEAN = "apt-get clean && rm -rf /var/lib/apt/lists/*"
+LOCK_DIR = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+    "claude_sandbox")
 BASE_PACKAGES = (
     # session essentials
     "git", "curl", "openssh-client", "tmux", "ca-certificates",
@@ -101,7 +113,7 @@ BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
                    + " ".join(BASE_PACKAGES) + " && "
                    # Debian/Ubuntu ship fd as fdfind
                    "ln -sf /usr/bin/fdfind /usr/local/bin/fd && "
-                   "apt-get clean && rm -rf /var/lib/apt/lists/*")
+                   + BASE_APT_CLEAN)
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
 # Reset per-instance identity so every container launched from the image
 # gets its own.
@@ -238,7 +250,7 @@ def base_alias(source):
     return IMAGE_PREFIX + h.hexdigest()[:12]
 
 
-def cached_images(cli):
+def cached_images(cli, prefix=IMAGE_PREFIX):
     """{alias: created_at (aware datetime)} for our local images."""
     out = run([cli, "image", "list", "local:", "--format", "json"],
               capture=True).stdout
@@ -250,7 +262,7 @@ def cached_images(cli):
             img["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
         ).replace(tzinfo=datetime.timezone.utc)
         for a in img.get("aliases") or []:
-            if a["name"].startswith(IMAGE_PREFIX):
+            if a["name"].startswith(prefix):
                 found[a["name"]] = created
     return found
 
@@ -295,6 +307,104 @@ def ensure_base_image(cli, source, max_age_days, rebuild):
     return alias
 
 
+def apply_deps(box, deps):
+    """Install parsed, validated deps into a container (apt, binaries, scripts).
+
+    Everything is downloaded and checksum-verified here on the host; the
+    container only receives bytes. Must run before any credential is in the
+    container (the per-launch container and the image build container both
+    satisfy that).
+    """
+    if deps["apt"]:
+        log("installing apt packages")
+        env = {"DEBIAN_FRONTEND": "noninteractive"}
+        box.root_argv(["apt-get", "update", "-qq"], env=env)
+        box.root_argv(["apt-get", "install", "-y", "-qq",
+                       "--no-install-recommends", *deps["apt"]], env=env)
+
+    for b in deps["binaries"]:
+        log(f"installing binary {b['name']}")
+        data = sandbox_deps.fetch(b["url"], sandbox_deps.MAX_BINARY, b["sha256"])
+        if b["archive_path"]:
+            data = sandbox_deps.extract_member(data, b["archive_path"])
+        box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
+
+    if deps["scripts"]:
+        scratch = "/var/tmp/sandbox-deps"
+        box.root_argv(["install", "-d", "-m", "0700", scratch])
+        try:
+            for s in deps["scripts"]:
+                log(f"running install script {s['name']}"
+                    + ("" if s["sha256"] else " (no sha256 pinned!)"))
+                data = sandbox_deps.fetch(s["url"], sandbox_deps.MAX_SCRIPT,
+                                          s["sha256"])
+                path = f"{scratch}/{s['name']}.sh"
+                box.put_file(path, data, "0700")
+                box.root_argv(["bash", path, *s["args"]], cwd=scratch,
+                              env=s["env"])
+        finally:
+            box.root_argv(["rm", "-rf", scratch], capture=True)
+
+
+def ensure_deps_image(cli, base, deps, max_age_days, rebuild):
+    """Alias of a per-deps image derived from `base`, building it if needed;
+    None when these deps must be installed per launch instead.
+
+    The image holds exactly what apply_deps() installs, built in a throwaway
+    container that has no credentials, from host-verified downloads. It is
+    keyed by the base image and the validated install sections, rebuilt when
+    older than max_age_days (unpinned apt packages go stale) or older than the
+    base image (so a refreshed Claude Code isn't shadowed), or on --rebuild.
+    """
+    key = sandbox_deps.cache_key(deps)
+    if key is None:
+        if any(s["sha256"] is None for s in deps["scripts"]):
+            log("deps image cache off: an install script has no sha256 pin")
+        return None
+    alias = DEPS_IMAGE_PREFIX + hashlib.sha256(
+        (base + "\0" + key).encode()).hexdigest()[:12]
+
+    os.makedirs(LOCK_DIR, mode=0o700, exist_ok=True)
+    with open(os.path.join(LOCK_DIR, alias + ".lock"), "a") as lock:
+        # Serialize concurrent launches so only one builds; the rest wait,
+        # then find the finished image.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        images = cached_images(cli, DEPS_IMAGE_PREFIX)
+        created = images.get(alias)
+        base_created = cached_images(cli).get(base)
+        if created and not rebuild:
+            age = datetime.datetime.now(datetime.timezone.utc) - created
+            if (age < datetime.timedelta(days=max_age_days)
+                    and (base_created is None or created >= base_created)):
+                log(f"using cached deps image {alias} "
+                    f"(built {age.days}d {age.seconds // 3600}h ago)")
+                return alias
+
+        log(f"building deps image {alias} (one-time per change)")
+        build = Container(cli, f"{DEPS_IMAGE_PREFIX}build-{uuid.uuid4().hex[:8]}")
+        try:
+            build.launch(base, ephemeral=False)
+            build.wait_network()
+            apply_deps(build, deps)
+            build.root(BASE_APT_CLEAN, capture=True)
+            build.root(BASE_CLEANUP, check=False, capture=True)
+            run([cli, "stop", build.name], capture=True)
+            if created:
+                run([cli, "image", "delete", alias], check=False, capture=True)
+            log("publishing deps image")
+            run([cli, "publish", build.name, "--alias", alias], capture=True)
+        finally:
+            build.delete()
+
+        # Bound disk use: keep the newest MAX_DEPS_IMAGES (never this one).
+        images = cached_images(cli, DEPS_IMAGE_PREFIX)
+        old = sorted((a for a in images if a != alias), key=images.get)
+        for stale in old[:max(0, len(images) - MAX_DEPS_IMAGES)]:
+            run([cli, "image", "delete", stale], check=False, capture=True)
+            log(f"removed old deps image {stale}")
+    return alias
+
+
 def read_token_file(path):
     try:
         with open(path) as f:
@@ -326,6 +436,8 @@ class Sandbox:
         self.key_id = None
         self.container_up = False
         self._torn_down = False
+        self.deps = None
+        self.deps_baked = False
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{sandbox_deps.DEPS_FILE}`.")
 
@@ -353,20 +465,19 @@ class Sandbox:
                       capture=True)
             self.user("cat > ~/.tmux.conf", input=TMUX_CONF)
 
-    def install_deps(self):
-        """Install the repo's claude_sandbox_deps.yaml into the container.
+    def load_deps(self):
+        """Fetch and validate the repo's claude_sandbox_deps.yaml (host only).
 
-        Runs before the SSH key and Claude credentials exist in the container,
-        so installers never see them. Everything is parsed, downloaded and
-        checksum-verified on the host; the container only receives bytes.
-        Any problem aborts the launch (fail closed); --no-deps skips this.
+        Returns the parsed deps, or None when there is nothing to install.
+        Any invalid file aborts the launch (fail closed); --no-deps skips it.
         """
         f = sandbox_deps.DEPS_FILE
+        self.deps = None
         if not self.args.repo:
-            return
+            return None
         if self.args.no_deps:
             self.deps_note = f"Skipped (`--no-deps`): `{f}` was not applied."
-            return
+            return None
         try:
             raw = gh_api("GET", f"/repos/{self.args.repo}/contents/{f}",
                          self.token, raw=True)
@@ -374,45 +485,25 @@ class Sandbox:
             if e.code != 404:
                 raise
             self.deps_note = f"This repo has no `{f}`, so nothing extra was installed."
-            return
+            return None
         deps = sandbox_deps.parse(raw)
         lines = sandbox_deps.summary(deps)
-        self.deps_note = (f"Installed at launch from `{f}`:\n"
+        self.deps_note = (f"Installed from `{f}`:\n"
                           + "\n".join(f"  - {l}" for l in lines)
                           if lines else f"`{f}` is present but empty.")
         for l in lines:
             log(f"deps: {l}")
+        self.deps = deps if lines else None
+        return self.deps
 
-        box = self.box
-        if deps["apt"]:
-            log("installing apt packages")
-            env = {"DEBIAN_FRONTEND": "noninteractive"}
-            box.root_argv(["apt-get", "update", "-qq"], env=env)
-            box.root_argv(["apt-get", "install", "-y", "-qq",
-                           "--no-install-recommends", *deps["apt"]], env=env)
+    def install_deps(self):
+        """Install the deps into this container unless the image has them.
 
-        for b in deps["binaries"]:
-            log(f"installing binary {b['name']}")
-            data = sandbox_deps.fetch(b["url"], sandbox_deps.MAX_BINARY, b["sha256"])
-            if b["archive_path"]:
-                data = sandbox_deps.extract_member(data, b["archive_path"])
-            box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
-
-        if deps["scripts"]:
-            scratch = "/var/tmp/sandbox-deps"
-            box.root_argv(["install", "-d", "-m", "0700", scratch])
-            try:
-                for s in deps["scripts"]:
-                    log(f"running install script {s['name']}"
-                        + ("" if s["sha256"] else " (no sha256 pinned!)"))
-                    data = sandbox_deps.fetch(s["url"], sandbox_deps.MAX_SCRIPT,
-                                              s["sha256"])
-                    path = f"{scratch}/{s['name']}.sh"
-                    box.put_file(path, data, "0700")
-                    box.root_argv(["bash", path, *s["args"]], cwd=scratch,
-                                  env=s["env"])
-            finally:
-                box.root_argv(["rm", "-rf", scratch], capture=True)
+        Runs before the SSH key and Claude credentials exist in the container,
+        so installers never see them.
+        """
+        if self.deps and not self.deps_baked:
+            apply_deps(self.box, self.deps)
 
     def provision_key(self):
         log("generating SSH key inside the container")
@@ -642,7 +733,8 @@ def main():
                    help="launch --image directly and install everything at "
                         "boot instead of using the cached base image")
     p.add_argument("--rebuild", action="store_true",
-                   help="rebuild the cached base image even if it is fresh")
+                   help="rebuild the cached base and deps images even if "
+                        "they are fresh")
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
                    help="rebuild the cached image when older than this "
                         "(default: 7)")
@@ -679,6 +771,13 @@ def main():
         if not args.no_cache:
             image = ensure_base_image(args.cli, args.image,
                                       args.max_age, args.rebuild)
+        if not args.setup_token and box.load_deps() and not args.no_cache:
+            baked = ensure_deps_image(args.cli, image, box.deps,
+                                      args.max_age, args.rebuild)
+            if baked:
+                image, box.deps_baked = baked, True
+                box.deps_note += ("\n(Preinstalled in a cached image; edits "
+                                  "to the file apply on the next launch.)")
         box.launch(image)
         if args.setup_token:
             box.install_claude()
