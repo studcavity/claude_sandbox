@@ -422,9 +422,7 @@ protection settings; it doesn't tell you.
 - Rewriting your own `$prefix` branches is fine. Don't rewrite commits that
   came from the base unless the user explicitly asks.
 <!-- end -->
-- When you exit, the launcher checks each of your branches for conflicts with,
-  or being behind, its base, and offers to reopen this session if any is: no
-  need to check yourself.
+- On exit the launcher checks every branch of yours for conflicts with, or lagging, its base and reopens you if so.
 - Never rewrite history at or beyond a fork boundary. If this repo is a fork
   (or otherwise contains commits that came from another repo, e.g. upstream
   commits pulled into a fork), only treat commits that we authored in this
