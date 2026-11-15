@@ -54,7 +54,8 @@ On every launch the program:
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
-| `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
+| `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
+| `sandbox_actions.py` | host-side: files an issue for each `todo/` file a commit adds |
 | `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
 | `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--file-issues` (post-merge filer) |
 | `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
@@ -92,14 +93,14 @@ Any number of sandboxes can run on one repo at once.
   unmerged `sbx/*` branch (recovery after a crashed launcher; it also grabs
   live sessions' work). Session text is sanitised (no live `@mentions`,
   labelled untrusted).
-- **Follow-up actions.** A commit message can end with
-  `Sandbox-Action: {"v": 1, "type": "issue", "id": "<slug>-<YYYYMMDD>-<session>-<4 random>", "title": "..."}`
-  trailers, plus a `todo/<id>.md` brief in the same commit; `sandbox_check.py`
-  verifies both and runs in CI on PRs. After the PRs, the launcher files an
-  issue per unaddressed item and comments on the commit with the link (that
-  comment is also the idempotency record, so re-running never duplicates).
-  Malformed trailers are ignored. New action types are new `(type, version)`
-  handlers; see `sandbox_actions.py`. `--no-actions` skips this.
+- **Follow-up issues.** A session adds `todo/<name>.md` (`<name>`: lowercase
+  letters, digits, `-`) to a commit to ask for an issue: the first heading is
+  the title, the file is the body, the path is its identity. `sandbox_check.py`
+  (CI) checks the name, size and heading; after the PRs, the launcher files an
+  issue per new file and comments on the commit with the link (that comment,
+  and a marker on the issue, are the idempotency record, so re-running never
+  duplicates). A later edit is ignored, deleting a file closes nothing, and a
+  path added again after deletion is a new request. `--no-actions` skips this.
 - **Exit summary.** The launcher prints every branch with its PR number,
   target, commit count and URL, or why none was opened:
   ```

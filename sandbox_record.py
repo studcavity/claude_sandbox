@@ -1,22 +1,19 @@
 """sandbox_record.py - what a branch's commit messages say about themselves.
 
 The repo asks sessions to state, in each commit message, what was and wasn't
-verified and what is left to do (`Verified`, `Not verified`, `Follow-up:` lines
-and `Sandbox-Action` issue trailers). A reviewer should not have to read every
-commit to find those caveats, so the launcher lifts them into the PR body.
+verified and what is left to do (`Verified`, `Not verified` and `Follow-up:`
+lines). A reviewer should not have to read every commit to find those caveats, so the launcher lifts them into the PR body.
 
 Pure and stdlib-only; the text is untrusted and is sanitised by the caller.
 """
 import collections
 import re
 
-import sandbox_actions
-
 # synopsis: None, or (short sha, proposed title, [summary lines]) from the
 # newest commit that carries a `PR-Title:` line.
 Record = collections.namedtuple(
-    "Record", "verified not_verified follow_ups issues synopsis", defaults=(None,))
-EMPTY = Record([], [], [], [])
+    "Record", "verified not_verified follow_ups synopsis", defaults=(None,))
+EMPTY = Record([], [], [])
 MAX_SUMMARY_LINES = 8
 
 MAX_LINES_PER_MESSAGE = 400   # a commit message is read, not parsed forever
@@ -34,12 +31,11 @@ def extract(messages):
 
     verified / not_verified: the whole line, e.g. "Verified: pyflakes, pytest".
     follow_ups: the text after `Follow-up:`.
-    issues: (short sha, id, title) for each Sandbox-Action `issue` trailer.
     synopsis: the session's proposed PR title (`PR-Title: ...`) and summary
     (`PR-Summary: ...`, one line per point) from the newest commit that has a
     title; a later commit's synopsis replaces an earlier one.
     """
-    rec = Record([], [], [], [])
+    rec = Record([], [], [])
     for sha, message in messages:
         title: str | None = None
         summary: list[str] = []
@@ -63,10 +59,6 @@ def extract(messages):
                 kind.append((sha, text))
         if title:
             rec = rec._replace(synopsis=(sha, title, summary))
-        for a in sandbox_actions.parse_message(sha, message):
-            title = a.data.get("title")
-            if a.type == "issue" and isinstance(title, str) and len(rec.issues) < MAX_KEPT:
-                rec.issues.append((sha, a.id, title))
     return rec
 
 

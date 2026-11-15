@@ -135,7 +135,8 @@ DEPS_REF_PATH = "~/.claude/ref/deps.md"
 SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
 SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
 SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
-                        "sandbox_names", "sandbox_templates", "sandbox_untrusted")
+                        "sandbox_names", "sandbox_templates", "sandbox_todo",
+                        "sandbox_untrusted")
 SESSION_TOOL_WRAPPER = """#!/bin/sh
 # Installed by claude_sandbox. Lints this session's own commits (everything
 # since the remote's default branch) with the same rules CI and the launcher
@@ -146,7 +147,7 @@ if [ "$#" -gt 0 ]; then exec python3 "$tool" "$@"; fi
 base=$(git rev-parse --verify -q origin/HEAD || git rev-parse --verify -q origin/main \
        || git rev-parse --verify -q origin/master) || {
   echo "sandbox-check: can't find origin's default branch" >&2; exit 2; }
-exec python3 "$tool" "$base" HEAD --branch "$(git rev-parse --abbrev-ref HEAD)"
+exec python3 "$tool" "$base" HEAD
 """
 
 
@@ -553,7 +554,7 @@ def refresh_images(args):
 
 
 def action_limits(args):
-    """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
+    """The caps for follow-up filing, from --max-actions / --max-issues."""
     return {"actions": args.max_actions, "issues": args.max_issues}
 
 
@@ -1208,15 +1209,15 @@ def build_parser():
                         "or yours) on the session's PRs")
     p.add_argument("--max-actions", type=int, metavar="N",
                    default=sandbox_actions.MAX_ACTIONS,
-                   help="most Sandbox-Action items to carry out per run "
+                   help="most follow-up requests to file per run "
                         "(default %(default)s)")
     p.add_argument("--max-issues", type=int, metavar="N",
                    default=sandbox_actions.MAX_ISSUES_PER_SESSION,
                    help="most issues one session may have in a repo, counting "
                         "ones already filed (default %(default)s)")
     p.add_argument("--no-actions", action="store_true",
-                   help="don't act on `Sandbox-Action:` trailers in the "
-                        "session's commit messages (e.g. file follow-up issues)")
+                   help="don't file the `todo/` follow-up requests in the "
+                        "session's commits as issues")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "

@@ -113,31 +113,24 @@ verify or do (and why), and follow-ups someone must action later.
   `git log --grep='Follow-up' -n 20`; close one in the commit that does it
   (`Resolves follow-up from <short-sha>: ...`). Never rewrite pushed history to
   edit one.
-- **Structured follow-ups.** For the launcher to file a GitHub issue when the
-  session ends, add a trailer to the LAST paragraph of the commit message, one
-  line of JSON (keep the prose `Follow-up:` line too):
-  `Sandbox-Action: {"v": 1, "type": "issue", "id": "smoke-20261115-$session-a3f9", "title": "Run ./smoke.sh on a host", "body": "why it was blocked"}`
-  The `id` is `<slug>-<YYYYMMDD>-$session-<4 random [a-z0-9]>` (max 100 chars,
-  only `[A-Za-z0-9._-]`); generate the suffix
-  (`python3 -c "import secrets; print(secrets.token_hex(2))"`), don't invent it.
-  Mark one addressed with `{"v": 1, "type": "resolve", "id": "<new id, same
-  shape>", "ref": "<sha7+>:<id>"}`. Malformed trailers are silently ignored by
-  the launcher (and fail CI). Spec: `sandbox_actions.py`.
-- **Every `issue` action needs `todo/<id>.md` in the same commit** (CI fails
-  without it). It exists to describe a problem and some potential solutions. It
-  is NOT a work order: it must not dictate which solution gets implemented.
-  Write it for a fresh agent with no context from this session: the problem
-  and why it matters; what you tried or ruled out; exact files, commands and
-  error text; why it was blocked here; what "done" looks like and how to
-  verify it; options with trade-offs (say which you lean towards, as a
-  suggestion); anything risky. Delete it in the commit that resolves the item.
+- **To have a GitHub issue filed**, add `todo/<name>.md` to a commit
+  (`<name>`: lowercase letters, digits and `-`). Its first heading is the
+  issue title and the whole file is the issue text. The launcher files it
+  when the session ends; deleting the file before then withdraws the request,
+  and deleting it later closes nothing. It is NOT a work order: describe a
+  problem and some potential solutions, and don't dictate which one gets
+  implemented. Write it for a fresh agent with no context from this session:
+  the problem and why it matters; what you tried or ruled out; exact files,
+  commands and error text; why it was blocked here; what "done" looks like and
+  how to verify it; options with trade-offs (say which you lean towards, as a
+  suggestion); anything risky. Delete the file in the commit that resolves it.
 - **Propose a PR synopsis in your last commit** of each branch: one
   `PR-Title: <what the branch does, under 80 chars>` line and a few
   `PR-Summary: <point>` lines (what and why; one line each) in the message
   body. The launcher uses the title as the PR title (appending `[$session]`)
   and copies both, sanitised and marked untrusted, into the PR description; a later commit's synopsis replaces an earlier one.
 - **Run `sandbox-check`** (no arguments) before you finish. It lints your
-  commits since the default branch the way CI does (action ids, briefs, no
+  commits since the default branch the way CI does (`todo/` files, no
   `fixup!` or merge commits, no credential-shaped text, a `Verified` or `Not
   verified` line where files need a real run). Fix with new commits (or, on
   your own unmerged branch, rebase and `git push --force-with-lease`). It is

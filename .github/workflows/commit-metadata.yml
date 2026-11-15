@@ -3,8 +3,8 @@ name: commit-metadata
 # Lints the work record of every commit a PR adds (see sandbox_check.py):
 # conventional subjects, no merge or fixup commits, a Verified / Not verified
 # line where a change needs a real run, no credential-shaped text, and the
-# follow-up metadata rules in sandbox_actions.py. This job is the one merge
-# gate for the checker.
+# format of any todo/<name>.md follow-up request (sandbox_todo.py). This job is
+# the one merge gate for the checker.
 on:
   pull_request:
     branches: [main]
@@ -49,9 +49,6 @@ jobs:
           python-version: "3.12"
       - name: Check commit metadata
         env:
-          # Branch names are attacker-controlled text: pass through env, never
-          # interpolate into the script.
-          HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # The checker is stdlib-only: nothing to install. There is no
@@ -59,4 +56,4 @@ jobs:
         # -E -s: ignore PYTHON* env vars and the user site directory.
         run: |
           cd pr
-          python -E -s ../trusted/sandbox_check.py "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
+          python -E -s ../trusted/sandbox_check.py "$BASE_SHA" "$HEAD_SHA"

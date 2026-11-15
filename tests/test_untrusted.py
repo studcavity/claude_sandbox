@@ -90,43 +90,39 @@ def test_entropy_orders_obvious_cases():
 
 
 # --- wired into issue filing ---------------------------------------------- #
-from test_actions import A, Api, ctx, issue, msg  # noqa: E402
+from test_actions import A, Api, ctx, req  # noqa: E402
+from test_actions import text as brief  # noqa: E402
 
 
 def test_issue_with_a_secret_is_held_back_and_reported_not_filed():
-    api = Api()
-    acts = sa.parse_commits([(A, msg(
-        issue("leak", "Rotate it", body=f"found {GH} in the log"),
-        issue("fine", "Ordinary follow-up")))])
-    out = sa.execute(ctx(api), acts)
-    by_id = {o.id: o for o in out}
-    assert by_id["leak"].status == "rejected"
-    assert "GitHub token" in by_id["leak"].detail and GH not in by_id["leak"].detail
-    assert by_id["fine"].status == "done"            # one bad item never blocks others
+    api = Api(todos={"leak": brief("Rotate it", f"found {GH} in the log")})
+    out = sa.execute(ctx(api), [req("leak"), req("fine")])
+    by_path = {o.path: o for o in out}
+    assert by_path["todo/leak.md"].status == "rejected"
+    assert "GitHub token" in by_path["todo/leak.md"].detail
+    assert GH not in by_path["todo/leak.md"].detail
+    assert by_path["todo/fine.md"].status == "done"  # one bad item never blocks others
     assert len(api.posts("/issues")) == 1            # only the clean one was filed
     assert not any(GH in str(c) for c in api.calls)  # the secret was never sent anywhere
     assert len(api.posts("/comments")) == 1          # the rejected item isn't marked done
 
 
 def test_secret_in_the_title_is_caught_too():
-    api = Api()
-    acts = sa.parse_commits([(A, msg(issue("t", f"key {GH}")))])
-    assert sa.execute(ctx(api), acts)[0].status == "rejected"
+    api = Api(todos={"t": f"# key {GH}\n"})
+    assert sa.execute(ctx(api), [req("t")])[0].status == "rejected"
     assert api.posts("/issues") == []
 
 
 def test_rejection_is_visible_in_the_exit_summary():
-    text = sa.format_outcomes([sa.Outcome(A, "leak", "issue", "rejected",
-                                          "not filed: the text appears to contain GitHub token")])
-    assert "REJECTED (policy)" in text and "GitHub token" in text
-    assert A[:7] in text
+    out = sa.format_outcomes([sa.Outcome(A, "todo/leak.md", "rejected",
+                                         "not filed: todo/leak.md appears to contain GitHub token")])
+    assert "REJECTED (policy)" in out and "GitHub token" in out
+    assert A[:7] in out
 
 
-def test_malformed_payloads_stay_silent_unlike_policy_rejections():
-    # the spec: nonconforming = silent no-op; only policy rejections surface
-    api = Api()
-    acts = sa.parse_commits([(A, msg(issue("e", "   ")))])
-    assert sa.execute(ctx(api), acts) == []
+def test_a_file_without_a_title_stays_silent_unlike_policy_rejections():
+    api = Api(todos={"e": "no heading\n"})
+    assert sa.execute(ctx(api), [req("e")]) == []
 
 
 # --- issue references ------------------------------------------------------ #

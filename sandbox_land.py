@@ -97,9 +97,6 @@ def record_section(rec):
           lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
     block("Follow-ups", rec.follow_ups,
           lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Issues the launcher will file", rec.issues,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[2], 120)} "
-                    f"(`{safe_line(i[1], 100)}`)")
     if not rec.verified and not rec.not_verified:
         out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
     return "\n".join(out)

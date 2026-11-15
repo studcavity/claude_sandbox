@@ -887,16 +887,18 @@ def test_action_failure_never_blocks_teardown(make_args, monkeypatch):
     box.land()
 
 
-def test_template_asks_for_a_todo_file_per_issue_action(repo_root):
+def test_template_asks_for_a_todo_file_per_issue(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
-    assert "`todo/<id>.md`" in t and "same commit" in t
+    assert "`todo/<name>.md`" in t and "first heading is the" in t
     assert "fresh agent" in t
+    for gone in ("Sandbox-Action", "random", "<YYYYMMDD>", "secrets.token_hex"):
+        assert gone not in t
 
 
 def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
     t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
     assert "describe a problem and some potential solutions" in t
-    assert "NOT a work order" in t and "must not dictate" in t
+    assert "NOT a work order" in t and "don't dictate" in t
 
 
 def test_template_names_credits_as_a_way_work_is_lost(repo_root):
