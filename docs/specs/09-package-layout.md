@@ -1,6 +1,6 @@
 # Spec 09: a package layout instead of 30 flat modules
 
-Source: user request (session agile-hamilton). Status: **PR 1 implemented**
+Source: user request (session agile-hamilton). Status: **PR 1 and PR 2 implemented**
 (the move, branch `sbx/agile-hamilton/package-layout`); PR 2 (below) not
 started, and **stacked on PR 1** (branch from it, not from `main`: both touch
 the same lines, so the merge-conflict risk of parallel branches is high).
@@ -161,3 +161,25 @@ Done in this order, one commit each. Item numbers refer to the list above.
   (a new CI dependency for little gain over pyflakes); revisit on its own.
   Checked: `pip install .` into a scratch venv installs the data files and
   `claude-sandbox --help` runs.
+- **Item 2: `cli.py` split** into `cli.py` (main, launch sequence, image
+  refresh), `options.py` (defaults, parser, normalising), `sandbox.py`
+  (`Sandbox`, backend choice, USB prompt), `render.py`, `resume.py`,
+  `shell.py`, `session_tool.py`, `credentials.py`. Bodies moved verbatim. The
+  parser module is `options`, not `args`, because `args` is the name of the
+  parsed namespace everywhere.
+- **Item 3: alias prefixes dropped.** A script found names bound in each file
+  and used `<package>_<module>` (e.g. `container_deps`) wherever the plain
+  module name would shadow a local.
+- **Item 4: tests stay flat.** One file per module still reads fine at this
+  size, and moving 40 files is churn without a gain.
+- **Item 5: layering test** (`tests/test_layering.py`), a small AST check
+  instead of `import-linter` (no new dependency). `portable/` keeps its own
+  stricter test.
+- **Item 6: commit-metadata fallback removed.** The workflow now runs only
+  `../trusted/scripts/sandbox_check.py`, so **PR 2 must merge after PR 1**; a
+  PR 2 whose base lacks that file fails its own metadata check.
+- **Item 8: still open.** `./scripts/smoke.sh` needs a host with incus; the
+  `container/` files changed only imports and alias names.
+- **Item 9:** README, `claude_sandbox/README.md` (module table, rules) and
+  `CLAUDE.md` follow.
+- **Left alone:** `ruff` (item 1), a `tests/` mirror of the package (item 4).

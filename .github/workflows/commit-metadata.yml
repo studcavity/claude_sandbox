@@ -56,10 +56,4 @@ jobs:
         # -E -s: ignore PYTHON* env vars and the user site directory.
         run: |
           cd pr
-          # Transitional: until the package layout (spec 09) is on the base
-          # branch it has no scripts/ checker, only the old top-level one.
-          # Both are the trusted base's own copy. Remove the fallback once
-          # the base has scripts/sandbox_check.py.
-          checker=../trusted/scripts/sandbox_check.py
-          [ -f "$checker" ] || checker=../trusted/sandbox_check.py
-          python -E -s "$checker" "$BASE_SHA" "$HEAD_SHA"
+          python -E -s ../trusted/scripts/sandbox_check.py "$BASE_SHA" "$HEAD_SHA"
