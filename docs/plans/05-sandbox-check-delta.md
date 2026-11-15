@@ -62,9 +62,9 @@ Defaults live in code; a per-repo override file is a later, separate decision
   can't be pinned to a source). The un-skippable property comes from the logic
   and status living on the host, outside anything a PR can edit.
 - **Verify first with `scripts/probe_commit_status.sh`** (real GitHub,
-  throwaway repo). Extend it with the break-glass steps (disable the ruleset
-  via `enforcement: disabled`, confirm the merge goes through, re-enable) since
-  the README runbook assumes a partial `PUT` works.
+  throwaway repo). Its step 6 covers the break-glass runbook (override one SHA; disable
+  the ruleset with a partial `PUT`, confirm the rules survive and the merge goes
+  through; re-enable and confirm the gate closes again; probe `evaluate`).
 
 ### 5d. Launcher wiring (kept tiny)
 In `Sandbox.land()`, after the PRs open and before the actions run, call

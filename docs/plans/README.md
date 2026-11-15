@@ -86,8 +86,9 @@ gh api -X PUT repos/OWNER/REPO/rulesets/$id -f enforcement=active     # close it
 ```
 Use `disabled`, not `evaluate` (evaluate mode may need an Enterprise plan;
 unverified). Whether a partial `PUT` leaves the other fields intact is also
-**unverified**: the probe script should be extended to test exactly this before
-relying on it; if it replaces the ruleset, re-send the full file instead
+**unverified**: `scripts/probe_commit_status.sh` (step 6) now tests exactly this
+(and the Level 1 override, and `evaluate` mode); run it before relying on this
+runbook. If a partial PUT replaces the ruleset, re-send the full file instead
 (`gh api -X PUT repos/OWNER/REPO/rulesets/$id --input rulesets/require-sandbox-check.json`
 with `enforcement` edited). Only the gate is suspended: the generic
 `protect-default-branch` ruleset (PRs required, linear history) stays on.

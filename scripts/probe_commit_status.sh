@@ -8,6 +8,10 @@
 #   3. is a PR blocked without the status, and mergeable with it?
 #   4. does a new commit on the PR branch lose the status (blocked again)?
 #   5. does a `failure` status block, and does `success` then allow the merge?
+#   6. break glass (docs/plans/README.md): does an override status unblock one
+#      SHA only; does a *partial* ruleset PUT (`-f enforcement=disabled`) keep
+#      the rules and open the gate; does re-enabling close it again; is
+#      `evaluate` mode accepted on this plan?
 #
 # Run on a HOST where `gh` is logged in. It creates ONE new repo under your
 # account (public by default: rulesets are not enforced on private repos of
@@ -81,14 +85,28 @@ CREATED=1
 
 B64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 BASE=$(gh api "repos/$REPO" --jq .default_branch)
-BASE_SHA=$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq .object.sha)
-gh api -X POST "repos/$REPO/git/refs" -f ref=refs/heads/probe -f sha="$BASE_SHA" >/dev/null
-out=$(gh api -X PUT "repos/$REPO/contents/probe.txt" -f message="probe: first commit" \
-        -f content="$(B64 one)" -f branch=probe)
-HEAD1=$(printf '%s' "$out" | jq -r .commit.sha)
-FILE_SHA=$(printf '%s' "$out" | jq -r .content.sha)
-PR=$(gh api -X POST "repos/$REPO/pulls" -f title="probe" -f head=probe -f base="$BASE" --jq .number)
-echo "PR #$PR head $HEAD1"
+BR="" FILE="" HEAD1="" PR="" FILE_SHA=""
+new_pr() { # new_pr BRANCH: branch off the default branch, one commit, open a PR
+  local base_sha out
+  BR="$1" FILE="$1.txt"
+  base_sha=$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq .object.sha)
+  gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$BR" -f sha="$base_sha" >/dev/null
+  out=$(gh api -X PUT "repos/$REPO/contents/$FILE" -f message="probe: $BR" \
+          -f content="$(B64 one)" -f branch="$BR")
+  HEAD1=$(printf '%s' "$out" | jq -r .commit.sha)
+  FILE_SHA=$(printf '%s' "$out" | jq -r .content.sha)
+  # PULLS-POST
+  PR=$(gh api -X POST "repos/$REPO/pulls" -f title="probe $BR" -f head="$BR" -f base="$BASE" --jq .number)
+  echo "PR #$PR ($BR) head $HEAD1"
+}
+push_again() { # push_again: a second commit on the current branch -> new head
+  local out
+  out=$(gh api -X PUT "repos/$REPO/contents/$FILE" -f message="probe: $BR again" \
+          -f content="$(B64 two)" -f sha="$FILE_SHA" -f branch="$BR")
+  HEAD2=$(printf '%s' "$out" | jq -r .commit.sha)
+}
+HEAD2=""
+new_pr probe
 
 merge_state() { gh pr view "$PR" -R "$REPO" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null || echo ERROR; }
 STATE=""
@@ -119,13 +137,15 @@ ruleset=$(cat <<J
    "required_status_checks":[{"context":"$CONTEXT"}]}}]}
 J
 )
-if err=$(printf '%s' "$ruleset" | gh api -X POST "repos/$REPO/rulesets" --input - 2>&1 >/dev/null); then
-  pass "ruleset accepts a never-reported required context"
+RS_ID="" ERRF=$(mktemp)
+if RS_ID=$(printf '%s' "$ruleset" | gh api -X POST "repos/$REPO/rulesets" --input - --jq .id 2>"$ERRF"); then
+  pass "ruleset accepts a never-reported required context" "id $RS_ID"
   ENFORCED=1
 else
-  fail "ruleset accepts a never-reported required context" "$(printf '%s' "$err" | head -c 300)"
+  fail "ruleset accepts a never-reported required context" "$(head -c 300 "$ERRF")"
   ENFORCED=0
 fi
+rm -f "$ERRF"
 
 if [ "$ENFORCED" = 1 ]; then
   echo "step 2: no status yet -> must be blocked"
@@ -158,9 +178,7 @@ if [ "$ENFORCED" = 1 ]; then
   else fail "PR mergeable once the status is success" "mergeStateStatus=$STATE (expected CLEAN)"; fi
 
   echo "step 4: new commit on the branch -> status must be gone"
-  out=$(gh api -X PUT "repos/$REPO/contents/probe.txt" -f message="probe: second commit" \
-          -f content="$(B64 two)" -f sha="$FILE_SHA" -f branch=probe)
-  HEAD2=$(printf '%s' "$out" | jq -r .commit.sha)
+  push_again
   if wait_for BLOCKED; then pass "new commit loses the status" "head $HEAD1 -> $HEAD2, mergeStateStatus=$STATE"
   else fail "new commit loses the status" "mergeStateStatus=$STATE (expected BLOCKED)"; fi
 
@@ -172,6 +190,63 @@ if [ "$ENFORCED" = 1 ]; then
   wait_for CLEAN || true
   if msg=$(try_merge); then pass "merge succeeds after success on the new head"
   else fail "merge succeeds after success on the new head" "$(printf '%s' "$msg" | head -c 200)"; fi
+fi
+
+if [ "$ENFORCED" = 1 ] && [ -n "$RS_ID" ]; then
+  echo "step 6: break glass"
+  rs_enf() { gh api "repos/$REPO/rulesets/$RS_ID" --jq .enforcement 2>/dev/null || echo ERROR; }
+  rs_rules() { gh api "repos/$REPO/rulesets/$RS_ID" \
+      --jq '[.rules[] | select(.type=="required_status_checks")] | length' 2>/dev/null || echo ERROR; }
+
+  # Level 1: override one PR, one SHA
+  new_pr bg-override
+  if wait_for BLOCKED; then pass "level 1: new PR starts blocked" "mergeStateStatus=$STATE"
+  else fail "level 1: new PR starts blocked" "mergeStateStatus=$STATE"; fi
+  desc="OVERRIDDEN by $OWNER: probe false positive (reason recorded)"
+  if gh api -X POST "repos/$REPO/statuses/$HEAD1" -f state=success -f context="$CONTEXT" \
+        -f description="$desc" >/dev/null 2>&1; then
+    pass "level 1: override status with a descriptive reason is accepted" "${#desc} chars"
+  else
+    fail "level 1: override status with a descriptive reason is accepted"
+  fi
+  if wait_for CLEAN; then pass "level 1: override makes the PR mergeable" "mergeStateStatus=$STATE"
+  else fail "level 1: override makes the PR mergeable" "mergeStateStatus=$STATE"; fi
+  push_again
+  if wait_for BLOCKED; then pass "level 1: override does not survive a new commit" "mergeStateStatus=$STATE"
+  else fail "level 1: override does not survive a new commit" "mergeStateStatus=$STATE"; fi
+
+  # Level 2: suspend the ruleset with the README's partial PUT
+  new_pr bg-suspend
+  wait_for BLOCKED || true
+  if err=$(gh api -X PUT "repos/$REPO/rulesets/$RS_ID" -f enforcement=evaluate 2>&1 >/dev/null); then
+    info "evaluate mode" "accepted on this plan (README still recommends 'disabled')"
+  else
+    info "evaluate mode" "refused: $(printf '%s' "$err" | head -c 160) (consistent with the README's use of 'disabled')"
+  fi
+  gh api -X PUT "repos/$REPO/rulesets/$RS_ID" -f enforcement=active >/dev/null 2>&1 || true
+  if gh api -X PUT "repos/$REPO/rulesets/$RS_ID" -f enforcement=disabled >/dev/null 2>&1; then
+    pass "level 2: partial PUT enforcement=disabled accepted" "enforcement now $(rs_enf)"
+  else
+    fail "level 2: partial PUT enforcement=disabled accepted" "README runbook needs updating"
+  fi
+  n=$(rs_rules)
+  if [ "$n" = 1 ]; then pass "level 2: partial PUT kept the rules" "required_status_checks rules: $n"
+  else fail "level 2: partial PUT kept the rules" "rules left: $n; the README must say to re-send the full ruleset"; fi
+  if msg=$(try_merge); then pass "level 2: merge succeeds while the ruleset is disabled"
+  else fail "level 2: merge succeeds while the ruleset is disabled" "$(printf '%s' "$msg" | head -c 200)"; fi
+  if gh api -X PUT "repos/$REPO/rulesets/$RS_ID" -f enforcement=active >/dev/null 2>&1 \
+     && [ "$(rs_enf)" = active ]; then
+    pass "level 2: partial PUT enforcement=active re-enables" "enforcement=$(rs_enf)"
+  else
+    fail "level 2: partial PUT enforcement=active re-enables" "enforcement=$(rs_enf)"
+  fi
+  if [ "$(rs_rules)" != 1 ]; then
+    info "level 2 fallback" "restoring the full ruleset body"
+    printf '%s' "$ruleset" | gh api -X PUT "repos/$REPO/rulesets/$RS_ID" --input - >/dev/null 2>&1 || true
+  fi
+  new_pr bg-after
+  if wait_for BLOCKED && ! try_merge >/dev/null; then pass "gate is closed again after re-enabling" "mergeStateStatus=$STATE"
+  else fail "gate is closed again after re-enabling" "mergeStateStatus=$STATE"; fi
 fi
 
 echo
