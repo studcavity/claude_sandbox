@@ -166,14 +166,14 @@ def test_protection_note_wording():
     assert "none known" in cs.protection_note("o/r", "main", "protected")
 
 
-def test_template_covers_stacking_and_status_checks(repo_root):
+def test_template_covers_branches_and_status_checks(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     md = cs.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
         "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper",
         protection_note=cs.protection_note("o/r", "main", "applied", ["lint"]))
-    assert "Stacking PRs is fine" in md and "sbx/quirky-hopper/<next>" in md
-    assert "only ever stack on your own" in md.lower()
+    assert "stack" not in md.lower()  # spec 05: every PR targets the default
+    assert "sbx/quirky-hopper/<task>" in md
     assert "required_status_checks" in md and "gh api repos/o/r/rulesets" in md
     assert "`lint`" in md and "(`o/r`)" in md
     assert not __import__("re").search(r"\$[a-z_{]", md)

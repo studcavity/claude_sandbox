@@ -190,37 +190,24 @@ def test_confirmed_branch_that_moves_is_still_closed(monkeypatch):
     assert r.outcome == "held" and api.patched
 
 
-# -- stacking -------------------------------------------------------------- #
-def test_choose_base_picks_closest_strict_ancestor():
-    assert sl.choose_base("main", []) == "main"
-    assert sl.choose_base("main", [("sbx/s/a", "ahead", 5),
-                                   ("sbx/s/b", "ahead", 2)]) == "sbx/s/b"
-    # identical, behind or diverged branches are never a parent
-    assert sl.choose_base("main", [("x", "identical", 0), ("y", "behind", 0),
-                                   ("z", "diverged", 3)]) == "main"
-
-
-def test_stacked_branch_targets_its_parent_with_incremental_diff(monkeypatch):
+# -- every PR targets the default branch -------------------------------------- #
+def test_branches_built_on_each_other_all_target_the_default_branch(monkeypatch):
+    """Spec 05: a PR into another session branch would get no CI (the
+    workflows are filtered to the default branch), so none is ever opened, and
+    landing costs a fixed number of GitHub calls per branch."""
     br = ["sbx/s/1-api", "sbx/s/2-tests"]
     api = Api({("main", "sbx/s/1-api"): cmp_(ahead=2),
-               ("main", "sbx/s/2-tests"): cmp_(ahead=3),
-               ("sbx/s/1-api", "sbx/s/2-tests"): cmp_(ahead=1),
-               ("sbx/s/2-tests", "sbx/s/1-api"): cmp_(ahead=0, status="behind")},
-              branches=br)
-    monkeypatch.setattr(sl, "gh_api", api)
+               ("main", "sbx/s/2-tests"): cmp_(ahead=3)}, branches=br)
+    calls = []
+    inner = api.__call__
+    monkeypatch.setattr(sl, "gh_api",
+                        lambda m, p, *a, **kw: calls.append(p) or inner(m, p, *a, **kw))
     parent, child = sl.land("o/r", "s")
-    assert (parent.base, child.base) == ("main", "sbx/s/1-api")
-    assert child.commits == 1  # only the increment
-    assert "Stacked on `sbx/s/1-api`" in api.posted[1]["body"]
-    assert "Stacked" not in api.posted[0]["body"]
-
-
-def test_never_stacks_on_another_sessions_branch(monkeypatch):
-    api = Api({("sbx/o/x", "sbx/s/work"): cmp_(ahead=1)},
-              branches=["sbx/s/work", "sbx/o/x"])
-    monkeypatch.setattr(sl, "gh_api", api)
-    mine = [r for r in sl.land("o/r") if r.branch == "sbx/s/work"][0]
-    assert mine.base == "main"
+    assert (parent.base, child.base) == ("main", "main")
+    assert (parent.commits, child.commits) == (2, 3)  # cumulative diff
+    assert [p["base"] for p in api.posted] == ["main", "main"]
+    assert all("Stacked" not in p["body"] for p in api.posted)
+    assert not any("/compare/sbx/" in p for p in calls)  # no sibling compares
 
 
 def test_branch_above_a_held_one_is_held_too(monkeypatch):
@@ -238,15 +225,15 @@ def test_format_landing_summary():
     L = sl.Landed
     out = sl.format_landing([
         L("sbx/q/api", "main", "opened", "https://github.com/o/r/pull/12", 3),
-        L("sbx/q/api-tests", "sbx/q/api", "opened",
+        L("sbx/q/api-tests", "main", "opened",
           "https://github.com/o/r/pull/13", 1),
         L("sbx/q/ci", "main", "held", ".github/workflows/x.yml", 2),
         L("sbx/q/x", "main", "empty", "", 0)], "q")
     assert "pull requests for session q" in out
     assert "#12" in out and "#13" in out and "[3 commits]" in out
-    assert "[1 commit]" in out and "(stacked)" in out
+    assert "[1 commit]" in out and "stacked" not in out
     assert "HELD" in out and ".github/workflows/x.yml" in out
-    assert "2 opened" in out and "bottom-up" in out and "never merges" in out
+    assert "2 opened" in out and "never merges" in out
     assert "\033" not in out  # no color unless asked
     assert "\033[" in sl.format_landing([L("b", "main", "empty", "", 0)],
                                          color=True)
@@ -254,7 +241,6 @@ def test_format_landing_summary():
 
 def test_format_landing_with_nothing_pushed():
     assert "no session branches were pushed" in sl.format_landing([])
-    assert "bottom-up" not in sl.format_landing([])
 
 
 # -- labels (plan 4b) ---------------------------------------------------------- #

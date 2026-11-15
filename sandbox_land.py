@@ -32,11 +32,10 @@ import sandbox_untrusted
 from sandbox_github import GitHubError, gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
 
-# One row of the exit summary. base is the PR's target (the default branch, or
-# the session's own earlier branch when stacked); commits counts what the PR
-# adds over that base.
+# One row of the exit summary. base is the PR's target: always the default
+# branch (a PR into another base would get no CI, which is filtered to the
+# default branch); commits counts what the PR adds over it.
 Landed = collections.namedtuple("Landed", "branch base outcome detail commits")
-MAX_SIBLINGS = 10  # bound the compare calls used to find a stack parent
 
 SENSITIVE_DIRS = (".github/", ".githooks/")
 SENSITIVE_FILES = (sandbox_deps.DEPS_FILE, sandbox_host.HOST_FILE)
@@ -152,25 +151,13 @@ def session_branches(repo, session=None, api=None):
     return [n for n in names if n.startswith(prefix)]
 
 
-def choose_base(default, candidates):
-    """Target branch for a PR. candidates are (branch, status, ahead_by) of
-    the *same session's* other branches compared to this one: the closest
-    strict ancestor becomes the base (a stacked PR whose diff shows only the
-    increment); otherwise the default branch."""
-    ancestors = [(n, b) for b, status, n in candidates
-                 if status == "ahead" and n > 0]
-    return min(ancestors)[1] if ancestors else default
-
-
-def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
-                confirm=None):
+def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
     """Open a PR for one branch -> Landed. Outcomes: 'empty' (nothing ahead
     of the default branch), 'held' (privileged files), 'exists' (open PR url)
     or 'opened' (PR url).
 
-    The hold test always uses the diff against the *default* branch, not the
-    stack parent: a stacked PR must not smuggle a privileged change in via the
-    branch below it.
+    Every PR targets the default branch, so a branch built on another of the
+    session's branches shows their commits too (and is held if they are).
 
     `confirm(branch, detail) -> bool`, when given, is asked before a branch
     held for its files is opened anyway; None (non-interactive) keeps the hold.
@@ -194,31 +181,20 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
         return Landed(branch, default, "held", "couldn't pin the branch tip "
                       "(250+ commits?)", cum["ahead_by"])
 
-    candidates = []
-    for sib in sorted(b for b in siblings if b != branch)[:MAX_SIBLINGS]:
-        c = gh_api("GET", f"/repos/{repo}/compare/{_q(sib)}...{_q(branch)}")
-        candidates.append((sib, c.get("status"), c.get("ahead_by", 0)))
-    base = choose_base(default, candidates)
-    inc = cum if base == default else gh_api(
-        "GET", f"/repos/{repo}/compare/{_q(base)}...{_q(branch)}")
-
     owner = repo.split("/")[0]
     open_ = gh_api("GET", f"/repos/{repo}/pulls?state=open&per_page=1&head="
                           f"{urllib.parse.quote(owner + ':' + branch, safe='')}")
     if open_:
-        return Landed(branch, open_[0].get("base", {}).get("ref", base),
-                      "exists", open_[0]["html_url"], inc["ahead_by"])
+        return Landed(branch, open_[0].get("base", {}).get("ref", default),
+                      "exists", open_[0]["html_url"], cum["ahead_by"])
     subjects = [c["commit"]["message"].split("\n", 1)[0]
-                for c in inc.get("commits") or []]
+                for c in cum.get("commits") or []]
     record = sandbox_record.extract(
         [((c.get("sha") or "")[:7], c["commit"]["message"])
-         for c in inc.get("commits") or []])
+         for c in cum.get("commits") or []])
     title, body = pr_text(session, branch, subjects, record)
-    if base != default:
-        body += (f"\nStacked on `{clean_text(base, 120)}`: merge that PR "
-                 "first. This PR's diff is only what this branch adds.\n")
     pr = gh_api("POST", f"/repos/{repo}/pulls",
-                {"title": title, "head": branch, "base": base, "body": body,
+                {"title": title, "head": branch, "base": default, "body": body,
                  "maintainer_can_modify": False})
     moved = head_moved(pr, tip)
     if moved:
@@ -230,9 +206,9 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
             moved += "; the PR was closed"
         except (RuntimeError, KeyError, TypeError, ValueError):
             moved += f"; CLOSE IT BY HAND: {pr.get('html_url', '?')}"
-        return Landed(branch, base, "held", moved, inc["ahead_by"])
+        return Landed(branch, default, "held", moved, cum["ahead_by"])
     label_pr(repo, pr, session)
-    return Landed(branch, base, "opened", pr["html_url"], inc["ahead_by"])
+    return Landed(branch, default, "opened", pr["html_url"], cum["ahead_by"])
 
 
 def checked_tip(cmp_):
@@ -280,16 +256,12 @@ def setup_script_paths(repo, default):
 
 def land(repo, session=None, confirm=None):
     """Open PRs for a session's branches (all sessions' if session is None)
-    -> [Landed]. A session's branches may stack on each other, never on
-    another session's."""
+    -> [Landed]. Each PR targets the default branch."""
     default = gh_api("GET", f"/repos/{repo}")["default_branch"]
     branches = session_branches(repo, session)
     extra_sensitive = setup_script_paths(repo, default) if branches else []
-    by_session = collections.defaultdict(list)
-    for b in branches:
-        by_session[b.split("/")[1]].append(b)
-    return [land_branch(repo, b, default, by_session[b.split("/")[1]],
-                        extra_sensitive, confirm) for b in branches]
+    return [land_branch(repo, b, default, extra_sensitive, confirm)
+            for b in branches]
 
 
 def pr_number(url):
@@ -298,8 +270,7 @@ def pr_number(url):
 
 
 def format_landing(results, session=None, color=False):
-    """The exit summary: one block per branch, stacked PRs marked, plus the
-    merge order. Plain text; color only when asked (a terminal)."""
+    """The exit summary: one block per branch. Plain text; color only when asked (a terminal)."""
     def paint(code, text):
         return f"\033[{code}m{text}\033[0m" if color else text
     marks = {"opened": ("\u2714", "32", "opened"),
@@ -312,12 +283,11 @@ def format_landing(results, session=None, color=False):
         out.append("\u2502 no session branches were pushed")
     for r in results:
         icon, code, label = marks[r.outcome]
-        stacked = r.base.startswith("sbx/")
         head = "\u2502 " + paint(code, f"{icon} {label:<9}")
         if r.outcome in ("opened", "exists"):
             out.append(f"{head} {pr_number(r.detail):<5} {r.branch} "
-                       f"\u2192 {r.base}" + (" (stacked)" if stacked else "")
-                       + f"  [{r.commits} commit{'s' * (r.commits != 1)}]")
+                       f"\u2192 {r.base}"
+                       f"  [{r.commits} commit{'s' * (r.commits != 1)}]")
             out.append(f"\u2502 {'':<12}{r.detail}")
         elif r.outcome == "held":
             out.append(f"{head} {r.branch}")
@@ -326,9 +296,6 @@ def format_landing(results, session=None, color=False):
         else:
             out.append(f"{head} {r.branch}")
     n = sum(r.outcome == "opened" for r in results)
-    foot = (f"{n} opened. " if results else "") + (
-        "Merge stacked PRs bottom-up (parents first). " if any(
-            r.base.startswith("sbx/") for r in results) else "") \
-        + "The launcher never merges."
+    foot = (f"{n} opened. " if results else "") + "The launcher never merges."
     out.append("\u2514 " + foot)
     return "\n".join(out)
