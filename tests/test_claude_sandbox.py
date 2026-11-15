@@ -442,8 +442,11 @@ def test_launch_writes_sandbox_marker(make_args, monkeypatch, fake_box):
         setattr(fake_box, m, lambda *a, **k: None)
     box.box = fake_box
     box.launch("ubuntu:24.04")
-    assert any(c[0] == "put_file" and c[1] == "/etc/claude-sandbox"
-               for c in fake_box.calls)
+    # the marker is written by the same root exec as the package probe
+    (probe,) = [c[1] for c in fake_box.calls if c[0] == "root" and "/etc/claude-sandbox" in c[1]]
+    assert "command -v git" in probe
+    assert not any(c[0] == "put_file" and c[1] == "/etc/claude-sandbox"
+                   for c in fake_box.calls)
 
 
 def test_template_documents_setup_and_the_hazard_guard(repo_root):
@@ -881,15 +884,51 @@ def test_session_tool_files_are_exactly_the_modules_plus_an_executable_wrapper(r
     assert files[0][1].startswith(b'"""sandbox_check.py')
 
 
-def test_install_session_tools_writes_each_file_via_put_file(make_args, monkeypatch, fake_box):
+class ArgvBox:
+    """FakeBox that also records the stdin given to root_argv."""
+    def __init__(self):
+        self.calls = []
+
+    def user(self, script, **kw):
+        self.calls.append(("user", script, kw.get("input")))
+        return type("R", (), {"stdout": "ssh-ed25519 AAAA\n"})()
+
+    def root_argv(self, argv, env=None, cwd=None, input=None, capture=True):
+        self.calls.append(("root_argv", list(argv), input))
+
+    def put_file(self, *a, **k):
+        self.calls.append(("put_file", *a))
+
+
+def test_install_session_tools_is_two_execs_and_one_tar_stream(make_args, monkeypatch, repo_root):
+    import io
+    import tarfile
     box = _sandbox(make_args, monkeypatch, repo="o/r")
-    box.box = fake_box
+    box.box = ArgvBox()
     box.install_session_tools()
-    puts = [c for c in fake_box.calls if c[0] == "put_file"]
-    assert [c[1] for c in puts][-1] == cs.SESSION_TOOL_BIN
-    assert len(puts) == len(cs.SESSION_TOOL_MODULES) + 1
-    (mk,) = [c for c in fake_box.calls if c[0] == "user"]
-    assert "mkdir -p" in mk[1] and cs.SESSION_TOOL_DIR in mk[1]
+    assert [c[0] for c in box.box.calls] == ["user", "root_argv"]        # not 9
+    assert "mkdir -p" in box.box.calls[0][1] and cs.SESSION_TOOL_DIR in box.box.calls[0][1]
+    argv, data = box.box.calls[1][1], box.box.calls[1][2]
+    assert argv == ["tar", "-xzf", "-", "-C", "/"]
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        assert set(members) == {p.lstrip("/") for p, _, _ in cs.session_tool_files(repo_root)}
+        wrapper = members[cs.SESSION_TOOL_BIN.lstrip("/")]
+        assert wrapper.mode == 0o755 and members[
+            f"{cs.SESSION_TOOL_DIR.lstrip('/')}/sandbox_check.py"].mode == 0o644
+        assert all(m.uid == 0 and m.gid == 0 and m.mtime == 0 for m in members.values())
+        assert tar.extractfile(wrapper).read() == cs.SESSION_TOOL_WRAPPER.encode()
+
+
+def test_the_archive_is_deterministic_and_cannot_escape_the_root(repo_root):
+    files = cs.session_tool_files(repo_root)
+    assert cs.session_tool_archive(files) == cs.session_tool_archive(files)
+    import io
+    import tarfile
+    with tarfile.open(fileobj=io.BytesIO(cs.session_tool_archive(files))) as tar:
+        for m in tar.getmembers():
+            assert not m.name.startswith("/") and ".." not in m.name.split("/")
+            assert m.isreg()
 
 
 @pytest.mark.parametrize("kw", [dict(repo=None), dict(repo="o/r", read_only=True)])
@@ -937,3 +976,75 @@ def test_the_installed_wrapper_really_lints_a_clones_commits(repo_root, tmp_path
     assert bad.returncode == 1 and "::error::" in bad.stdout and "fixup" in bad.stdout
     # arguments pass straight through to the checker
     assert "usage" in sh("sh", str(wrapper), "--help", cwd=clone, env=env).stdout
+
+
+# --- batched container scripts (plan 1d), executed for real ------------------------ #
+def run_sh(script, env=None, cwd=None):
+    import subprocess
+    return subprocess.run(["sh", "-c", script], env={**os.environ, **(env or {})},
+                          cwd=cwd, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("name", ["quirky-hopper", "has space", "q'uote", "$(touch pwned)", "a;b"])
+def test_marker_script_writes_the_name_verbatim_and_mode_0644(tmp_path, name):
+    path = tmp_path / "marker"
+    r = run_sh(cs.marker_script(name, str(path)), cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert path.read_text() == name + "\n"
+    assert oct(path.stat().st_mode & 0o777) == "0o644"
+    assert not (tmp_path / "pwned").exists()           # the name was quoted, not run
+
+
+def test_git_config_script_sets_everything_in_a_clean_home(tmp_path):
+    script = cs.git_config_script("Ada L", "ada@example.com")
+    r = run_sh(script, env={"HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1"})
+    assert r.returncode == 0, r.stderr
+    out = run_sh("git config --global --list", env={"HOME": str(tmp_path)}).stdout
+    for line in ("user.name=Ada L", "user.email=ada@example.com", "pull.rebase=true",
+                 "rebase.autostash=true", "merge.ff=only", "push.autosetupremote=true",
+                 "url.git@github.com:.insteadof=https://github.com/"):
+        assert line in out, out
+
+
+def test_git_config_script_without_identity_and_with_hostile_values(tmp_path):
+    assert "user.name" not in cs.git_config_script(None, None)
+    r = run_sh(cs.git_config_script("x'; touch pwned; '", "$(touch pwned2)"),
+               env={"HOME": str(tmp_path)}, cwd=tmp_path)
+    assert r.returncode == 0
+    assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
+    out = run_sh("git config --global user.name", env={"HOME": str(tmp_path)}).stdout
+    assert out.strip() == "x'; touch pwned; '"
+
+
+def test_provision_key_is_two_execs_and_keeps_its_order(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="o/r", name="quirky-hopper",
+                   git_name="Ada", git_email="a@x.org")
+    box.box = ArgvBox()
+    api = []
+    monkeypatch.setattr(cs, "gh_api", lambda m, p, body=None, raw=False:
+                        api.append((m, p)) or ({"ssh_keys": ["ssh-ed25519 KEY"]} if p == "/meta"
+                                               else {"id": 7}))
+    box.provision_key()
+    execs = box.box.calls
+    assert [c[0] for c in execs] == ["user", "user"]                   # was up to 7
+    assert "ssh-keygen" in execs[0][1] and execs[0][1].rstrip().endswith("id_ed25519.pub")
+    assert execs[1][2] == "github.com ssh-ed25519 KEY\n"                # known_hosts via stdin
+    assert "git config --global user.name Ada" in execs[1][1]
+    assert api == [("GET", "/meta"), ("POST", "/repos/o/r/keys")]      # key still added after meta
+    assert box.key_id == 7
+
+
+def test_the_real_tar_binary_extracts_the_archive_to_the_right_places(repo_root, tmp_path):
+    """What the container runs (`tar -xzf - -C /`), against a temp root."""
+    import subprocess
+    files = cs.session_tool_files(repo_root)
+    root = tmp_path / "root"
+    for d in (cs.SESSION_TOOL_DIR, os.path.dirname(cs.SESSION_TOOL_BIN)):
+        (root / d.lstrip("/")).mkdir(parents=True)             # made by `mkdir -p` as the user
+    r = subprocess.run(["tar", "-xzf", "-", "-C", str(root)], input=cs.session_tool_archive(files),
+                       capture_output=True)
+    assert r.returncode == 0, r.stderr
+    for path, data, mode in files:
+        f = root / path.lstrip("/")
+        assert f.read_bytes() == data
+        assert oct(f.stat().st_mode & 0o777) == oct(int(mode, 8))

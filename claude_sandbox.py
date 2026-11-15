@@ -143,6 +143,48 @@ exec python3 "$tool" "$base" HEAD --branch "$(git rev-parse --abbrev-ref HEAD)"
 """
 
 
+def marker_script(name, path=None):
+    """Shell that writes the sandbox marker file (repo scripts test for it to
+    refuse to run anywhere else). `name` is quoted; the path is ours."""
+    path = path or SANDBOX_MARKER
+    return (f"printf '%s\\n' {shlex.quote(name)} > {shlex.quote(path)} && "
+            f"chmod 0644 {shlex.quote(path)}")
+
+
+def git_config_script(git_name=None, git_email=None):
+    """The `git config --global` calls a session needs, as one shell script:
+    https->ssh rewrite (the deploy key is ssh), optional identity, and the
+    linear-history settings. Values are quoted."""
+    cmds = ['git config --global url."git@github.com:".insteadOf "https://github.com/"']
+    if git_name:
+        cmds.append("git config --global user.name " + shlex.quote(git_name))
+    if git_email:
+        cmds.append("git config --global user.email " + shlex.quote(git_email))
+    cmds += ["git config --global pull.rebase true",       # linear history:
+             "git config --global rebase.autoStash true",  # rebase on pull,
+             "git config --global merge.ff only",          # no merge commits,
+             "git config --global push.autoSetupRemote true"]
+    return " && ".join(cmds)
+
+
+def session_tool_archive(files):
+    """The session tools as ONE gzipped tar (paths relative to `/`), so they
+    arrive in a single exec instead of one per file. Deterministic (fixed
+    mtime and owner), names are constants of ours, nothing user-controlled."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.USTAR_FORMAT,
+                      compresslevel=6) as tar:
+        for path, data, mode in files:
+            info = tarfile.TarInfo(path.lstrip("/"))
+            info.size, info.mode, info.mtime = len(data), int(mode, 8), 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
 def session_tool_files(src_dir):
     """[(path in the container, bytes, mode)] for the in-sandbox checker."""
     files = []
@@ -594,11 +636,11 @@ class Sandbox:
             self.box.wait_network()
         with sandbox_timing.stage("self-check + marker + package probe"):
             self.box.self_check()  # fail fast, before any real work
-            # Lets repo scripts refuse to run anywhere but inside a sandbox.
-            self.box.put_file(SANDBOX_MARKER, self.name.encode() + b"\n", "0644")
-
-            # No-ops when launched from the cached image.
-            self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
+            # The marker lets repo scripts refuse to run anywhere but inside a
+            # sandbox; the package probe is a no-op from the cached image.
+            # One exec for both.
+            self.box.root(marker_script(self.name) + "; "
+                          "command -v git >/dev/null && command -v curl >/dev/null || "
                           "(apt-get update -qq && "
                           "apt-get install -y -qq git curl openssh-client)",
                           capture=True)
@@ -758,17 +800,17 @@ class Sandbox:
 
     def provision_key(self):
         log("generating SSH key inside the container")
-        self.box.user(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                      f"ssh-keygen -q -t ed25519 -N '' "
-                      f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519")
-        pubkey = self.box.user("cat ~/.ssh/id_ed25519.pub",
-                               capture=True).stdout.strip()
+        # One exec makes the key and prints its public half.
+        pubkey = self.box.user(
+            f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            f"ssh-keygen -q -t ed25519 -N '' "
+            f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519 && "
+            "cat ~/.ssh/id_ed25519.pub", capture=True).stdout.strip()
 
         # Pin GitHub host keys from the API (over the host's TLS) instead of
         # trusting ssh-keyscan on first use.
         meta = gh_api("GET", "/meta")
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
-        self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
         title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
                                            self.session_id)
@@ -783,19 +825,9 @@ class Sandbox:
                           {"title": title, "key": pubkey})
         self.key_id = resp["id"]
 
-        self.box.user('git config --global url."git@github.com:".insteadOf '
-                      '"https://github.com/"')
-        if self.args.git_name:
-            self.box.user("git config --global user.name "
-                          + shlex.quote(self.args.git_name))
-        if self.args.git_email:
-            self.box.user("git config --global user.email "
-                          + shlex.quote(self.args.git_email))
-        # Linear history: rebase on pull, refuse non-fast-forward merges.
-        self.box.user("git config --global pull.rebase true && "
-                      "git config --global rebase.autoStash true && "
-                      "git config --global merge.ff only && "
-                      "git config --global push.autoSetupRemote true")
+        # known_hosts (from stdin) and every git setting, in one exec.
+        self.box.user("cat >> ~/.ssh/known_hosts && " + git_config_script(
+            self.args.git_name, self.args.git_email), input=known)
 
     def install_claude(self):
         if self.box.user("command -v claude >/dev/null", check=False).returncode == 0:
@@ -823,11 +855,13 @@ class Sandbox:
         commits (`sandbox-check`). Only where there are commits to lint."""
         if not self.args.repo or self.args.read_only:
             return
+        # The directories are made as the session user (so they stay theirs);
+        # the files then arrive as root in one tar stream: 2 execs, not 9.
         self.box.user("mkdir -p " + shlex.quote(SESSION_TOOL_DIR) + " "
                       + shlex.quote(os.path.dirname(SESSION_TOOL_BIN)))
-        for path, data, mode in session_tool_files(
-                os.path.dirname(os.path.abspath(__file__))):
-            self.box.put_file(path, data, mode)
+        self.box.root_argv(["tar", "-xzf", "-", "-C", "/"],
+                           input=session_tool_archive(session_tool_files(
+                               os.path.dirname(os.path.abspath(__file__)))))
 
     def write_claude_md(self, workdir):
         """Render the --claude-md template into ~/.claude/ in the container."""
