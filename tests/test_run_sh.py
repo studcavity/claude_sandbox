@@ -20,5 +20,7 @@ def test_run_sh_usage_without_args(repo_root):
 @pytest.mark.skipif(not shutil.which("shellcheck"),
                     reason="shellcheck not installed")
 def test_run_sh_shellcheck(repo_root):
-    subprocess.run(["shellcheck", os.path.join(repo_root, "run.sh")],
-                   check=True)
+    # Same inputs as CI: run.sh sources update_check.sh, which shellcheck only
+    # follows when it is given as input too.
+    subprocess.run(["shellcheck", os.path.join(repo_root, "run.sh"),
+                    os.path.join(repo_root, "update_check.sh")], check=True)
