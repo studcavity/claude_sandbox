@@ -1,4 +1,4 @@
-# 2. Typed GitHub client
+# 2. Typed GitHub client (library decided: PyGithub)
 
 ## Premise check
 There is **no official GitHub Python SDK** (GitHub's Octokit libraries are
@@ -12,9 +12,10 @@ JS/Ruby/.NET). Candidates, checked on PyPI 2026-11-15:
 | maturity | long-standing, by far the widest usage | pre-1.0, expect breaking changes | small |
 
 `CLAUDE.md` "build versus buy" asks for widespread usage plus active
-development, so **recommend PyGithub**. If real pydantic types matter more than
-stability, githubkit is the alternative; pin it with an upper bound and expect
-churn. Whether PyGithub's hints are complete enough for mypy strict is
+development. **Decided: PyGithub.** PyPI downloads last month (pypistats,
+2026-11-15): PyGithub ~45M, ghapi ~21M (much of it pulled in by the fastai
+ecosystem), githubkit ~0.9M. githubkit has the nicer pydantic types but is
+pre-1.0 with little adoption; revisit only if PyGithub's types prove too weak. Whether PyGithub's hints are complete enough for mypy strict is
 **unverified**: spike it (run mypy over the wrapper) before committing.
 
 Note this reverses the current deliberate choice of the `gh` CLI (see the

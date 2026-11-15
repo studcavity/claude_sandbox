@@ -10,7 +10,7 @@ validators -> A -> (optional) C.
 |---|---|---|
 | Validators (shared, pure) | **do first** | none |
 | **A.** Session declares intents in git; the launcher acts on them | **do second** | none new: the host's existing `gh` login |
-| **C.** Host-side broker over a socket | optional, later | none new |
+| **C.** Host-side broker over a socket | **deferred**: not planned now, kept as a future option | none new |
 | GitHub Actions `GITHUB_TOKEN` doing the filing | partly adopted: only for plan 5's post-merge job on `main` | none (GitHub mints/revokes it) |
 | GitHub App installation tokens | **considered, won't do** (see end) | a `.pem` on the host |
 
@@ -64,7 +64,11 @@ session's branches instead of `main`.
   trailer parsing edge cases; dedupe on re-run; caps; every rejection reason;
   exit summary lists accepted and rejected.
 
-## C. Host-side broker (optional, only if live feedback is wanted)
+## C. Host-side broker (deferred; future option only)
+Not being built. Recorded so the design isn't lost: build it only if live
+feedback during a session becomes necessary. A and the validators are designed
+so it can be added without changing them.
+
 A narrow RPC served by the launcher while the session runs:
 `create_issue`, `open_pr` only. The in-container script (plan 4) sends JSON,
 the launcher validates with the same validators and calls GitHub, then returns
@@ -95,4 +99,4 @@ commit if so.
 ## Order of work
 1. `sandbox_forms.py` + tests (no behaviour change).
 2. A, with plan 5's scanner (they share it).
-3. C only if wanted.
+3. C is deferred. Nothing in 1-2 should preclude it.

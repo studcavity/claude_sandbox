@@ -12,17 +12,18 @@ live broker); this plan is the *content contract* and the agent-facing tools.
   sections are present and non-empty. The **launcher** (exit-time `sandbox_land`
   and the issue filer) and the **in-container scripts** use the same code, so
   launcher-opened and session-requested PRs are identical.
-- For repos the user owns, the launcher can offer to add
-  `.github/pull_request_template.md` and `.github/ISSUE_TEMPLATE/` through a
-  normal PR (held for review because it touches `.github/`), so humans use the
-  same shape.
+- For repos the user owns, the launcher can offer to add self-contained
+  `.github/pull_request_template.md` and `.github/ISSUE_TEMPLATE/` files
+  (rendered by the launcher, no reference back to this repo) through a normal
+  PR, held for review because it touches `.github/`. Anything the repo would
+  need beyond that is stated as a requirement in the sandbox CLAUDE.md.
 
 ## Agent-facing tools (installed by the launcher, root-owned, stdlib-only)
 - Under plan 3 **A** there is nothing to call: the session writes
   `Follow-up:` lines / `Issue:` trailers in commits. A tiny helper
   `sandbox-intent --lint` runs the validators locally so the session sees a
   rejection *before* it exits, when it can still fix the commit message.
-- Under plan 3 **C** add `sandbox-issue` and `sandbox-pr`: validate locally
+- If plan 3 **C** is ever built, add `sandbox-issue` and `sandbox-pr`: validate locally
   (fast feedback), then send to the broker; `--dry-run` prints exactly what
   would be created. The repo is fixed by the launcher, never an argument.
 - Both are installed with the launcher's other in-container files (written with
