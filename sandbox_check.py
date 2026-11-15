@@ -130,7 +130,8 @@ def message_secret_findings(message):
 
 def parse_added_lines(diff):
     """Unified diff (-U0) -> [(path, new line number, text)] for added lines."""
-    out, path, line = [], None, 0
+    out: list = []
+    path, line = None, 0
     for raw in diff.splitlines():
         if raw.startswith("+++ "):
             p = raw[4:].split("\t")[0].strip('"')
@@ -199,7 +200,8 @@ def check_findings(base, head, branch=None, exists=None, cwd=None):
     def git(*args):  # this repo, not whatever the process happens to be in
         return globals()["git"](*args, cwd=cwd)
     session = branch_session(branch)
-    out, all_files = [], set()
+    out: list = []
+    all_files: set = set()
 
     def add(sha, found):
         out.extend(Finding(sha[:7], sev, text, None, None) for sev, text in found)

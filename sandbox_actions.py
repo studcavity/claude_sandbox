@@ -290,7 +290,7 @@ def known_issues(ctx):
     between creating it and commenting on the commit can't duplicate it)."""
     if "issues" in ctx.cache:
         return ctx.cache["issues"]
-    found = {}
+    found: dict = {}
     for page in range(1, MAX_LEDGER_PAGES + 1):
         items = ctx.api("GET", f"/repos/{ctx.repo}/issues?labels=sandbox"
                         f"&state=all&per_page=100&page={page}") or []
