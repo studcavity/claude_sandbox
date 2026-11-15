@@ -126,8 +126,9 @@ def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     # the work branch was created inside the container
     user_scripts = " ".join(str(c) for what, c in box.calls if what == "user")
     assert "checkout -q -b sbx/quirky-hopper/work" in user_scripts
-    # the PR was reported
-    assert "pull/7" in capsys.readouterr().err
+    # the exit summary was printed
+    err = capsys.readouterr().err
+    assert "pull requests for session quirky-hopper" in err and "#7" in err
 
 
 def test_no_pr_flag_skips_landing_but_still_cleans_up(world):

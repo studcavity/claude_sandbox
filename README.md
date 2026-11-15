@@ -85,6 +85,24 @@ Any number of sandboxes can run on one repo at once. What keeps them apart:
   `./run.sh REPO --land-all` opens PRs for every unmerged `sbx/*` branch
   (recovery after a crashed launcher; it also grabs live sessions' work).
   Text from the session is sanitised (no live `@mentions`, labelled untrusted).
+- **Exit summary.** The launcher prints a block listing every branch with its
+  PR number, target, commit count and URL (or why none was opened):
+  ```
+  ┌ pull requests for session quirky-hopper ───────────────
+  │ ✔ opened    #12   sbx/quirky-hopper/1-api → main  [3 commits]
+  │             https://github.com/o/r/pull/12
+  │ ✔ opened    #13   sbx/quirky-hopper/2-tests → sbx/quirky-hopper/1-api (stacked)  [1 commit]
+  │ ⚠ HELD      sbx/quirky-hopper/ci
+  └ 2 opened. Merge stacked PRs bottom-up (parents first). The launcher never merges.
+  ```
+- **Stacked PRs.** For iterative work a session may build each branch on its
+  own previous one. The launcher targets each PR at the closest of that
+  session's own branches it contains, so the diff shows only that step, and
+  never stacks on another session's branch. The privileged-file hold is
+  judged against the default branch, so a branch above a held one is held too.
+  Merge bottom-up; after a squash/rebase merge the next branch needs
+  `git rebase --onto origin/HEAD <old-parent-tip>`. PRs into a non-default
+  base may not trigger CI that is filtered to the default branch.
 - **Held, not opened:** a branch that changes `.github/`, `.githooks/`,
   `CODEOWNERS`, the deps/host files or a `setup:` script gets no PR; the
   launcher says so and you review the branch by hand. Those files run with
@@ -108,9 +126,21 @@ permission. The enforcement is GitHub-side. Apply the ruleset once per repo
 gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/protect-main.json
 ```
 It requires PRs for the default branch and blocks force-push, deletion and
-merge commits. Add a `required_status_checks` rule for your CI jobs (names are
-repo-specific, so they aren't in the file). Each launch warns if the default
-branch doesn't require PRs. Also:
+merge commits.
+
+You don't have to run that by hand: when a launch finds the default branch
+doesn't require PRs, and you are at a terminal, it asks
+`Apply branch protections to this repo? [y/N]` (default no), lists the effects,
+and applies the ruleset on a yes. It then offers to also require the CI checks
+that **passed on the default branch's latest commit** (names are repo-specific,
+so they aren't in the file; a name that never reports would block every
+merge, hence opt-in). It won't create a duplicate if a ruleset of that name
+exists, and a failure (no admin, plan without rulesets) only warns.
+`--no-protect-prompt` silences the offer; the warning still prints. Each
+session's CLAUDE.md states this repo's protection status and which checks are
+required, and tells the session to name the check names to require whenever it
+adds, renames or removes a CI job (renaming a required job strands open PRs).
+Also:
 - Keep repo Actions secrets minimal. A PR from a same-repo branch runs the
   branch's workflow code *with* secrets; put real secrets in an Environment
   restricted to the default branch.

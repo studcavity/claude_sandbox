@@ -87,19 +87,21 @@ def _api(rules=None, protection=None, rules_err=None, prot_err=None):
 def test_check_protection_ruleset(monkeypatch):
     monkeypatch.setattr(ss, "gh_api", _api(
         rules=[{"type": "pull_request"}], prot_err=GitHubError("nf", 404)))
-    assert ss.check_protection("o/r") == ("main", None)
+    assert ss.check_protection("o/r") == ("main", None, "protected")
 
 
 def test_check_protection_classic(monkeypatch):
     monkeypatch.setattr(ss, "gh_api", _api(
         rules=[], protection={"required_pull_request_reviews": {}}))
-    assert ss.check_protection("o/r") == ("main", None)
+    assert ss.check_protection("o/r") == ("main", None, "protected")
 
 
 def test_check_protection_unprotected_and_unknown(monkeypatch):
     monkeypatch.setattr(ss, "gh_api", _api(
         rules=[], prot_err=GitHubError("nf", 404)))
     assert "does not require" in ss.check_protection("o/r")[1]
+    assert ss.check_protection("o/r")[2] == "unprotected"
     monkeypatch.setattr(ss, "gh_api", _api(
         rules_err=GitHubError("x", 500), prot_err=GitHubError("x", 403)))
     assert "couldn't verify" in ss.check_protection("o/r")[1]
+    assert ss.check_protection("o/r")[2] == "unknown"
