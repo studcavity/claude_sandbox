@@ -13,6 +13,11 @@ execute with extra privilege: CI workflows (a same-repo PR runs the branch's
 workflow code with the repo's Actions secrets), the deps/host files and
 `setup:` scripts (run as root / with the deploy key in every future sandbox),
 git hooks and CODEOWNERS.
+
+With an interactive `confirm` callback, a hold for *what the branch touches*
+becomes a question to the user (default no) instead of a refusal. Holds that
+say the check itself can't be trusted (tip can't be pinned, branch moved) are
+never overridable.
 """
 import collections
 import re
@@ -157,7 +162,8 @@ def choose_base(default, candidates):
     return min(ancestors)[1] if ancestors else default
 
 
-def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
+def land_branch(repo, branch, default, siblings=(), extra_sensitive=(),
+                confirm=None):
     """Open a PR for one branch -> Landed. Outcomes: 'empty' (nothing ahead
     of the default branch), 'held' (privileged files), 'exists' (open PR url)
     or 'opened' (PR url).
@@ -165,19 +171,24 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
     The hold test always uses the diff against the *default* branch, not the
     stack parent: a stacked PR must not smuggle a privileged change in via the
     branch below it.
+
+    `confirm(branch, detail) -> bool`, when given, is asked before a branch
+    held for its files is opened anyway; None (non-interactive) keeps the hold.
     """
     session = branch.split("/")[1] if branch.count("/") >= 2 else "unknown"
     cum = gh_api("GET", f"/repos/{repo}/compare/{_q(default)}...{_q(branch)}")
     if not cum.get("ahead_by"):
         return Landed(branch, default, "empty", "", 0)
     files = [f["filename"] for f in cum.get("files") or []]
+    hold = None
     if len(files) >= 300:  # the API truncates; assume the worst
-        return Landed(branch, default, "held",
-                      "300+ files changed (list truncated)", cum["ahead_by"])
-    hits = sensitive_paths(files, extra_sensitive)
-    if hits:
-        return Landed(branch, default, "held", ", ".join(hits[:5])
-                      + (" ..." if len(hits) > 5 else ""), cum["ahead_by"])
+        hold = "300+ files changed (list truncated)"
+    else:
+        hits = sensitive_paths(files, extra_sensitive)
+        if hits:
+            hold = ", ".join(hits[:5]) + (" ..." if len(hits) > 5 else "")
+    if hold and not (confirm and confirm(branch, hold)):
+        return Landed(branch, default, "held", hold, cum["ahead_by"])
     tip = checked_tip(cum)
     if not tip:
         return Landed(branch, default, "held", "couldn't pin the branch tip "
@@ -246,7 +257,7 @@ def head_moved(pr, tip):
             f"{head[:7] or 'an unknown head'})")
 
 
-def land(repo, session=None, extra_sensitive=()):
+def land(repo, session=None, extra_sensitive=(), confirm=None):
     """Open PRs for a session's branches (all sessions' if session is None)
     -> [Landed]. A session's branches may stack on each other, never on
     another session's."""
@@ -256,7 +267,7 @@ def land(repo, session=None, extra_sensitive=()):
     for b in branches:
         by_session[b.split("/")[1]].append(b)
     return [land_branch(repo, b, default, by_session[b.split("/")[1]],
-                        extra_sensitive) for b in branches]
+                        extra_sensitive, confirm) for b in branches]
 
 
 def pr_number(url):

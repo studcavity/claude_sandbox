@@ -119,6 +119,44 @@ def test_land_holds_setup_scripts(monkeypatch):
     assert sl.land("o/r", "s", ["t/setup.sh"])[0].outcome == "held"
 
 
+def test_confirmed_hold_opens_the_pr(monkeypatch):
+    api = Api(main_cmp(cmp_(files=[".github/workflows/x.yml"])))
+    monkeypatch.setattr(sl, "gh_api", api)
+    asked = []
+    (r,) = sl.land("o/r", "s", confirm=lambda b, d: asked.append((b, d)) or True)
+    assert asked == [("sbx/s/work", ".github/workflows/x.yml")]
+    assert r.outcome == "opened" and len(api.posted) == 1
+
+
+def test_declined_hold_stays_held(monkeypatch):
+    api = Api(main_cmp(cmp_(files=[".github/workflows/x.yml"])))
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s", confirm=lambda b, d: False)
+    assert r.outcome == "held" and api.posted == []
+
+
+def test_confirm_is_not_asked_for_clean_branches(monkeypatch):
+    monkeypatch.setattr(sl, "gh_api", Api({}))
+    sl.land("o/r", "s", confirm=lambda b, d: pytest.fail("asked"))
+
+
+def test_unpinnable_tip_is_never_overridable(monkeypatch):
+    c = cmp_(files=[".github/x.yml"])
+    c["total_commits"] = 300  # more than the compare lists
+    api = Api(main_cmp(c))
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s", confirm=lambda b, d: True)
+    assert r.outcome == "held" and api.posted == []
+
+
+def test_confirmed_branch_that_moves_is_still_closed(monkeypatch):
+    api = Api(main_cmp(cmp_(files=[".github/x.yml"])))
+    api.head_sha = "b" * 40
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s", confirm=lambda b, d: True)
+    assert r.outcome == "held" and api.patched
+
+
 # -- stacking -------------------------------------------------------------- #
 def test_choose_base_picks_closest_strict_ancestor():
     assert sl.choose_base("main", []) == "main"

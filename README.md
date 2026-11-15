@@ -118,7 +118,10 @@ Any number of sandboxes can run on one repo at once.
   may not trigger CI that is filtered to the default branch.
 - **Held, not opened:** a branch that changes `.github/`, `.githooks/`,
   `CODEOWNERS`, the deps/host files or a `setup:` script (and any branch
-  stacked above one) gets no PR; review it by hand. Those files run with extra
+  stacked above one) gets no PR; review it by hand. In an interactive
+  terminal the launcher instead asks `Open a PR for it anyway? [y/N]` (default
+  no; non-interactive runs stay held). A branch whose tip can't be pinned or
+  that moves while landing is never overridable. Those files run with extra
   privilege (CI with Actions secrets; root and the deploy key in every future
   sandbox), so they are how an injected session would persist.
 - **Landing happens after teardown.** The session's key is revoked and its
