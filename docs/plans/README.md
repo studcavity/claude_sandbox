@@ -20,8 +20,12 @@ real incus or a real GitHub with this code, and each row says what is unproven.
 | 5a-5d | stdlib checker, rules + allowlist, `--post-status`/`--override`, launcher posts it at exit | **built** | posting to a real PR with this code; ruleset not applied anywhere yet |
 | 5e | `--file-issues` | **built** | the optional rendered `main` workflow: not done |
 
-First-run dialogs (`sandbox_claude_config.py`) are on `sbx/relaxed-fermat/work`;
-`--low-credits` and the credits section on `sbx/relaxed-fermat/credit-awareness`.
+The branches form a stack and merge in this order: `credit-awareness` (a note in
+the sandbox CLAUDE.md that running out of credits loses work; no launcher
+changes) <- `impl-check` (everything above) <- `work` (first-run dialogs,
+`sandbox_claude_config.py`). `plans` (docs and the probe script) sits on
+`credit-awareness`. There is no `--low-credits` flag any more: it could only be
+as good as the user remembering to set it.
 From PR #4 (`1979267`): `Sandbox-Action` / `Sandbox-Session` trailers,
 `sandbox_actions.py`, `sandbox_check.py` plus the `commit-metadata` CI job, and
 repo-defined rulesets from `rulesets/*.json`. Probe for commit-status gating:
