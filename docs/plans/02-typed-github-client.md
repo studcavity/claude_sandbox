@@ -21,7 +21,7 @@ Note this reverses the current deliberate choice of the `gh` CLI (see the
 comment in `sandbox_github.py`): the CLI gave us auth and patching for free.
 Reasons to switch now: typed objects, one pooled HTTPS session (no process
 spawn and TLS handshake per call: ~0.35 s each, ~11 per launch), real
-concurrency (plan 1b), and the same client can mint App tokens (plan 3).
+concurrency (plan 1b), and a clean way to file issues from plan 5's workflow.
 
 ## Design
 - `sandbox_github.py` keeps its public surface (`gh_api`, `github_login`,

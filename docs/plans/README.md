@@ -7,9 +7,10 @@ changes it.
 | # | Plan | Status | Depends on |
 |---|------|--------|-----------|
 | 1 | [Startup performance and `--timings`](01-startup-performance.md) | planned | none (do the `--timings` flag first: it measures everything else) |
-| 2 | [Typed GitHub client](02-typed-github-client.md) | planned, needs a decision | none; unblocks 1c and 3 |
-| 3 | [Per-session scoped GitHub token](03-scoped-session-token.md) | planned, needs decisions | 2 |
-| 4 | [Issue/PR tooling: scripts + templates](04-issue-pr-tooling.md) | planned | 3 (or 3's broker variant) |
+| 2 | [Typed GitHub client](02-typed-github-client.md) | planned, needs a decision | none; helps 1b and 5's filing step |
+| 3 | [Session actions without keys](03-session-actions-without-keys.md): validators -> A (intents in git) -> optional C (broker); App tokens rejected | planned | none |
+| 4 | [Issue/PR content contract: templates + validated tools](04-issue-pr-tooling.md) | planned | 3's validators |
+| 5 | [`--check` / `--check --file-issues`](05-check-verb.md) | planned, name open | 3's validators and scanner |
 
 Already done (not plans): first-run dialogs pre-answered
 (`sandbox_claude_config.py`), `--low-credits` and the credits section of the
@@ -18,13 +19,15 @@ sandbox CLAUDE.md.
 ## Decisions needed from the user
 1. **Client library** (plan 2): PyGithub (recommended) or githubkit. There is
    no *official* GitHub Python SDK.
-2. **Token topology** (plan 3): token inside the container (what was asked,
-   simplest, enforcement is only by convention + repo-side CI) vs a host-side
-   broker (token never enters the container, enforcement is real). Recommended:
-   ship the token variant first, design scripts so they can switch to the
-   broker without changing the agent-facing interface.
-3. **GitHub App**: plan 3 needs the user to create one GitHub App once and
-   install it on their repos. Only the user can do this.
+2. **Verb names** (plan 5): `--check` + `--file-issues` (recommended), or
+   `--audit`, `--vet`, `--verify`.
+3. **Live channel** (plan 3 C): wanted at all, or is exit-time filing (A)
+   enough? C is optional.
+4. **Bot identity**: only if you want authorship to be a bot rather than you
+   would the rejected GitHub App option come back.
+
+Settled: no key material is given to the container and no App key is held on
+the host (plan 3).
 
 ## Ground rules that apply to all of them
 - Follow `CLAUDE.md`: pure decisions, I/O at the edges, tests with each change,

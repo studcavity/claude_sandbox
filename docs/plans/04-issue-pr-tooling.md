@@ -1,71 +1,46 @@
-# 4. Issue and PR creation through durable scripts + templates
+# 4. Issue and PR creation: templates, validated and consistent
 
-Goal: every issue and PR a session creates has the same labels, structure and
-safety checks, and the agent doesn't hand-roll `gh`/API calls.
+Goal: every issue and PR a session causes has the same labels, structure and
+safety checks. Transport is plan 3 (A: launcher acts at exit, optionally C:
+live broker); this plan is the *content contract* and the agent-facing tools.
 
-## Pieces
-1. **Scripts shipped by the launcher** (in this repo under `sandbox_tools/`,
-   copied into the container at launch to `/usr/local/bin`, root-owned 0755):
-   `sandbox-issue` and `sandbox-pr`. Python, stdlib only (no deps in the
-   container), tiny, with `--dry-run`. They are the only documented way to file
-   either; the sandbox CLAUDE.md says so.
-2. **Templates** under `templates/` in this repo: `issue.md`, `pr.md`, each with
-   required sections (Summary, Motivation/Why, How verified, Not verified,
-   Follow-ups, Session `relaxed-fermat`, credit/usage note when
-   `--low-credits`). The scripts render the body from flags/stdin into the
-   template and **reject** missing sections, so the format can't drift.
-3. **Server-side enforcement in the target repo** (the only enforcement an
-   in-container script can't bypass): a `.github/pull_request_template.md`,
-   `.github/ISSUE_TEMPLATE/`, and a CI check that validates PR bodies and
-   required labels, made a required status check via the ruleset (see "Quality
-   gates" / required-checks notes already in `sandbox_CLAUDE.md`). The launcher
-   can offer to add these to repos the user owns, through a normal PR (it
-   already holds back `.github/` changes for review, so this stays reviewed).
+## Single source of truth
+- `templates/issue.md`, `templates/pr.md` in this repo, with required sections:
+  Summary, Why, How verified, Not verified, Follow-ups, Session
+  (`<session id>`), and a credit/usage line when `--low-credits` was set.
+- `sandbox_forms.py` (plan 3) renders from these and validates that required
+  sections are present and non-empty. The **launcher** (exit-time `sandbox_land`
+  and the issue filer) and the **in-container scripts** use the same code, so
+  launcher-opened and session-requested PRs are identical.
+- For repos the user owns, the launcher can offer to add
+  `.github/pull_request_template.md` and `.github/ISSUE_TEMPLATE/` through a
+  normal PR (held for review because it touches `.github/`), so humans use the
+  same shape.
 
-## Script behaviour (security and consistency)
-- Fixed target: the repo is baked in at launch (`SANDBOX_REPO`), never an
-  argument. Refuse anything else.
-- Labels: always `sandbox` and `session:<id>`; others only from an allowlist.
-- Titles: length-bounded, single line, no `@mentions` of real users, no
-  `Fixes #` that would auto-close issues unless explicitly allowed.
-- Body: size cap; secret scan (token patterns such as `ghp_`, `github_pat_`,
-  `sk-ant-`, private key headers, the session's own token) with refusal;
-  escape/strip `@user` and `@org/team` so a session can't ping people.
-- `sandbox-pr`: head must be a branch under `sbx/<session>/` that is pushed;
-  base must be the default branch or another of the session's own branches
-  (matches `sandbox_land`'s stacking rule); idempotent: if a PR for the head
-  exists, update rather than duplicate; never touches workflow files itself
-  (the hold on privileged files from `sandbox_land` applies: share that
-  predicate, don't duplicate it).
-- Output: print the URL only. Exit codes distinguish validation vs API errors.
-- Transport: one function `call(method, path, body)`; token variant (plan 3)
-  reads the 0600 token file on every call (it may have been refreshed); broker
-  variant swaps just this function.
+## Agent-facing tools (installed by the launcher, root-owned, stdlib-only)
+- Under plan 3 **A** there is nothing to call: the session writes
+  `Follow-up:` lines / `Issue:` trailers in commits. A tiny helper
+  `sandbox-intent --lint` runs the validators locally so the session sees a
+  rejection *before* it exits, when it can still fix the commit message.
+- Under plan 3 **C** add `sandbox-issue` and `sandbox-pr`: validate locally
+  (fast feedback), then send to the broker; `--dry-run` prints exactly what
+  would be created. The repo is fixed by the launcher, never an argument.
+- Both are installed with the launcher's other in-container files (written with
+  `put_file`, no shell building), and named in the sandbox CLAUDE.md as the only
+  supported way. Honest limit, repeated there: the session has `sudo`, so the
+  helper gives consistency and early feedback; enforcement is the host-side
+  validators (A/C) plus plan 5's CI check.
 
-## Launcher changes
-- Reuse the validators on the **host** too: `sandbox_land` (the exit-time PR
-  opener) should render PR bodies through the same template code so
-  launcher-opened and session-opened PRs are identical. Put the shared logic in
-  one stdlib-only module (`sandbox_forms.py`) imported by both the launcher and
-  copied alongside the scripts. Single source of truth for labels and format.
-- Add a template section telling the session: file issues/PRs only with these
-  scripts, what the labels mean, and that the exit-time PR opener will skip a
-  branch that already has a PR from `sandbox-pr`.
-- Copy scripts and templates in `Sandbox` after `provision_key`; they are data
-  for `$` template substitution only via `string.Template`, no shell building.
-
-## Honest limits
-The agent has sudo in its own container, so it can edit or bypass the scripts
-and call the API with the token directly. The scripts give consistency and
-catch mistakes, **not** security against a malicious session. Real enforcement
-is the repo-side CI check (3 above) or the broker variant in plan 3.
+## Labels
+`sandbox` (all), `session:<id>`, plus allowlisted kinds (`follow-up`,
+`needs-human`, `blocked`). The launcher creates missing labels on first use
+(needs `issues: write` via the user's login: test it on a fresh repo). Label
+names/colours live in one table in `sandbox_forms.py`.
 
 ## Tests
-- Pure: template rendering, section validation, label allowlist, mention
-  stripping, secret scan (each pattern, near-misses), title/body bounds, branch
-  prefix rules, idempotency decision.
-- Script CLI via subprocess with a fake transport; `--dry-run` prints exactly
-  what would be sent.
-- Same fixtures reused to assert `sandbox_land` output matches the scripts'.
-- Needs a real run to verify: label creation on a repo without the labels
-  (create-if-missing needs `issues: write`; test it) and CI template check.
+- Template rendering and section validation (missing, empty, extra sections).
+- Label allowlist, mention stripping, secret patterns and near-misses, bounds,
+  closing-keyword handling, PR head/base rules, fingerprint stability.
+- Golden test: the PR body from `sandbox_land` and from the in-container
+  helper are byte-identical for the same input.
+- Needs a real run: label auto-creation, template files landing in a repo.
