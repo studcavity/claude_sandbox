@@ -4,7 +4,7 @@ Source layout. Usage is in the repository's top-level `README.md`; the
 decisions behind this layout are in `docs/specs/09-package-layout.md`.
 
 Outside the package: `run.sh` (shim that execs `claude_sandbox/__main__.py`),
-`scripts/` (`sandbox_check.py`, `smoke.sh`, `final-check.sh`), `config/rulesets/`
+`scripts/` (`sandbox_check.py`, `smoke.sh`, `final-check.sh`), `rulesets/`
 (GitHub rulesets), `tests/`, `docs/`, `todo/` (follow-up requests, filed as
 issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 
@@ -26,7 +26,7 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 | --- | --- |
 | `__main__.py` | entry point (`run.sh` execs it; `python -m claude_sandbox` too): puts the repo root on `sys.path`, runs the venv bootstrap, calls `cli.main()` |
 | `cli.py` | CLI arguments and defaults, the `Sandbox` lifecycle, pure rendering helpers (to be split, spec 09 PR 2) |
-| `paths.py` | where the checkout's directories are (root, `data/`, `config/rulesets/`) |
+| `paths.py` | where the checkout's directories are (root, `data/`, `rulesets/`) |
 | `bootstrap.py` | stdlib-only: create `venv/`, install requirements, re-exec |
 | `update.py` | offer to `git pull` when this checkout is behind |
 | `sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
@@ -45,7 +45,7 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 | `container/pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `github/gh.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
 | `github/client.py` | typed GitHub operations through PyGithub (PR info, status, comments); auth is still your `gh` login |
-| `github/protect.py` | offer and apply the default-branch rulesets (`config/rulesets/`) |
+| `github/protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
 | `github/hardening.py` | checks (and, after a yes, tightens) the repo's Actions settings so session code's CI runs stay untrusted |
 | `github/land.py` | open PRs for a session's branches (labelled, with the commits' `Not verified` lines), hold privileged ones |
 | `github/issues.py` | files an issue for each `todo/` file a commit adds to the default branch (`python -m claude_sandbox.github.issues`; run by `file-issues.yml`) |

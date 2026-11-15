@@ -78,7 +78,7 @@ network, point the launcher at a git repository on this machine:
 The launcher is the `claude_sandbox/` package; `run.sh` execs
 `claude_sandbox/__main__.py`. Every module, with its role, is listed in
 [`claude_sandbox/README.md`](claude_sandbox/README.md). Outside it: `scripts/`
-(`sandbox_check.py`, `smoke.sh`, `final-check.sh`), `config/rulesets/`,
+(`sandbox_check.py`, `smoke.sh`, `final-check.sh`), `rulesets/`,
 `tests/`, `docs/`, `todo/`.
 
 ## tests
@@ -169,7 +169,7 @@ permission. The enforcement is GitHub-side. Apply the ruleset once per repo
 (needs admin; review it first; it also blocks *you* pushing straight to `main`,
 because it has no bypass actors):
 ```
-gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/protect-main.json
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/protect-main.json
 ```
 It requires PRs for the default branch and blocks force-push and deletion.
 
@@ -195,7 +195,7 @@ rule types `deletion`, `non_fast_forward`,
 files are skipped with a warning.
 
 This repo ships two more rulesets, applied the same way (launch against the
-repo and answer yes, or `gh api -X POST ... --input config/rulesets/<file>`):
+repo and answer yes, or `gh api -X POST ... --input rulesets/<file>`):
 - `require-commit-metadata.json` requires the `commit-metadata` check (see
   `.github/workflows/commit-metadata.yml`), pinned to GitHub Actions
   (`integration_id` 15368) so no other app or token can satisfy it with a
@@ -286,7 +286,7 @@ launcher can prove which commits a session made:
   a merge commit. It posts the result as the commit status `sandbox/provenance`
   on the head commit (`--no-provenance` skips this).
 - A status belongs to one commit: anything pushed later leaves the new head
-  without one. With `config/rulesets/require-sandbox-provenance.json` applied, the
+  without one. With `rulesets/require-sandbox-provenance.json` applied, the
   merge stays blocked until you re-check:
   `./venv/bin/python provenance.py OWNER/REPO --pr N`
   (fixes: drop or re-sign foreign commits; or `git rebase --exec 'git commit
@@ -346,11 +346,11 @@ record the result. It has not been done (see `todo/`).
 A deploy key can create any branch and push tags. A pushed tag runs
 tag-triggered (release) workflows on code the session wrote, with whatever
 publishing secrets they use; a pushed branch runs any unfiltered `on: push`
-workflow. Two rulesets in `config/rulesets/optional/` stop that for everyone but repo
+workflow. Two rulesets in `rulesets/optional/` stop that for everyone but repo
 admins (deploy keys are never admins):
 ```
-gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/optional/sandbox-branches-only.json
-gh api -X POST repos/OWNER/REPO/rulesets --input config/rulesets/optional/no-tag-pushes.json
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/sandbox-branches-only.json
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/no-tag-pushes.json
 ```
 - `sandbox-branches-only`: outside `refs/heads/sbx/**`, non-admins can't
   create, update or delete branches. That includes non-admin collaborators

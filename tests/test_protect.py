@@ -12,7 +12,7 @@ from claude_sandbox.github.gh import GitHubError
 
 @pytest.fixture
 def base(repo_root):
-    return sp.load_ruleset(os.path.join(repo_root, "config", "rulesets",
+    return sp.load_ruleset(os.path.join(repo_root, "rulesets",
                                         "protect-main.json"))
 
 
@@ -463,7 +463,7 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
         for key, job in yaml.safe_load(open(wf))["jobs"].items():
             jobs.add(job.get("name", key))
     required = set()
-    for path in glob.glob(os.path.join(repo_root, "config", "rulesets", "*.json")):
+    for path in glob.glob(os.path.join(repo_root, "rulesets", "*.json")):
         rs = sp.validate_repo_ruleset(sp.load_ruleset(path))
         required.update(sp.required_checks(rs))
     from claude_sandbox import provenance as sandbox_provenance
@@ -476,7 +476,7 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
 
 # --- rulesets/optional: opt-in, applied by hand ---------------------------- #
 OPTIONAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
-    __file__))), "config", "rulesets", "optional")
+    __file__))), "rulesets", "optional")
 ADMIN_BYPASS = [{"actor_id": 5, "actor_type": "RepositoryRole",
                  "bypass_mode": "always"}]
 
@@ -527,7 +527,7 @@ def test_required_actions_checks_are_pinned_to_github_actions():
 
 
 def test_linear_history_is_not_something_the_launcher_initialises(repo_root):
-    base = sp.load_ruleset(os.path.join(repo_root, "config", "rulesets",
+    base = sp.load_ruleset(os.path.join(repo_root, "rulesets",
                                         "protect-main.json"))
     assert "required_linear_history" not in {r["type"] for r in base["rules"]}
     assert "linear" not in " ".join(sp.describe(base, "main"))

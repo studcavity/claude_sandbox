@@ -9,5 +9,5 @@ PACKAGE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(PACKAGE)
 MAIN_SCRIPT = os.path.join(PACKAGE, "__main__.py")
 DATA = os.path.join(PACKAGE, "data")  # session CLAUDE.md, deps reference, templates/
-RULESETS = os.path.join(ROOT, "config", "rulesets")
+RULESETS = os.path.join(ROOT, "rulesets")
 SCRIPTS = os.path.join(ROOT, "scripts")

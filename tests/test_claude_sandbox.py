@@ -936,7 +936,7 @@ def test_deps_reference_is_written_and_the_prompt_points_at_it(
 
 def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
     import json
-    rs = json.load(open(os.path.join(repo_root, "config", "rulesets",
+    rs = json.load(open(os.path.join(repo_root, "rulesets",
                                      "protect-main.json")))
     types = {r["type"] for r in rs["rules"]}
     assert {"pull_request", "non_fast_forward", "deletion"} <= types
