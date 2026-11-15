@@ -39,6 +39,31 @@ concurrency (plan 1b), and a clean way to file issues from plan 5's workflow.
 - Thread safety: confirm the chosen client's session is safe for the thread
   pool in plan 1b, otherwise one client per worker.
 
+## Status 2026-11-15: spike done, design changed
+A spike against a real local HTTPS server (kept as `tests/integration/
+test_ghclient.py` on branch impl-check) found that **a dict facade over
+PyGithub's requester is unsafe**: it injects a `url` key into every dict,
+wraps raw file text in `{"data": ...}`, parses a raw JSON file into a dict
+(bytes lost) and corrupts binary. The launcher needs exact bytes for the deps
+and host files, rulesets and briefs. Also: PyGithub 2.10 ships `py.typed` (the
+earlier "unverified" is settled), sleeps 1 s between writes and 0.25 s between
+requests by default (turned off), and its default retry would retry writes.
+So the plan became: a **typed adapter** (`sandbox_ghclient.py`) over PyGithub's
+object model with frozen dataclasses, `gh_api` kept for raw reads, callers moved
+one at a time. Built and adopted: `sandbox_check` status/override (PR info,
+login, status, comment, labels).
+
+Migration table (do one per commit; each needs its fake changed to the typed
+shape, and a raw-bytes read stays on `gh_api`):
+
+| caller | calls | move to |
+|---|---|---|
+| `sandbox_land` | compare, list PRs, create PR, label | `GhClient.compare`, `.open_prs`, `.create_pr` (add) |
+| `sandbox_actions` | issues list/create, commit comments, contents (raw) | `.issues`, `.create_issue`, `.commit_comments`; contents stays raw |
+| `sandbox_sessions` | deploy keys, rules, protection | `.deploy_keys`, `.rules` |
+| `sandbox_protect` | rulesets, check-runs | `.rulesets` (PyGithub has no rulesets API: stays on `gh_api`) |
+| `claude_sandbox` | login, scopes, deps/host files (raw) | login/scopes only; files stay raw |
+
 ## Keep the `api(method, path, body)` seam
 `sandbox_actions`, `sandbox_land`, `sandbox_sessions` and their tests inject a
 plain `api` callable and fake it. Whatever the client, keep that callable as the

@@ -1,24 +1,37 @@
 # Implementation plans
 
-Written down, **not yet implemented**. Each file is self-contained so a fresh
-session can pick one up. Status is tracked here; update it in the commit that
-changes it.
+Most of this is now **built** (branch `sbx/relaxed-fermat/impl-check`, status
+below). Each file is self-contained so a fresh session can pick up what remains.
+Status is tracked here; update it in the commit that changes it. "Built" means
+implemented and unit/integration-tested here; almost nothing has run against a
+real incus or a real GitHub with this code, and each row says what is unproven.
 
-| # | Plan | Status | Depends on |
-|---|------|--------|-----------|
-| 1 | [Startup performance and `--timings`](01-startup-performance.md) | planned | none (do `--timings` first: it measures everything else) |
-| 2 | [Typed GitHub client](02-typed-github-client.md) | planned (PyGithub) | none; keep the `api(method, path, body)` seam |
-| 3 | [Session actions: delta after PR #4](03-session-actions-delta.md) | mostly built; 3a-3g remain | none |
-| 4 | [Issue/PR content contract: delta](04-issue-pr-contract-delta.md) | planned | 3a (shared sanitizer) |
-| 5 | [`sandbox_check.py`: merge gate + post-merge filer](05-sandbox-check-delta.md) | planned | 3b secret scan, 5a stdlib-only |
+| # | Plan | Status | Not yet proven / not done |
+|---|------|--------|---------------------------|
+| 1a | `--timings` | **built** | no real-host numbers yet: run `--timings-json` |
+| 1b | concurrent GitHub reads | **built** (`--no-prefetch` to disable) | saving unmeasured (~4 round trips expected) |
+| 1c | stale-while-revalidate images | **built** (`--hard-max-age`, `--refresh-images`) | detached refresher never run on real incus: `./smoke.sh` |
+| 1d | fewer container execs | **built** (~13 fewer) | per-exec cost unmeasured; needs `./smoke.sh` |
+| 1e | storage-driver note | **built**, plus a real bug fix: the pool check never worked on real incus | other drivers' output shape assumed |
+| 2 | typed client (PyGithub) | **partly built**: `sandbox_ghclient.py`, used by the `sandbox/check` path; spike showed a dict facade over PyGithub is unsafe | remaining callers still on `gh_api` (see 02) |
+| 3a-3f | sanitizer, secret scan, labels, issue-as-ledger, briefs, caps | **built** | real GitHub |
+| 3g | typed-client seam | **partly**: see plan 2 | |
+| 4a-4d | PR record, PR labels, templates, `sandbox-check` in the sandbox | **built** | real container install; offering `.github` templates to repos: not done |
+| 5a-5d | stdlib checker, rules + allowlist, `--post-status`/`--override`, launcher posts it at exit | **built** | posting to a real PR with this code; ruleset not applied anywhere yet |
+| 5e | `--file-issues` | **built** | the optional rendered `main` workflow: not done |
 
-Already built (not plans): first-run dialogs pre-answered
-(`sandbox_claude_config.py`), `--low-credits` and the credits section of the
-sandbox CLAUDE.md (branch `sbx/relaxed-fermat/credit-awareness`, not yet
-merged), and from PR #4 (`1979267`): `Sandbox-Action` / `Sandbox-Session`
-trailers, `sandbox_actions.py` (issues filed at exit), `sandbox_check.py` plus
-the `commit-metadata` CI job, and repo-defined rulesets from `rulesets/*.json`.
-Probe for commit-status gating: `scripts/probe_commit_status.sh`.
+First-run dialogs (`sandbox_claude_config.py`) are on `sbx/relaxed-fermat/work`;
+`--low-credits` and the credits section on `sbx/relaxed-fermat/credit-awareness`.
+From PR #4 (`1979267`): `Sandbox-Action` / `Sandbox-Session` trailers,
+`sandbox_actions.py`, `sandbox_check.py` plus the `commit-metadata` CI job, and
+repo-defined rulesets from `rulesets/*.json`. Probe for commit-status gating:
+`scripts/probe_commit_status.sh` (run on a host 2026-11-15: all 19 checks passed).
+
+Plan files: [1 performance](01-startup-performance.md) |
+[2 typed client](02-typed-github-client.md) |
+[3 session actions](03-session-actions-delta.md) |
+[4 content contract](04-issue-pr-contract-delta.md) |
+[5 sandbox_check](05-sandbox-check-delta.md)
 
 ## Decisions (settled by the user)
 - Client library: **PyGithub**, the most used (plan 2).
@@ -31,8 +44,11 @@ Probe for commit-status gating: `scripts/probe_commit_status.sh`.
 - Status gating is **opt-in per repo** through a ruleset; never in the generic
   `protect-main.json`.
 
-Open: nothing needed from the user to start 3a/3b, 5a/5b or `--timings`.
-Run `scripts/probe_commit_status.sh --yes` on a host before building 5c.
+Next, in order: run `./smoke.sh` and `--timings-json` on a real host; try
+`--post-status` / `--override` on a real PR; then apply
+`rulesets/require-sandbox-check.json` to a repo (it is safe now that the
+launcher posts the status; the root README's "don't apply yet" warning can go);
+then move the remaining `gh_api` callers onto the typed client.
 
 ## Break glass: commit-status gating (`sandbox/check`)
 Applies once a repo has opted in (the `require-sandbox-check` ruleset is
