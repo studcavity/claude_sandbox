@@ -518,6 +518,9 @@ warning in the log (what was pushed still becomes a PR). Ctrl-C during the
 check skips it and tears down. `--no-final-check`, `--no-deps` and `--shell`
 skip it.
 
+This repo's `final-check.sh` also runs `tests/integration` when the sandbox
+was launched with `--nesting` (and says so when it skips them).
+
 Point `check:` at one script that runs the repo's whole lint and test suite
 and exits non-zero on any failure. Only the script's *path* comes from the
 default branch; its contents come from the session's checkout, so this catches

@@ -12,3 +12,12 @@ python -m pyflakes ./*.py tests/
 python -m mypy ./*.py
 shellcheck run.sh smoke.sh final-check.sh .githooks/*
 python -m pytest -q -p no:cacheprovider
+# Real-container tests (what smoke.sh runs, minus its live-GitHub group, which
+# needs a logged-in gh). They need a working incus, i.e. a sandbox launched
+# with --nesting; without one they are skipped, never failed.
+if command -v incus >/dev/null && incus info >/dev/null 2>&1; then
+  CS_INTEGRATION=1 python -m pytest -q -p no:cacheprovider -m incus tests/integration
+else
+  echo "[final-check] no usable incus (launch with --nesting to include the" \
+    "real-container tests); skipping them" >&2
+fi
