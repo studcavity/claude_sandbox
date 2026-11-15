@@ -304,6 +304,11 @@ You can't change repo settings. What a ruleset does and doesn't give you:
   origin && git rebase origin/HEAD`) so its PR is a clean fast-forward.
 - If a push is rejected because the remote moved, rebase onto it
   (`git pull --rebase`), re-run the relevant checks, and push again.
+- **When wrapping up a task, check for conflicts with `origin/main`:** `git
+  fetch origin && git rebase origin/HEAD` (or `git merge-tree --write-tree
+  origin/HEAD HEAD` to look first). Resolve any conflicts now, re-run the
+  checks and push: nobody can fix them once the container is gone and the PR
+  exists. Do this for every branch you push, including stacked ones.
 - After rebasing a branch you already pushed, update it with `git push
   --force-with-lease`. That is allowed **only on your own `$prefix` branches**.
   Never force-push anything else, and don't rewrite commits that came from
