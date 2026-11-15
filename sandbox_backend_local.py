@@ -79,7 +79,9 @@ def parse_heads(text, session):
     [text]). Anything that isn't a well-formed line for one of this session's
     branches is rejected (and never fetched); so is everything past
     MAX_BUNDLE_REFS."""
-    accepted, rejected, seen = [], [], set()
+    accepted: list = []
+    rejected: list = []
+    seen: set = set()
     for line in (text or "").splitlines():
         if not line.strip():
             continue
