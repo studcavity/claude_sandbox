@@ -12,7 +12,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck disable=SC1091
 . .venv/bin/activate
 pip install -q -r requirements-dev.txt
-CS_INTEGRATION=1 python -m pytest -m incus -p no:cacheprovider tests/integration
+# CS_GH_LIVE=1 adds read-only calls to real GitHub through your logged-in gh.
+CS_INTEGRATION=1 CS_GH_LIVE=1 python -m pytest -m "incus or gh" -p no:cacheprovider tests/integration
 if [ -n "${1:-}" ]; then
   echo "[smoke] real launch against $1 (with --rebuild)"
   ./run.sh "$1" --rebuild --shell <<<'exit'

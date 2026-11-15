@@ -94,7 +94,7 @@ def token_scopes():
     r = _gh(args)
     if r.failed:
         _fail(args, r)
-    for line in r.stdout.split("\n\n", 1)[0].splitlines():
+    for line in re.split(r"\r?\n\r?\n", r.stdout, maxsplit=1)[0].splitlines():
         name, _, value = line.partition(":")
         if name.strip().lower() == "x-oauth-scopes":
             return {s.strip() for s in value.split(",") if s.strip()}

@@ -74,8 +74,11 @@ jobs:
       - name: Run integration tests (must not be skipped)
         env:
           CS_INTEGRATION: "1"
+          # Real read-only GitHub calls through the runner's preinstalled gh.
+          CS_GH_LIVE: "1"
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python -m pytest -m incus tests/integration -rs | tee pytest.out
+          python -m pytest -m "incus or gh" tests/integration -rs | tee pytest.out
           if grep -q SKIPPED pytest.out; then
             echo "integration tests were skipped" >&2
             exit 1

@@ -58,7 +58,7 @@ The test suite uses **pytest** and lives in `tests/`, one file per module
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest               # all tests
+python -m pytest               # all tests (hermetic gh contract tests need gh + openssl)
 python -m pyflakes *.py tests/ # lint
 shellcheck run.sh smoke.sh .githooks/*   # shell lint (shellcheck is in claude_sandbox_deps.yaml)
 ```
@@ -86,6 +86,14 @@ present. `./smoke.sh [owner/repo]` runs them (plus a real launch with a repo).
 Launch a sandbox with `--nesting` (this repo's deps install `incus`) and the
 integration tests can run inside it; without `--nesting` they skip or fail at
 container start.
+`tests/integration/test_gh.py` (marker `gh`) drives the **real `gh` binary**
+through `sandbox_github`. Its main group is hermetic: gh is pointed at a
+throwaway local HTTPS server (`GH_HOST` plus a self-signed cert via
+`SSL_CERT_FILE`), so it needs no login or network and catches changes in gh's
+flags or output text. It runs in the normal suite wherever `gh` and `openssl`
+exist (this repo's deps install `gh`, never logged in; CI runners have it) and
+skips otherwise. A second group makes read-only calls to real GitHub and is
+opt-in with `CS_GH_LIVE=1` (set by `./smoke.sh` and by CI with `GH_TOKEN`).
 Enable the pre-push warning with `git config core.hooksPath .githooks`.
 The launcher also runs `Container.self_check()` right after boot, so a broken
 exec/stdin path fails immediately with a clear error.

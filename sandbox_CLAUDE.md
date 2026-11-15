@@ -8,7 +8,8 @@ lost permanently**, and the sandbox can also disappear without warning
 
 ## Access
 $access
-- There is no `gh` CLI and no GitHub API token here. You can't open PRs,
+- There is no GitHub API token here (if `gh` is installed it is not logged
+  in, so it can't call GitHub). You can't open PRs,
   issues or releases; tell the user what to run on their host instead.
 - User `$user` (uid $uid), home `$home`. $sudo
 - Outbound internet works. The host's files, credentials and services are
@@ -192,7 +193,7 @@ are what validate your change; the watcher is only for the whole picture
 (full suite, other Python versions, integration jobs, anything you didn't run).
 - Start it right after the push, with the Bash tool's `run_in_background`, so
   you are notified when it exits. Poll the public API with `curl` and
-  `jq`; there is no `gh` CLI or token here. Find the repo with
+  `jq`; there is no GitHub token here (`gh`, if present, is not logged in). Find the repo with
   `git remote get-url origin` and the commit with `git rev-parse HEAD`:
   `https://api.github.com/repos/OWNER/REPO/actions/runs?head_sha=SHA`.
   Runs can take a few seconds to appear, so retry for a minute before giving

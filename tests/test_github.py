@@ -134,6 +134,12 @@ def test_token_scopes(gh, headers, expect):
     assert g.token_scopes() == expect
 
 
+def test_token_scopes_tolerates_crlf_header_blocks(gh):
+    _, replies = gh
+    replies.append(Result("HTTP/2.0 200 OK\r\nX-Oauth-Scopes: repo\r\n\r\n{}"))
+    assert g.token_scopes() == {"repo"}
+
+
 def test_workflow_push_warning():
     assert g.workflow_push_warning({"repo", "workflow"}) is None
     missing = g.workflow_push_warning({"repo"})
