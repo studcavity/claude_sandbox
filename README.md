@@ -26,6 +26,17 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 `<github_user>/<repository>`. Any extra flags go to `claude_sandbox.py`
 (see `python3 claude_sandbox.py --help`).
 
+## code layout
+| file | role |
+| --- | --- |
+| `claude_sandbox.py` | CLI entry point, `Sandbox` lifecycle, pure rendering helpers |
+| `sandbox_images.py` | cached base/deps images, applying deps into a container |
+| `sandbox_containers.py` | `Container`: thin wrapper over `lxc`/`incus` |
+| `sandbox_github.py` | GitHub REST client, token lookup, repo-name validation |
+| `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
+| `sandbox_util.py` | logging, subprocess and signal helpers |
+| `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
+
 ## model
 Sessions use Sonnet 5.5 (`claude-sonnet-5-5`) by default. Choose another with
 `--model` (an alias such as `opus`, `sonnet`, `haiku`, or a full model ID):

@@ -41,27 +41,21 @@ Examples:
   ./claude_sandbox.py --cli incus --image images:ubuntu/24.04 --repo me/proj
 """
 import argparse
-import datetime
-import fcntl
 import functools
 import getpass
-import hashlib
-import json
 import os
 import shlex
-import signal
 import string
 import subprocess
+import signal
 import sys
-import time
-import urllib.error
-import urllib.request
 import uuid
 
 import sandbox_deps
-
-API = "https://api.github.com"
-USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
+from sandbox_containers import HOME, UID, USER, Container
+from sandbox_github import GitHubError, gh_api, github_token, validate_repo
+from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
+from sandbox_util import log, sigint_to_child
 
 # `incus/lxc exec` starts with a clean environment: only TERM is carried over
 # from the client. Without the rest, Claude Code can't identify the outer
@@ -83,44 +77,8 @@ SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
                  "make", "gdb", "strace", "lsof", "htop", "dig", "nc", "tmux",
                  "curl", "wget")
 
-# Cached base image. The alias embeds a hash of the source image and the build
-# steps below, so editing either one triggers a rebuild automatically.
-IMAGE_PREFIX = "claude-sandbox-"
-# Per-repo images with the deps baked in. The prefix must not start with
-# IMAGE_PREFIX: base-image cleanup deletes every other image under its prefix.
-DEPS_IMAGE_PREFIX = "claude-sandboxdeps-"
-MAX_DEPS_IMAGES = 8  # keep the newest N; older ones are deleted
-BASE_APT_CLEAN = "apt-get clean && rm -rf /var/lib/apt/lists/*"
-LOCK_DIR = os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-    "claude_sandbox")
-BASE_PACKAGES = (
-    # session essentials
-    "git", "curl", "openssh-client", "tmux", "ca-certificates",
-    # python
-    "python3-pip", "python3-venv", "python3-dev",
-    # building native deps
-    "build-essential", "pkg-config",
-    # search / inspection tools Claude Code reaches for
-    "ripgrep", "fd-find", "jq", "tree", "file", "less", "wget",
-    "unzip", "zip", "xz-utils",
-    # process / system debugging
-    "procps", "psmisc", "lsof", "strace", "gdb", "htop",
-    "iproute2", "dnsutils", "netcat-openbsd",
-)
-BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
-                   "apt-get update -qq && "
-                   "apt-get install -y -qq --no-install-recommends "
-                   + " ".join(BASE_PACKAGES) + " && "
-                   # Debian/Ubuntu ship fd as fdfind
-                   "ln -sf /usr/bin/fdfind /usr/local/bin/fd && "
-                   + BASE_APT_CLEAN)
 DEFAULT_MODEL = "claude-sonnet-5-5"
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
-# Reset per-instance identity so every container launched from the image
-# gets its own.
-BASE_CLEANUP = ("(command -v cloud-init >/dev/null && cloud-init clean --logs);"
-                " truncate -s 0 /etc/machine-id; true")
 
 TMUX_CONF = """\
 set -g mouse on
@@ -132,281 +90,8 @@ set -g status off
 
 
 # --------------------------------------------------------------------------- #
-# helpers
+# pure helpers (no I/O; unit-tested)
 # --------------------------------------------------------------------------- #
-def log(msg):
-    print(f"\033[1;36m[sandbox]\033[0m {msg}", file=sys.stderr)
-
-
-def run(cmd, check=True, capture=False, input=None):
-    return subprocess.run(cmd, check=check, text=True,
-                          capture_output=capture, input=input)
-
-
-def github_token():
-    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if tok:
-        return tok
-    try:
-        return run(["gh", "auth", "token"], capture=True).stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        sys.exit("No GitHub token: set GITHUB_TOKEN or run `gh auth login`.")
-
-
-class GitHubError(RuntimeError):
-    def __init__(self, msg, code):
-        super().__init__(msg)
-        self.code = code
-
-
-def gh_api(method, path, token, body=None, raw=False):
-    """Call the GitHub API; raw=True returns the response body as bytes."""
-    req = urllib.request.Request(
-        API + path,
-        method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": ("application/vnd.github.raw+json" if raw
-                       else "application/vnd.github+json"),
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-            if raw:
-                return data
-            return json.loads(data) if data else None
-    except urllib.error.HTTPError as e:
-        raise GitHubError(f"GitHub {method} {path} -> {e.code}: "
-                          f"{e.read().decode(errors='replace')}", e.code) from None
-
-
-# --------------------------------------------------------------------------- #
-# containers
-# --------------------------------------------------------------------------- #
-class Container:
-    """Thin wrapper for running commands in one named container."""
-
-    def __init__(self, cli, name):
-        self.cli, self.name = cli, name
-
-    def launch(self, image, ephemeral):
-        run([self.cli, "launch", image, self.name]
-            + (["--ephemeral"] if ephemeral else []))
-
-    def delete(self):
-        run([self.cli, "delete", "--force", self.name], check=False, capture=True)
-
-    def root(self, script, **kw):
-        return run([self.cli, "exec", self.name, "--", "bash", "-c", script], **kw)
-
-    def root_argv(self, argv, env=None, cwd=None, input=None, capture=True):
-        """Run argv as root with no shell involved (safe for untrusted strings).
-
-        env goes on the command line, so never put secrets in it.
-        """
-        cmd = [self.cli, "exec", self.name]
-        for k, v in (env or {}).items():
-            cmd += ["--env", f"{k}={v}"]
-        if cwd:
-            cmd += ["--cwd", cwd]
-        return subprocess.run(cmd + ["--", *argv], check=True, input=input,
-                              capture_output=capture)
-
-    def put_file(self, path, data, mode="0644"):
-        """Write bytes to path in the container (as root) via stdin."""
-        self.root_argv(["install", "-m", mode, "/dev/stdin", path], input=data)
-
-    def user_cmd(self, *argv, env=None):
-        cmd = [self.cli, "exec", self.name,
-               "--user", UID, "--group", UID, "--cwd", HOME,
-               "--env", f"HOME={HOME}", "--env", f"USER={USER}"]
-        for k, v in (env or {}).items():
-            cmd += ["--env", f"{k}={v}"]
-        return cmd + ["--", *argv]
-
-    def user(self, script, env=None, **kw):
-        return run(self.user_cmd("bash", "-lc", script, env=env), **kw)
-
-    def wait_network(self):
-        log("waiting for network")
-        self.root("command -v cloud-init >/dev/null && "
-                  "cloud-init status --wait >/dev/null 2>&1 || true",
-                  check=False)
-        for _ in range(60):
-            if self.root("getent hosts github.com >/dev/null",
-                         check=False).returncode == 0:
-                return
-            time.sleep(1)
-        raise RuntimeError("container never got network access")
-
-
-# --------------------------------------------------------------------------- #
-# cached base image
-# --------------------------------------------------------------------------- #
-def base_alias(source):
-    h = hashlib.sha256("\0".join(
-        (source, BASE_ROOT_SETUP, CLAUDE_INSTALL, BASE_CLEANUP)).encode())
-    return IMAGE_PREFIX + h.hexdigest()[:12]
-
-
-def cached_images(cli, prefix=IMAGE_PREFIX):
-    """{alias: created_at (aware datetime)} for our local images."""
-    out = run([cli, "image", "list", "local:", "--format", "json"],
-              capture=True).stdout
-    found = {}
-    for img in json.loads(out or "[]"):
-        # e.g. 2026-11-14T23:15:00.123456789Z; drop the fraction to stay
-        # portable across Python versions.
-        created = datetime.datetime.strptime(
-            img["created_at"][:19], "%Y-%m-%dT%H:%M:%S"
-        ).replace(tzinfo=datetime.timezone.utc)
-        for a in img.get("aliases") or []:
-            if a["name"].startswith(prefix):
-                found[a["name"]] = created
-    return found
-
-
-def ensure_base_image(cli, source, max_age_days, rebuild):
-    alias = base_alias(source)
-    images = cached_images(cli)
-
-    created = images.get(alias)
-    if created and not rebuild:
-        age = datetime.datetime.now(datetime.timezone.utc) - created
-        if age < datetime.timedelta(days=max_age_days):
-            log(f"using cached image {alias} "
-                f"(built {age.days}d {age.seconds // 3600}h ago)")
-            return alias
-        log(f"cached image {alias} is older than {max_age_days}d, rebuilding")
-
-    log(f"building base image {alias} from {source} (one-time)")
-    build = Container(cli, f"{IMAGE_PREFIX}build-{uuid.uuid4().hex[:8]}")
-    try:
-        build.launch(source, ephemeral=False)
-        build.wait_network()
-        log("installing packages")
-        build.root(BASE_ROOT_SETUP, capture=True)
-        log("installing Claude Code")
-        build.user(CLAUDE_INSTALL, capture=True)
-        build.root(BASE_CLEANUP, check=False, capture=True)
-        run([cli, "stop", build.name], capture=True)
-        if alias in images:
-            # Only affects future launches; running containers are unaffected.
-            run([cli, "image", "delete", alias], check=False, capture=True)
-        log("publishing image")
-        run([cli, "publish", build.name, "--alias", alias], capture=True)
-    finally:
-        build.delete()
-
-    # Drop images from older recipes / other source images.
-    for stale in images:
-        if stale != alias:
-            run([cli, "image", "delete", stale], check=False, capture=True)
-            log(f"removed stale image {stale}")
-    return alias
-
-
-def apply_deps(box, deps):
-    """Install parsed, validated deps into a container (apt, binaries, scripts).
-
-    Everything is downloaded and checksum-verified here on the host; the
-    container only receives bytes. Must run before any credential is in the
-    container (the per-launch container and the image build container both
-    satisfy that).
-    """
-    if deps["apt"]:
-        log("installing apt packages")
-        env = {"DEBIAN_FRONTEND": "noninteractive"}
-        box.root_argv(["apt-get", "update", "-qq"], env=env)
-        box.root_argv(["apt-get", "install", "-y", "-qq",
-                       "--no-install-recommends", *deps["apt"]], env=env)
-
-    for b in deps["binaries"]:
-        log(f"installing binary {b['name']}")
-        data = sandbox_deps.fetch(b["url"], sandbox_deps.MAX_BINARY, b["sha256"])
-        if b["archive_path"]:
-            data = sandbox_deps.extract_member(data, b["archive_path"])
-        box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
-
-    if deps["scripts"]:
-        scratch = "/var/tmp/sandbox-deps"
-        box.root_argv(["install", "-d", "-m", "0700", scratch])
-        try:
-            for s in deps["scripts"]:
-                log(f"running install script {s['name']}"
-                    + ("" if s["sha256"] else " (no sha256 pinned!)"))
-                data = sandbox_deps.fetch(s["url"], sandbox_deps.MAX_SCRIPT,
-                                          s["sha256"])
-                path = f"{scratch}/{s['name']}.sh"
-                box.put_file(path, data, "0700")
-                box.root_argv(["bash", path, *s["args"]], cwd=scratch,
-                              env=s["env"])
-        finally:
-            box.root_argv(["rm", "-rf", scratch], capture=True)
-
-
-def ensure_deps_image(cli, base, deps, max_age_days, rebuild):
-    """Alias of a per-deps image derived from `base`, building it if needed;
-    None when these deps must be installed per launch instead.
-
-    The image holds exactly what apply_deps() installs, built in a throwaway
-    container that has no credentials, from host-verified downloads. It is
-    keyed by the base image and the validated install sections, rebuilt when
-    older than max_age_days (unpinned apt packages go stale) or older than the
-    base image (so a refreshed Claude Code isn't shadowed), or on --rebuild.
-    """
-    key = sandbox_deps.cache_key(deps)
-    if key is None:
-        if any(s["sha256"] is None for s in deps["scripts"]):
-            log("deps image cache off: an install script has no sha256 pin")
-        return None
-    alias = DEPS_IMAGE_PREFIX + hashlib.sha256(
-        (base + "\0" + key).encode()).hexdigest()[:12]
-
-    os.makedirs(LOCK_DIR, mode=0o700, exist_ok=True)
-    with open(os.path.join(LOCK_DIR, alias + ".lock"), "a") as lock:
-        # Serialize concurrent launches so only one builds; the rest wait,
-        # then find the finished image.
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        images = cached_images(cli, DEPS_IMAGE_PREFIX)
-        created = images.get(alias)
-        base_created = cached_images(cli).get(base)
-        if created and not rebuild:
-            age = datetime.datetime.now(datetime.timezone.utc) - created
-            if (age < datetime.timedelta(days=max_age_days)
-                    and (base_created is None or created >= base_created)):
-                log(f"using cached deps image {alias} "
-                    f"(built {age.days}d {age.seconds // 3600}h ago)")
-                return alias
-
-        log(f"building deps image {alias} (one-time per change)")
-        build = Container(cli, f"{DEPS_IMAGE_PREFIX}build-{uuid.uuid4().hex[:8]}")
-        try:
-            build.launch(base, ephemeral=False)
-            build.wait_network()
-            apply_deps(build, deps)
-            build.root(BASE_APT_CLEAN, capture=True)
-            build.root(BASE_CLEANUP, check=False, capture=True)
-            run([cli, "stop", build.name], capture=True)
-            if created:
-                run([cli, "image", "delete", alias], check=False, capture=True)
-            log("publishing deps image")
-            run([cli, "publish", build.name, "--alias", alias], capture=True)
-        finally:
-            build.delete()
-
-        # Bound disk use: keep the newest MAX_DEPS_IMAGES (never this one).
-        images = cached_images(cli, DEPS_IMAGE_PREFIX)
-        old = sorted((a for a in images if a != alias), key=images.get)
-        for stale in old[:max(0, len(images) - MAX_DEPS_IMAGES)]:
-            run([cli, "image", "delete", stale], check=False, capture=True)
-            log(f"removed old deps image {stale}")
-    return alias
-
-
 def read_token_file(path):
     try:
         with open(path) as f:
@@ -424,6 +109,88 @@ def save_token_file(path, token):
     os.replace(tmp, path)
 
 
+
+def claude_secrets(environ, token_file):
+    """Claude credentials to pass into the sandbox, from env or token file."""
+    secrets = {}
+    token = environ.get("CLAUDE_CODE_OAUTH_TOKEN") or read_token_file(token_file)
+    if token:
+        secrets["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    if environ.get("ANTHROPIC_API_KEY"):
+        secrets["ANTHROPIC_API_KEY"] = environ["ANTHROPIC_API_KEY"]
+    return secrets
+
+
+def secrets_script(secrets):
+    """Shell `export` lines for secrets (sourced in the container)."""
+    return "".join(f"export {k}={shlex.quote(v)}\n" for k, v in secrets.items())
+
+
+def session_script(workdir, load_secrets, shell=False, model="default",
+                   tmux=False):
+    """The bash -lc script that starts the interactive session."""
+    prog = "bash -l" if shell else "claude"
+    if not shell and model.lower() != "default":
+        prog += f" --model {shlex.quote(model)}"
+    if tmux:
+        # tmux sets its own TERM/TERM_PROGRAM, giving Claude Code a
+        # well-known terminal; scroll with the mouse or prefix-[ .
+        prog = f"tmux new-session -s claude {shlex.quote(prog)}"
+    return f"{load_secrets}cd {shlex.quote(workdir)} && exec {prog}"
+
+
+def parse_probe(out):
+    """Parse the key=value lines printed by the container probe."""
+    facts = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
+    return {"sudo": facts.get("sudo", "").strip() == "yes",
+            "tools": facts.get("tools", "").split(),
+            "branch": facts.get("branch", "").strip()}
+
+
+def access_lines(workdir, repo, branch, read_only):
+    if not repo:
+        return [f"- Working directory: `{workdir}`. No repo was cloned.",
+                "- An SSH key is registered on the user's GitHub "
+                "**account** for this session, so you can clone and "
+                "push to any repo they can access."]
+    return [
+        f"- Working copy: `{workdir}`, a clone of `github.com/{repo}`"
+        + (f" (branch `{branch}`)" if branch else "") + ".",
+        f"- GitHub access is an SSH **deploy key scoped to `{repo}` "
+        "only**. Other repos can't be cloned or pushed over SSH. "
+        "`https://github.com/` URLs are rewritten to SSH.",
+        "- The deploy key is **read-only**: you cannot push. Tell the "
+        "user early that commits will be lost when the sandbox ends "
+        "unless they export them some other way."
+        if read_only else
+        "- The deploy key has write access, so you can push.",
+    ]
+
+
+def render_claude_md(template, facts, container, workdir, repo, read_only,
+                     deps_note):
+    """Fill the sandbox CLAUDE.md template.
+
+    The template is plain Markdown with string.Template placeholders
+    ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
+    $deps_file); write $$ for a literal dollar sign. `facts` comes from
+    parse_probe().
+    """
+    branch = facts["branch"]
+    return string.Template(template).substitute(
+        container=container,
+        access="\n".join(access_lines(workdir, repo, branch, read_only)),
+        user=USER, uid=UID, home=HOME,
+        sudo=("Passwordless `sudo` works, so installing apt packages is "
+              "fine." if facts["sudo"] else
+              "No passwordless `sudo`, so you can't install system "
+              "packages."),
+        tools=", ".join(f"`{t}`" for t in facts["tools"]) or "(minimal image)",
+        branch=f" (`{branch}`)" if branch else "",
+        deps=deps_note,
+        deps_file=sandbox_deps.DEPS_FILE,
+    )
+
 # --------------------------------------------------------------------------- #
 # sandbox
 # --------------------------------------------------------------------------- #
@@ -433,8 +200,6 @@ class Sandbox:
         self.cli = args.cli
         self.name = args.name or f"claude-{uuid.uuid4().hex[:8]}"
         self.box = Container(self.cli, self.name)
-        self.root, self.user, self.user_cmd = (
-            self.box.root, self.box.user, self.box.user_cmd)
         self.key_id = None
         self.container_up = False
         self._torn_down = False
@@ -456,16 +221,16 @@ class Sandbox:
         self.box.wait_network()
 
         # No-ops when launched from the cached image.
-        self.root("command -v git >/dev/null && command -v curl >/dev/null || "
-                  "(apt-get update -qq && "
-                  "apt-get install -y -qq git curl openssh-client)",
-                  capture=True)
+        self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
+                      "(apt-get update -qq && "
+                      "apt-get install -y -qq git curl openssh-client)",
+                      capture=True)
 
         if self.args.tmux:
-            self.root("command -v tmux >/dev/null || "
-                      "(apt-get update -qq && apt-get install -y -qq tmux)",
-                      capture=True)
-            self.user("cat > ~/.tmux.conf", input=TMUX_CONF)
+            self.box.root("command -v tmux >/dev/null || "
+                          "(apt-get update -qq && apt-get install -y -qq tmux)",
+                          capture=True)
+            self.box.user("cat > ~/.tmux.conf", input=TMUX_CONF)
 
     def load_deps(self):
         """Fetch and validate the repo's claude_sandbox_deps.yaml (host only).
@@ -509,17 +274,17 @@ class Sandbox:
 
     def provision_key(self):
         log("generating SSH key inside the container")
-        self.user(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                  f"ssh-keygen -q -t ed25519 -N '' "
-                  f"-C '{self.name}' -f ~/.ssh/id_ed25519")
-        pubkey = self.user("cat ~/.ssh/id_ed25519.pub",
-                           capture=True).stdout.strip()
+        self.box.user(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+                      f"ssh-keygen -q -t ed25519 -N '' "
+                      f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519")
+        pubkey = self.box.user("cat ~/.ssh/id_ed25519.pub",
+                               capture=True).stdout.strip()
 
         # Pin GitHub host keys from the API (over the host's TLS) instead of
         # trusting ssh-keyscan on first use.
         meta = gh_api("GET", "/meta", self.token)
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
-        self.user("cat >> ~/.ssh/known_hosts", input=known)
+        self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
         title = f"ephemeral {self.name}"
         if self.args.repo:
@@ -533,97 +298,53 @@ class Sandbox:
                           {"title": title, "key": pubkey})
         self.key_id = resp["id"]
 
-        self.user('git config --global url."git@github.com:".insteadOf '
-                  '"https://github.com/"')
+        self.box.user('git config --global url."git@github.com:".insteadOf '
+                      '"https://github.com/"')
         if self.args.git_name:
-            self.user(f"git config --global user.name '{self.args.git_name}'")
+            self.box.user("git config --global user.name "
+                          + shlex.quote(self.args.git_name))
         if self.args.git_email:
-            self.user(f"git config --global user.email '{self.args.git_email}'")
+            self.box.user("git config --global user.email "
+                          + shlex.quote(self.args.git_email))
         # Linear history: rebase on pull, refuse non-fast-forward merges.
-        self.user("git config --global pull.rebase true && "
-                  "git config --global rebase.autoStash true && "
-                  "git config --global merge.ff only && "
-                  "git config --global push.autoSetupRemote true")
+        self.box.user("git config --global pull.rebase true && "
+                      "git config --global rebase.autoStash true && "
+                      "git config --global merge.ff only && "
+                      "git config --global push.autoSetupRemote true")
 
     def install_claude(self):
-        if self.user("command -v claude >/dev/null", check=False).returncode == 0:
+        if self.box.user("command -v claude >/dev/null", check=False).returncode == 0:
             return  # baked into the cached image
         log("installing Claude Code")
-        self.user(CLAUDE_INSTALL, capture=True)
+        self.box.user(CLAUDE_INSTALL, capture=True)
 
     def clone(self):
         if not self.args.repo:
             return HOME
         repo_dir = f"{HOME}/{self.args.repo.split('/')[1]}"
         log(f"cloning {self.args.repo}")
-        self.user(f"git clone git@github.com:{self.args.repo}.git {repo_dir}")
+        self.box.user(f"git clone git@github.com:{self.args.repo}.git "
+                      f"{shlex.quote(repo_dir)}")
         return repo_dir
 
     def write_claude_md(self, workdir):
-        """Render the CLAUDE.md template into ~/.claude/ in the container.
-
-        The template is plain Markdown with string.Template placeholders
-        ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-        $deps_file);
-        write $$ for a literal dollar sign.
-        """
-        probe = self.user(
+        """Render the --claude-md template into ~/.claude/ in the container."""
+        probe = self.box.user(
             "sudo -n true 2>/dev/null && echo sudo=yes || echo sudo=no; "
             "printf 'tools='; for t in " + " ".join(SANDBOX_TOOLS) + "; do "
             "command -v $t >/dev/null && printf '%s ' $t; done; echo; "
-            f"printf 'branch='; git -C '{workdir}' rev-parse --abbrev-ref HEAD "
-            "2>/dev/null || echo",
+            f"printf 'branch='; git -C {shlex.quote(workdir)} "
+            "rev-parse --abbrev-ref HEAD 2>/dev/null || echo",
             capture=True, check=False).stdout
-        facts = dict(l.split("=", 1) for l in probe.splitlines() if "=" in l)
-        tools = facts.get("tools", "").split()
-        branch = facts.get("branch", "").strip()
-        repo = self.args.repo
-
-        if repo:
-            access = [
-                f"- Working copy: `{workdir}`, a clone of `github.com/{repo}`"
-                + (f" (branch `{branch}`)" if branch else "") + ".",
-                f"- GitHub access is an SSH **deploy key scoped to `{repo}` "
-                "only**. Other repos can't be cloned or pushed over SSH. "
-                "`https://github.com/` URLs are rewritten to SSH.",
-                "- The deploy key is **read-only**: you cannot push. Tell the "
-                "user early that commits will be lost when the sandbox ends "
-                "unless they export them some other way."
-                if self.args.read_only else
-                "- The deploy key has write access, so you can push.",
-            ]
-        else:
-            access = [f"- Working directory: `{workdir}`. No repo was cloned.",
-                      "- An SSH key is registered on the user's GitHub "
-                      "**account** for this session, so you can clone and "
-                      "push to any repo they can access."]
-
         with open(self.args.claude_md) as f:
-            template = string.Template(f.read())
-        md = template.substitute(
-            container=self.name,
-            access="\n".join(access),
-            user=USER, uid=UID, home=HOME,
-            sudo=("Passwordless `sudo` works, so installing apt packages is "
-                  "fine." if facts.get("sudo") == "yes" else
-                  "No passwordless `sudo`, so you can't install system "
-                  "packages."),
-            tools=", ".join(f"`{t}`" for t in tools) or "(minimal image)",
-            branch=f" (`{branch}`)" if branch else "",
-            deps=self.deps_note,
-            deps_file=sandbox_deps.DEPS_FILE,
-        )
-        self.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md", input=md)
-
-    def claude_secrets(self):
-        secrets = {}
-        token = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-                 or read_token_file(self.args.token_file))
-        if token:
-            secrets["CLAUDE_CODE_OAUTH_TOKEN"] = token
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            secrets["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
-        return secrets
+            template = f.read()
+        md = render_claude_md(template, parse_probe(probe),
+                              container=self.name, workdir=workdir,
+                              repo=self.args.repo,
+                              read_only=self.args.read_only,
+                              deps_note=self.deps_note)
+        self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
+                      input=md)
 
     def push_secrets(self):
         """Write credentials to a 0600 file in the container via stdin.
@@ -631,54 +352,39 @@ class Sandbox:
         `incus exec --env K=V` would put them on the host's process list.
         Returns a shell prefix that loads and removes the file.
         """
-        secrets = self.claude_secrets()
+        secrets = claude_secrets(os.environ, self.args.token_file)
         if not secrets:
             log("no Claude credential found; run /login in the session "
                 "(or create one with --setup-token)")
             return ""
         log("passing " + " and ".join(secrets) + " into the sandbox")
-        self.user(f"umask 077 && cat > {SECRETS_FILE}", input="".join(
-            f"export {k}={shlex.quote(v)}\n" for k, v in secrets.items()))
+        self.box.user(f"umask 077 && cat > {SECRETS_FILE}",
+                      input=secrets_script(secrets))
         # Already logged in, so skip Claude Code's first-run onboarding.
-        self.user("[ -e ~/.claude.json ] || "
-                  "echo '{\"hasCompletedOnboarding\": true}' > ~/.claude.json")
+        self.box.user("[ -e ~/.claude.json ] || "
+                      "echo '{\"hasCompletedOnboarding\": true}' > ~/.claude.json")
         return f". {SECRETS_FILE} && rm -f {SECRETS_FILE} && "
 
     def session(self, workdir):
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
-        load_secrets = self.push_secrets()
-        prog = "bash -l" if self.args.shell else "claude"
-        if not self.args.shell and self.args.model.lower() != "default":
-            prog += f" --model {shlex.quote(self.args.model)}"
-        if self.args.tmux:
-            # tmux sets its own TERM/TERM_PROGRAM, giving Claude Code a
-            # well-known terminal; scroll with the mouse or prefix-[ .
-            prog = f"tmux new-session -s claude '{prog}'"
-        prog = f"exec {prog}"
-        cmd = self.user_cmd("bash", "-lc",
-                            f"{load_secrets}cd '{workdir}' && {prog}", env=env)
+        script = session_script(workdir, self.push_secrets(),
+                                shell=self.args.shell, model=self.args.model,
+                                tmux=self.args.tmux)
+        cmd = self.box.user_cmd("bash", "-lc", script, env=env)
         cmd[cmd.index("--cwd") + 1] = workdir
 
         log("starting session (exit Claude Code to tear everything down)")
-        # A no-op handler (not SIG_IGN) so Ctrl-C reaches Claude Code without
-        # killing this script; handlers reset to default in the child on exec.
-        prev = signal.signal(signal.SIGINT, lambda *_: None)
-        try:
+        with sigint_to_child():
             subprocess.run(cmd)
-        finally:
-            signal.signal(signal.SIGINT, prev)
 
     def setup_token(self):
         """Run `claude setup-token` interactively, then save the pasted token."""
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
         log("running `claude setup-token`: sign in in your browser, then "
             "copy the token it prints")
-        prev = signal.signal(signal.SIGINT, lambda *_: None)
-        try:
-            subprocess.run(self.user_cmd("bash", "-lc", "claude setup-token",
-                                         env=env))
-        finally:
-            signal.signal(signal.SIGINT, prev)
+        with sigint_to_child():
+            subprocess.run(self.box.user_cmd("bash", "-lc",
+                                             "claude setup-token", env=env))
         token = getpass.getpass(
             "\nPaste the token (input hidden, empty to cancel): ").strip()
         if not token:
@@ -714,7 +420,7 @@ class Sandbox:
 
 
 # --------------------------------------------------------------------------- #
-def main():
+def build_parser():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--repo", help="owner/name: use a repo-scoped deploy key "
@@ -764,7 +470,17 @@ def main():
                    help="Claude login token passed into every session "
                         f"(default: {DEFAULT_TOKEN_FILE}); overridden by "
                         "CLAUDE_CODE_OAUTH_TOKEN on the host")
-    args = p.parse_args()
+    return p
+
+
+def main(argv=None):
+    p = build_parser()
+    args = p.parse_args(argv)
+    if args.repo:
+        try:
+            validate_repo(args.repo)
+        except ValueError as e:
+            p.error(f"--repo: {e}")
     if not os.path.isfile(args.claude_md):
         p.error(f"--claude-md: no such file: {args.claude_md}")
 

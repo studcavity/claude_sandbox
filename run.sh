@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Modify the below to match your github user & shielded email address~
 github_user="studcavity"
@@ -10,13 +11,13 @@ if [ -z "${1:-}" ]; then
   exit 1
 fi
 
-set -euo pipefail
+# Everything below (venv, requirements, scripts) lives next to this file.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Warn (don't block) if this checkout is behind its upstream, so we don't
 # run stale scripts. Quietly skipped when offline or without an upstream.
 check_for_updates() {
-  local dir behind
-  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local dir="${script_dir}" behind
   git -C "${dir}" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1 || return 0
   GIT_TERMINAL_PROMPT=0 timeout 10 git -C "${dir}" fetch --quiet 2>/dev/null || {
     echo "[run.sh] note: couldn't check for updates (git fetch failed)" >&2
@@ -43,16 +44,17 @@ if [ "$1" != "--setup-token" ]; then
 fi
 
 # install any prereqs
-if [ ! -d venv ]; then
-  python3 -m venv venv
+if [ ! -d "${script_dir}/venv" ]; then
+  python3 -m venv "${script_dir}/venv"
 fi
-source venv/bin/activate
-pip install -r requirements.txt
+# shellcheck source=/dev/null
+source "${script_dir}/venv/bin/activate"
+pip install -q -r "${script_dir}/requirements.txt"
 
 
 common=(--image images:ubuntu/24.04 --cli incus)
 if [ "$1" = "--setup-token" ]; then
-  exec python3 claude_sandbox.py "${common[@]}" "$@"
+  exec python3 "${script_dir}/claude_sandbox.py" "${common[@]}" "$@"
 fi
 
-python3 claude_sandbox.py --repo "${github_user}/${1}" "${common[@]}" --git-name "${github_user}" --git-email "${git_email}" "${@:2}"
+exec python3 "${script_dir}/claude_sandbox.py" --repo "${github_user}/${1}" "${common[@]}" --git-name "${github_user}" --git-email "${git_email}" "${@:2}"
