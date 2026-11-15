@@ -144,7 +144,10 @@ def test_full_plan_covers_the_independent_reads_the_launch_makes():
     paths = [s[1] for s in specs if s[0] == "api"]
     assert paths == ["/repos/o/r/contents/claude_sandbox_deps.yaml",
                      "/repos/o/r/contents/claude_sandbox_host.yaml",
-                     "/repos/o/r", "/repos/o/r/keys?per_page=100"]
+                     "/repos/o/r", "/repos/o/r/keys?per_page=100",
+                     "/repos/o/r/actions/permissions/workflow",
+                     "/repos/o/r/actions/secrets?per_page=1",
+                     "/repos/o/r/actions/organization-secrets?per_page=1"]
     assert all(s[2] is True for s in specs if s[0] == "api" and "contents" in s[1])
 
 

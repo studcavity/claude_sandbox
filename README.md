@@ -53,6 +53,7 @@ On every launch the program:
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
+| `sandbox_hardening.py` | host-side: checks (and, after a yes, tightens) the repo's Actions settings so session code's CI runs stay untrusted |
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
 | `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
 | `sandbox_issues.py` | files an issue for each `todo/` file a commit adds to the default branch (the post-merge filer, run by `file-issues.yml` or by hand) |
@@ -290,7 +291,43 @@ launcher can prove which commits a session made:
   status is posted with your `gh` login, so a ruleset can't pin it to an app:
   anything else allowed to post statuses (e.g. a workflow's `GITHUB_TOKEN` when
   the repo's default workflow permissions allow writes) could post a fake
-  success. Set Settings -> Actions -> Workflow permissions to read-only.
+  success. The launcher offers to make that default read-only (next section).
+
+### Actions hardening: keep session code's CI runs untrusted
+The rule: **nothing runs in a trusted execution context before a human has
+reviewed it.** A same-repo PR runs the session's own workflow code (pytest, a
+`conftest.py`, anything it imports) before anyone reads it; that is fine only
+while the run is *untrusted*: a read-only token, no secrets it can reach, no way
+to approve or post anything that gates a merge, and logs that stay on GitHub.
+
+**GitHub has no setting that requires approval for same-repo runs.** Its
+approval settings (`fork-pr-contributor-approval`,
+`fork-pr-workflows-private-repos`) cover *fork* PRs only, and sandbox PRs come
+from a branch in the repo. So at launch the launcher checks what *can* be set
+(`sandbox_hardening.py`) and states each condition as ok / NOT MET / unknown:
+- the default workflow token is read-only, and
+- Actions may not approve pull requests: offered on a terminal, one yes/no
+  each (default no), showing the exact `PUT .../actions/permissions/workflow`
+  it would make; re-running finds nothing left to offer (`--no-hardening-prompt`
+  skips the offer, not the check). A 409 (your organisation forbids it) or 403
+  (you aren't a repo admin) is reported, never fatal;
+- no repo- or organisation-level Actions secrets exist (detected only, names
+  never values: it can't move them; put real secrets in an Environment limited
+  to the default branch).
+
+What isn't met is repeated as a warning in the exit summary, to you and not to
+the session. **Open question, not verified:** whether a deploy key can push a
+change under `.github/workflows/`. Removing the `workflow` scope from your `gh`
+token (above) doesn't answer it, since a deploy key is a separate SSH credential
+with no scopes, and `default_workflow_permissions` is only a default: a workflow
+declaring its own `permissions:` gets them. If such a push is accepted, a
+session can push an `on: push` workflow that runs at once, before any PR or
+hold, with any repo secret it names. That would be a fix-immediately finding
+(options: a push ruleset with a `file_path_restriction` on
+`.github/workflows/**`, available only on some plans for private repos; keeping
+secrets in protected-branch Environments; or a staging repo). The check needs a
+scratch repo with no secrets and a deploy key: push a no-op workflow file and
+record the result. It has not been done (see `todo/`).
 
 ### Optional: confine deploy keys to `sbx/` (apply by hand)
 A deploy key can create any branch and push tags. A pushed tag runs
