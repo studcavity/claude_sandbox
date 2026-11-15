@@ -1,6 +1,6 @@
 """sandbox_labels.py - the labels claude_sandbox puts on GitHub issues and PRs.
 
-One table, so an issue filed from a `Sandbox-Action` trailer and a PR opened at
+One table, so an issue filed from a `todo/` file and a PR opened at
 session exit are labelled the same way. Stdlib only. Labels are created on
 first use, best effort: a repo that refuses (no push access) still gets the
 issue or PR, which is why nothing here may be the only record of anything
@@ -9,7 +9,7 @@ issue or PR, which is why nothing here may be the only record of anything
 import re
 
 SANDBOX = "sandbox"              # everything we create
-FOLLOW_UP = "follow-up"          # an issue from a Sandbox-Action trailer
+FOLLOW_UP = "follow-up"          # an issue from a todo/ file
 
 TABLE = {  # name -> (colour, description)
     SANDBOX: ("5319e7", "Filed by claude_sandbox from a session's commit"),

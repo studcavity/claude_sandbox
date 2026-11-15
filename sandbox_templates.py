@@ -18,7 +18,7 @@ TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templat
 
 REQUIRED = {
     "pr.md": {"session", "branch", "record", "subjects", "more"},
-    "issue.md": {"commit", "session", "item", "body", "brief"},
+    "issue.md": {"commit", "session", "item", "body"},
 }
 
 

@@ -1,17 +1,16 @@
 """sandbox_check.py - lint the work record of a range of commits (CI).
 
-    python sandbox_check.py BASE HEAD [--branch REF] [--strict]
+    python sandbox_check.py BASE HEAD [--strict]
     python sandbox_check.py --file-issues OWNER/REPO [--since REV | --last N] [--dry-run]
 
 Prints GitHub annotations (`::error::`, `::warning::`, `::notice::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
-(with --strict, any warning too). If REF is `sbx/<session>/...` every action
-id must name that session. The follow-up-metadata
-rules live in `sandbox_actions.lint_commit`; the rest are below. This file is
-git plumbing plus small pure rules, and is stdlib-only.
+(with --strict, any warning too). The format of a follow-up request
+(`todo/<name>.md`) lives in `sandbox_todo`; the other rules are below. This
+file is git plumbing plus small pure rules, and is stdlib-only.
 
---file-issues: the post-merge filer. The launcher files `Sandbox-Action` issues
-when a session ends, from its UNMERGED branches. Commits that reach the default
+--file-issues: the post-merge filer. The launcher files issues for `todo/`
+requests when a session ends, from its UNMERGED branches. Commits that reach the default
 branch without that run (launcher crashed, --no-actions, merged first, pushed
 by other tooling) are never filed; this scans commits already on the current
 branch (run it in a checkout of the repo) with the same parser, handlers,
@@ -24,6 +23,8 @@ Rules and severities
   error  `fixup!` / `squash!` / `amend!` left in a subject
   error  a commit touching a file that needs a real-environment run (see
          NEEDS_REAL_RUN) with no `Verified` / `Not verified` line (a `:` is optional)
+  error  a `todo/*.md` file a commit adds or changes that isn't a valid follow-up
+         request (see `sandbox_todo`: name, size, a heading)
   error  `Resolves follow-up from <sha>` naming a commit that doesn't exist
   error  a credential-shaped string in a commit message, or in a line the
          commit ADDS (checked per commit, so a secret added and later removed
@@ -52,7 +53,7 @@ import subprocess
 import sys
 
 import sandbox_actions
-import sandbox_names
+import sandbox_todo
 import sandbox_untrusted
 
 Finding = collections.namedtuple("Finding", "sha severity text path line")
@@ -177,7 +178,23 @@ def commit_exists(ref, cwd=None):
                           capture_output=True, cwd=cwd).returncode == 0
 
 
-def check_findings(base, head, branch=None, exists=None, cwd=None):
+def todo_findings(git, sha, files):
+    """Problems with the `todo/` follow-up requests a commit adds or changes
+    -> [str]. `git` runs git in the right repository."""
+    out = []
+    for path in sorted(f for f in files if sandbox_todo.is_candidate(f)):
+        ref = f"{sha}:{path}"
+        try:
+            size = int(git("cat-file", "-s", ref))
+            text = git("show", ref) if size <= sandbox_todo.MAX_BYTES else None
+        except subprocess.CalledProcessError:
+            out.append(f"{path}: not a regular file")
+            continue
+        out.extend(sandbox_todo.problems(path, size, text))
+    return out
+
+
+def check_findings(base, head, exists=None, cwd=None):
     """-> [Finding] for every commit in base..head (merges included), reading
     the repository in `cwd` (default: the current directory)."""
     for r in (base, head):
@@ -187,7 +204,6 @@ def check_findings(base, head, branch=None, exists=None, cwd=None):
 
     def git(*args):  # this repo, not whatever the process happens to be in
         return globals()["git"](*args, cwd=cwd)
-    session = sandbox_names.branch_session(branch)
     out: list = []
     all_files: set = set()
 
@@ -205,8 +221,7 @@ def check_findings(base, head, branch=None, exists=None, cwd=None):
                     "--diff-filter=AM", "--no-renames", "--root", sha)
         files = {n for n in names.split("\0") if n}
         all_files |= files
-        add(sha, [(ERROR, p) for p in
-                  sandbox_actions.lint_commit(message, files, session)])
+        add(sha, [(ERROR, p) for p in todo_findings(git, sha, files)])
         add(sha, subject_findings(message))
         add(sha, verification_findings(message, files))
         add(sha, resolves_findings(message, exists))
@@ -222,9 +237,9 @@ def check_findings(base, head, branch=None, exists=None, cwd=None):
     return out
 
 
-def check_range(base, head, branch=None):
+def check_range(base, head):
     """-> [(short sha, problem)]: the errors only (the original contract)."""
-    return [(f.sha, f.text) for f in check_findings(base, head, branch)
+    return [(f.sha, f.text) for f in check_findings(base, head)
             if f.severity == ERROR]
 
 class CheckError(ValueError):
@@ -235,19 +250,21 @@ class CheckError(ValueError):
 DEFAULT_LAST = 50
 
 
-def read_commits(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
-    """[(sha, message)], oldest first, for `since..head` or the last N commits."""
+def read_commit_files(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
+    """[(sha, [files the commit ADDED])], oldest first, for `since..head` or
+    the last N commits. Only `todo/` markdown is listed: it's all the filer
+    needs."""
     for r in (since or "", head):
         if r.startswith("-"):
             raise CheckError(f"not a revision: {r!r}")
-    args = ["log", "-z", "--reverse", "--format=%H%x1f%B"]
+    args = ["rev-list", "--reverse"]
     args += [f"{since}..{head}"] if since else [f"--max-count={int(last)}", head]
-    raw = git(*args, cwd=cwd)
     out = []
-    for chunk in raw.split("\0"):
-        sha, sep, message = chunk.strip("\n").partition("\x1f")
-        if sep and re.fullmatch(r"[0-9a-f]{40}", sha):
-            out.append((sha, message))
+    for sha in git(*args, cwd=cwd).split():
+        names = git("diff-tree", "-r", "-z", "--no-commit-id", "--name-only",
+                    "--diff-filter=A", "--no-renames", "--root", sha, cwd=cwd)
+        out.append((sha, [n for n in names.split("\0")
+                          if n and sandbox_todo.is_candidate(n)]))
     return out
 
 
@@ -266,23 +283,24 @@ class DryRunApi:
 
 def file_issues_run(repo, since=None, last=DEFAULT_LAST, dry_run=False,
                     api=None, cwd=None, out=print, limits=None):
-    """Scan commits for Sandbox-Action trailers and carry them out -> exit code
+    """Scan commits for added `todo/` requests and file them -> exit code
     (0 ok, 1 if any item failed)."""
     import sandbox_github
     sandbox_github.validate_repo(repo)
     api = api or sandbox_github.gh_api
     if dry_run:
         api = DryRunApi(api)
-    actions = sandbox_actions.parse_commits(read_commits(since, last, cwd=cwd))
+    requests = sandbox_actions.requests_from(
+        read_commit_files(since, last, cwd=cwd))
     outcomes = sandbox_actions.execute(
-        sandbox_actions.Context(repo, "all", [], api, None, limits), actions)
+        sandbox_actions.Context(repo, "all", [], api, None, limits), requests)
     if dry_run:
         for method, path, body in api.writes:
             if path.endswith("/issues") and method == "POST":
                 out(f"would file: {body['title']!r} "
                     f"labels={','.join(body['labels'])}")
     text = sandbox_actions.format_outcomes(outcomes)
-    out(text or "no Sandbox-Action trailers found in "
+    out(text or "no todo/ requests found in "
         + (f"{since}..HEAD" if since else f"the last {last} commits"))
     return 1 if any(o.status == "failed" for o in outcomes) else 0
 
@@ -312,13 +330,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("base", nargs="?")
     ap.add_argument("head", nargs="?")
-    ap.add_argument("--branch", help="head branch name (action ids on "
-                    "sbx/<session>/... must name that session)")
     ap.add_argument("--strict", action="store_true",
                     help="treat warnings as errors")
     ap.add_argument("--file-issues", metavar="OWNER/REPO",
-                    help="file issues for Sandbox-Action trailers in commits "
-                    "on the current branch (post-merge filer)")
+                    help="file issues for the todo/ files commits on the "
+                    "current branch add (post-merge filer)")
     ap.add_argument("--since", metavar="REV",
                     help="with --file-issues: scan REV..HEAD")
     ap.add_argument("--last", type=int, default=DEFAULT_LAST, metavar="N",
@@ -335,7 +351,7 @@ def main(argv=None):
                     "(default %(default)s)")
     a = ap.parse_args(argv)
     if a.file_issues:
-        if a.base or a.head or a.branch:
+        if a.base or a.head:
             ap.error("--file-issues stands alone (use --since/--last/--dry-run)")
         if a.last < 1 or a.max_actions < 1 or a.max_issues < 1:
             ap.error("--last, --max-actions and --max-issues must be at least 1")
@@ -350,7 +366,7 @@ def main(argv=None):
         ap.error("--since and --dry-run need --file-issues OWNER/REPO")
     if not (a.base and a.head):
         ap.error("BASE and HEAD are required")
-    findings = check_findings(a.base, a.head, a.branch)
+    findings = check_findings(a.base, a.head)
     for f in findings:
         print(annotation(f))
     errors = sum(f.severity == ERROR for f in findings)
