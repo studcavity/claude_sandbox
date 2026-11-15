@@ -221,13 +221,18 @@ later. Put it there rather than in a stray notes file or only in chat.
   Full spec: `sandbox_actions.py`.
 - **Every `issue` action gets a brief file, in the same commit, at
   `todo/<id>.md`** (CI fails without it; the path is how the item is found
-  later). Write it for a fresh agent
-  with no context from this session, who must be able to pick the item up from
-  that file alone: what the problem is and why it matters; what you already
-  tried or ruled out; the exact files, functions, commands and error text
-  involved; why it was blocked here (missing tool, host access, credentials);
-  what "done" looks like and how to verify it; and anything that would be
-  risky or surprising. The issue `body` can stay a short summary. When a later
+  later). It exists to describe a
+  problem and some potential solutions. It is NOT a work order: it must not
+  dictate which solution gets implemented. Write it for a fresh agent with no
+  context from this session, who must be able to pick the item up from that
+  file alone and then choose the approach themselves: what the problem is and
+  why it matters; what you already tried or ruled out; the exact files,
+  functions, commands and error text involved; why it was blocked here
+  (missing tool, host access, credentials); what "done" looks like and how to
+  verify it (outcomes, not a prescribed implementation); candidate solutions
+  with their trade-offs, labelled as options (say which you'd lean towards and
+  why, if you have a view, but as a suggestion); and anything risky or
+  surprising. The issue `body` can stay a short summary. When a later
   commit resolves the item, delete its `todo/<id>.md` in that commit.
 
 ## Testing: part of the repo, not just the session

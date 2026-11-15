@@ -8,8 +8,7 @@ on:
   pull_request:
     branches: [main]
 
-# Read-only, no secrets. This runs the PR branch's own copy of the checker;
-# the launcher holds any branch that edits .github/ for human review.
+# Read-only, no secrets.
 permissions:
   contents: read
 
@@ -18,19 +17,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The job name is the status check's name. It is what the ruleset requires;
+  # renaming it strands every open PR, so change both together.
   commit-metadata:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
+      # The checker comes from the PR's BASE (main), never from the PR: a
+      # branch can't weaken the rules it is judged by. Its own commits are
+      # only data, checked out (with history) next to it.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements*.txt
-      - run: pip install -r requirements.txt
       - name: Check commit metadata
         env:
           # Branch names are attacker-controlled text: pass through env, never
@@ -38,4 +45,14 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python sandbox_check.py "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"
+        run: |
+          src=trusted
+          if [ ! -f trusted/sandbox_check.py ]; then
+            # Only while main has no checker at all (the PR that introduces
+            # it). Once merged, this branch is never taken.
+            echo "::notice::main has no sandbox_check.py yet; using the PR's copy (bootstrap)"
+            src=pr
+          fi
+          pip install -r "$src/requirements.txt"
+          cd pr
+          python "../$src/sandbox_check.py" "$BASE_SHA" "$HEAD_SHA" --branch "$HEAD_REF"

@@ -830,3 +830,9 @@ def test_template_asks_for_a_todo_file_per_issue_action(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     assert "`todo/<id>.md`" in t and "same commit" in t
     assert "fresh agent" in t
+
+
+def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
+    t = " ".join(open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read().split())
+    assert "describe a problem and some potential solutions" in t
+    assert "NOT a work order" in t and "must not dictate" in t
