@@ -41,13 +41,13 @@ def trailer_block(*lines):
 
 
 def test_clean_range_passes(repo):
-    repo(trailer_block(ACTION, f"Sandbox-Session: {S}"), f"todo/{ID}.md")
+    repo(trailer_block(ACTION), f"todo/{ID}.md")
     assert sc.check_range("main~1", "main", f"sbx/{S}/work") == []
     assert sc.main(["main~1", "main", "--branch", f"sbx/{S}/work"]) == 0
 
 
 def test_missing_todo_file_is_reported_with_the_sha(repo, capsys):
-    repo(trailer_block(ACTION, f"Sandbox-Session: {S}"), "other.md")
+    repo(trailer_block(ACTION), "other.md")
     ((sha, problem),) = sc.check_range("main~1", "main", f"sbx/{S}/work")
     assert len(sha) == 7 and f"todo/{ID}.md" in problem
     assert sc.main(["main~1", "main"]) == 1
@@ -57,13 +57,13 @@ def test_missing_todo_file_is_reported_with_the_sha(repo, capsys):
 def test_deleting_the_todo_file_does_not_satisfy_the_rule(repo, tmp_path):
     repo("seed", f"todo/{ID}.md")
     (tmp_path / "todo" / f"{ID}.md").unlink()
-    repo(trailer_block(ACTION, f"Sandbox-Session: {S}"))  # n.txt only
+    repo(trailer_block(ACTION))  # n.txt only
     assert sc.check_range("main~1", "main", f"sbx/{S}/work")
 
 
-def test_session_branch_commit_without_trailer_fails(repo):
+def test_session_branch_commits_need_no_trailer(repo):
     repo("plain commit")
-    assert sc.check_range("main~1", "main", f"sbx/{S}/work")
+    assert sc.check_range("main~1", "main", f"sbx/{S}/work") == []
     assert sc.check_range("main~1", "main", "feature/x") == []
 
 

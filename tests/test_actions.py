@@ -259,9 +259,8 @@ def nid(slug="smoke", session=S, date="20261115", rand="a3f9"):
     return f"{slug}-{date}-{session}-{rand}"
 
 
-def commit(session=S, *lines, trailer=True):
-    tr = [f"Sandbox-Session: {session}"] if trailer else []
-    return msg(*lines, *tr)
+def commit(session=S, *lines):
+    return msg(*lines)
 
 
 def good(session=S, **kw):
@@ -275,38 +274,27 @@ def test_a_fully_consistent_commit_lints_clean():
     assert sa.lint_commit(m, files) == []  # not a session branch: also fine
 
 
-def test_session_branch_requires_the_trailer_and_it_must_match():
+def test_no_session_trailer_is_needed_any_more():
+    """Signatures (sandbox_provenance) prove who made a commit; a trailer
+    anyone could write did not. Old commits that still carry one pass."""
+    assert sa.lint_commit("feat: x\n\nbody\n", set(), S) == []
     m, files, _ = good()
-    other = sa.lint_commit(m, files, "other-session")
-    assert any("branch belongs to session 'other-session'" in p for p in other)
-    assert any("missing 'Sandbox-Session: quirky-hopper'" in p for p in
-               sa.lint_commit("subject\n\nbody\n\nCo-Authored-By: x\n",
-                              set(), S))
+    assert sa.lint_commit(m + "Sandbox-Session: someone-else\n", files, S) == []
 
 
-@pytest.mark.parametrize("trailers,fragment", [
-    (["Sandbox-Session: a", "Sandbox-Session: b"], "2 Sandbox-Session"),
-    (["Sandbox-Session: bad name"], "invalid Sandbox-Session"),
-    (["Sandbox-Session: "], "invalid Sandbox-Session"),
-])
-def test_bad_session_trailers_are_flagged(trailers, fragment):
-    m = msg(*trailers)
-    assert any(fragment in p for p in sa.lint_commit(m, set()))
-    assert sa.message_session(m) is None
-
-
-def test_action_session_must_match_the_commits_session_trailer():
+def test_action_ids_must_name_the_branchs_session():
     i = nid(session="someone-else")
     m = commit(S, issue(i))
     problems = sa.lint_commit(m, {sa.todo_path(i)}, S)
     assert any("must look like" in p and S in p for p in problems)
 
 
-def test_actions_need_a_session_trailer_even_off_session_branches():
-    i = nid()
-    m = msg(issue(i))
-    assert any("needs a valid Sandbox-Session" in p
-               for p in sa.lint_commit(m, {sa.todo_path(i)}))
+def test_off_session_branches_any_valid_session_name_will_do():
+    i = nid(session="someone-else")
+    assert sa.lint_commit(msg(issue(i)), {sa.todo_path(i)}) == []
+    assert sa.id_problem("smoke-20261115--bad-a3f9")       # not a session name
+    assert sa.id_problem("smoke-20261340-x-a3f9")          # impossible date
+    assert sa.id_problem("smoke-a3f9")
 
 
 @pytest.mark.parametrize("bad", [
@@ -343,7 +331,7 @@ def test_resolve_needs_no_todo_file_but_still_needs_a_good_id():
 def test_lint_flags_every_line_the_launcher_would_silently_drop():
     m = msg("Sandbox-Action: nope", "Sandbox-Action: [1]",
             line(type="mystery", id=nid(slug="m")),
-            issue(nid()), issue(nid()), f"Sandbox-Session: {S}")
+            issue(nid()), issue(nid()))
     problems = sa.lint_commit(m, {sa.todo_path(nid())}, S)
     text = "\n".join(problems)
     for frag in ("not one line of JSON", "not a JSON object", "unknown type",
@@ -351,43 +339,38 @@ def test_lint_flags_every_line_the_launcher_would_silently_drop():
         assert frag in text
 
 
-def test_message_session():
-    assert sa.message_session(msg(f"Sandbox-Session: {S}")) == S
-    assert sa.message_session(msg("Co-Authored-By: x")) is None
-    assert sa.message_session("") is None
-
-
-class MismatchApi(RunApi):
-    """Branch sbx/s/work holds three commits: one claiming session s, one
-    claiming t, one with no claim."""
+class ClaimsApi(RunApi):
+    """Branch sbx/s/work holds three commits whose messages claim session s,
+    session t, and nothing."""
     def __call__(self, method, path, body=None, raw=False):
         if "/compare/main...sbx/s/work" in path:
-            def c(sha, session):
-                return {"sha": sha, "commit": {"message": commit(
-                    session, issue(nid(session=session or "s")),
-                    trailer=bool(session))}}
+            def c(sha, claim):
+                return {"sha": sha, "commit": {"message": msg(
+                    issue(nid(session=claim or "s")),
+                    *([f"Sandbox-Session: {claim}"] if claim else []))}}
             return {"commits": [c(A, "s"), c(B, "t"), c("c" * 40, None)]}
         return super().__call__(method, path, body, raw)
 
 
-def test_launcher_ignores_commits_claiming_another_session():
-    out = sa.run("o/r", "s", api=MismatchApi())
-    assert sorted(o.sha for o in out) == sorted([A, "c" * 40])
+def test_launcher_no_longer_filters_commits_by_what_their_message_claims():
+    """The claim was forgeable either way; every commit on the branch counts."""
+    out = sa.run("o/r", "s", api=ClaimsApi())
+    assert sorted(o.sha for o in out) == sorted([A, B, "c" * 40])
 
 
 # --- the docs the sessions read agree with the code ------------------------ #
 def test_template_examples_pass_the_lint(repo_root):
     """Render the real sandbox template for a session and lint the example
-    action and session trailer it shows."""
+    action it shows; it no longer asks for a Sandbox-Session trailer."""
     import os
     import re
     import string
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     text = string.Template(t).safe_substitute(session=S)
     (action_line,) = re.findall(r"`(Sandbox-Action: \{.*\})`", text)
-    (session_line,) = re.findall(r"`(Sandbox-Session: [^`]+)`", text)
+    assert "Sandbox-Session" not in text
     (acts, problems) = sa.scan_message("", msg(action_line))
     assert problems == [] and len(acts) == 1
-    m = msg(action_line, session_line)
+    m = msg(action_line)
     assert sa.lint_commit(m, {sa.todo_path(acts[0].id)}, S) == []
     assert S in text  # the session name is actually substituted in

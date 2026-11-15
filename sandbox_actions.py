@@ -27,12 +27,13 @@ The value is ONE line of a JSON object. Envelope, stable forever:
         smoke-20261115-frosty-volta-a3f9, so ids don't collide across commits
         (they name todo/<id>.md); the parser itself accepts any valid id.
 
-Every commit from a session also carries `Sandbox-Session: <session>` in the
-same trailer block. CI (`sandbox_check.py`, via `lint_commit`) checks that it
-matches the branch (`sbx/<session>/...`) and the session inside each id, and
-that every `issue` action has todo/<id>.md in the same commit. At run time the
-launcher ignores a commit whose trailer names a different session than the
-branch it is on.
+CI (`sandbox_check.py`, via `lint_commit`) checks that the session inside
+each id is the branch's (`sbx/<session>/...`; off a session branch, any valid
+session name), and that every `issue` action has todo/<id>.md in the same
+commit. Which session really made a commit is proven by its signature
+(sandbox_provenance), not by anything the message says: a `Sandbox-Session:`
+trailer used to claim it, but anyone could write one. Old commits that carry
+it are fine; it is ignored.
 Everything else is the payload, owned by (type, v). Unknown keys are ignored.
 
 Anything that does not conform is a NO-OP, never an error: lines outside the
@@ -81,7 +82,6 @@ import sandbox_templates
 import sandbox_untrusted
 
 TRAILER = "Sandbox-Action"
-SESSION_TRAILER = "Sandbox-Session"
 ID_MAX = 100          # was 40; ids now carry date + session + random suffix
 ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,%d}$" % ID_MAX)
 REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,%d})$" % ID_MAX)
@@ -148,29 +148,17 @@ def parse_message(sha, message):
     return scan_message(sha, message)[0]
 
 
-def session_trailers(message):
-    """Every `Sandbox-Session:` value (stripped) in the last paragraph."""
-    prefix = SESSION_TRAILER.lower() + ":"
-    return [ln[len(prefix):].strip() for ln in _trailer_lines(message)
-            if ln.lower().startswith(prefix)]
-
-
-def message_session(message):
-    """The session a commit says it came from, or None if it doesn't say
-    (or says something invalid or contradictory)."""
-    vals = session_trailers(message)
-    return vals[0] if len(vals) == 1 and SESSION_RE.match(vals[0]) else None
-
-
-def id_problem(action_id, session):
+def id_problem(action_id, session=None):
     """Why an id isn't `<slug>-<YYYYMMDD>-<session>-<4 chars>`, or None.
-    Required by `lint_commit` for new commits; the parser stays lenient
+    With no `session` (not on a session branch) any valid session name will
+    do. Required by `lint_commit` for new commits; the parser stays lenient
     (old commits are immutable)."""
-    m = re.match(r"^[A-Za-z0-9._-]+?-(\d{8})-" + re.escape(session)
-                 + r"-[a-z0-9]{4}$", action_id)
-    if not m:
+    who = re.escape(session) if session else r"(?P<who>[A-Za-z0-9][A-Za-z0-9-]*)"
+    m = re.match(r"^[A-Za-z0-9._-]+?-(\d{8})-" + who + r"-[a-z0-9]{4}$",
+                 action_id)
+    if not m or (not session and not SESSION_RE.match(m.group("who"))):
         return (f"id {action_id!r} must look like "
-                f"<slug>-<YYYYMMDD>-{session}-<4 random [a-z0-9]>")
+                f"<slug>-<YYYYMMDD>-{session or '<session>'}-<4 random [a-z0-9]>")
     try:
         datetime.datetime.strptime(m.group(1), "%Y%m%d")
     except ValueError:
@@ -187,38 +175,21 @@ def lint_commit(message, files, branch_session=None):
 
     `files`: paths this commit adds or modifies. `branch_session`: the session
     the branch name (`sbx/<session>/...`) belongs to, if it is a session
-    branch. Rules, all cross-references of the session name:
-      - on a session branch the commit MUST say `Sandbox-Session: <that
-        session>`; elsewhere it may, and then must be valid;
-      - never more than one Sandbox-Session trailer;
+    branch. Rules:
       - every Sandbox-Action line must conform, be a known (type, v), and have
-        an id ending in -<date>-<that session>-<4 chars>;
+        an id ending in -<date>-<session>-<4 chars>, where <session> is the
+        branch's (any valid session name off a session branch);
       - every `issue` action needs todo/<id>.md in this same commit.
     """
     actions, problems = scan_message("", message)
     problems = list(problems)
-    vals = session_trailers(message)
-    session = None
-    if len(vals) > 1:
-        problems.append(f"{len(vals)} {SESSION_TRAILER} trailers (want one)")
-    elif vals and not SESSION_RE.match(vals[0]):
-        problems.append(f"invalid {SESSION_TRAILER} {vals[0]!r}")
-    elif vals:
-        session = vals[0]
-    if branch_session and session != branch_session:
-        problems.append(
-            f"branch belongs to session {branch_session!r} but the commit "
-            f"says {SESSION_TRAILER}: {session!r}" if session else
-            f"missing '{SESSION_TRAILER}: {branch_session}' trailer")
     for a in actions:
         if (a.type, a.v) not in HANDLERS and (a.type, a.v) not in DIRECTIVES:
             problems.append(f"action {a.id!r}: unknown type/version "
                             f"{a.type!r} v{a.v} (it would be ignored)")
-        if not session:
-            problems.append(f"action {a.id!r} needs a valid "
-                            f"{SESSION_TRAILER} trailer in the same commit")
-        elif id_problem(a.id, session):
-            problems.append(id_problem(a.id, session))
+        bad_id = id_problem(a.id, branch_session)
+        if bad_id:
+            problems.append(bad_id)
         if a.type == "issue" and todo_path(a.id) not in files:
             problems.append(f"action {a.id!r}: {todo_path(a.id)} is not "
                             "added or changed in this commit")
@@ -489,14 +460,9 @@ def session_commits(api, repo, default, branches):
         return urllib.parse.quote(s, safe="/")
     out = []
     for b in branches:
-        mine = b.split("/")[1] if b.count("/") >= 2 else None
         cmp_ = api("GET", f"/repos/{repo}/compare/{q(default)}...{q(b)}") or {}
         for c in cmp_.get("commits") or []:
-            claimed = message_session(c["commit"]["message"])
-            # A commit that claims a different session than its branch is
-            # misattributed (or forged): no-op. No claim at all is allowed.
-            if claimed in (None, mine):
-                out.append((c["sha"], c["commit"]["message"]))
+            out.append((c["sha"], c["commit"]["message"]))
     return out
 
 

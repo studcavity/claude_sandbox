@@ -208,10 +208,6 @@ later. Put it there rather than in a stray notes file or only in chat.
   follow-up is done, say so in the commit that does it (`Resolves follow-up
   from <short-sha>: ...`). Never rewrite pushed history to edit one; add a new
   commit instead.
-- **Session trailer on EVERY commit.** End each commit message with
-  `Sandbox-Session: $session` in the last paragraph (with `Co-Authored-By:`).
-  It says which sandbox the commit came from; CI checks it against the branch
-  name, and the launcher ignores commits whose trailer names another session.
 - **Structured follow-ups.** To have the launcher file a GitHub issue for a
   follow-up when the session ends, add a trailer to the LAST paragraph of the
   commit message, one line of JSON:
@@ -227,8 +223,8 @@ later. Put it there rather than in a stray notes file or only in chat.
   Full spec: `sandbox_actions.py`.
 - **Lint your own commits before you finish.** Run `sandbox-check` (no
   arguments) inside the repo. It checks every commit you added since the
-  remote's default branch with the rules CI and the launcher use: the
-  `Sandbox-Session` trailer, action id shape, the `todo/<id>.md` brief, no
+  remote's default branch with the rules CI and the launcher use: action id
+  shape, the `todo/<id>.md` brief, no
   leftover `fixup!`, no merge commits, no credential-shaped text in messages or
   added lines, and a `Verified` or `Not verified` statement on commits that
   touch files needing a real run. Fix what it reports with new commits (or, for
