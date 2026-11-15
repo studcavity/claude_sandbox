@@ -61,10 +61,25 @@ Defaults live in code; a per-repo override file is a later, separate decision
   statuses; anyone with write access can post that context (statuses from users
   can't be pinned to a source). The un-skippable property comes from the logic
   and status living on the host, outside anything a PR can edit.
-- **Verify first with `scripts/probe_commit_status.sh`** (real GitHub,
-  throwaway repo). Its step 6 covers the break-glass runbook (override one SHA; disable
-  the ruleset with a partial `PUT`, confirm the rules survive and the merge goes
-  through; re-enable and confirm the gate closes again; probe `evaluate`).
+- **Verified against real GitHub on 2026-11-15** with
+  `scripts/probe_commit_status.sh` (all 19 checks passed; `gh` 2.103.3, public
+  repo, token scopes `repo, workflow, read:org, gist, delete_repo`):
+  - the user's `gh` login can post a commit status (the `repo` scope suffices);
+  - a ruleset accepts a required context that has never reported;
+  - a PR is `BLOCKED` without the status, and the merge API refuses with
+    "Repository rule violations found ... Required status check
+    "sandbox/check" is expected";
+  - `success` on the head SHA makes it `CLEAN`; `failure` blocks; a new commit
+    loses the status (blocked again); a 64-character override description is
+    accepted and unblocks that SHA only;
+  - a status created with a user token has `creator.type: User` (so it can't
+    be pinned to an app: anyone with write access can post `sandbox/check`);
+  - break glass (README): partial `PUT enforcement=disabled` keeps the rules
+    and opens the gate, partial `PUT enforcement=active` closes it again;
+    `evaluate` is refused (HTTP 422) on that account.
+  Still **not** covered: stacked PRs, merge queues, private repos on a paid
+  plan, other accounts/plans, and the exact merge HTTP status (the summary line
+  was truncated; the message text is what matters).
 
 ### 5d. Launcher wiring (kept tiny)
 In `Sandbox.land()`, after the PRs open and before the actions run, call
@@ -107,7 +122,8 @@ workflow has no `uses:` of this repo, pins actions by SHA, requests only the
 listed permissions.
 
 ## Not verified / needs a real run
-`repo:status` with the user's login; ruleset behaviour for a never-reported
-context and for `enforcement: disabled`; whether comments on commits need
-`contents: write` for `GITHUB_TOKEN` (3d avoids depending on it). All are
-covered by running `scripts/probe_commit_status.sh` (extend as above).
+Resolved by the 2026-11-15 probe run (see 5c): `repo:status` with the user's
+login, never-reported contexts, `enforcement: disabled`. Remaining: whether
+comments on commits need `contents: write` for `GITHUB_TOKEN` (3d avoids
+depending on it), the Actions workflow itself, and the items listed as not
+covered in 5c.

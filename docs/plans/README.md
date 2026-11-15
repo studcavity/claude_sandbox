@@ -84,14 +84,16 @@ gh api -X PUT repos/OWNER/REPO/rulesets/$id -f enforcement=disabled   # open the
 # ... merge what must merge ...
 gh api -X PUT repos/OWNER/REPO/rulesets/$id -f enforcement=active     # close it again
 ```
-Use `disabled`, not `evaluate` (evaluate mode may need an Enterprise plan;
-unverified). Whether a partial `PUT` leaves the other fields intact is also
-**unverified**: `scripts/probe_commit_status.sh` (step 6) now tests exactly this
-(and the Level 1 override, and `evaluate` mode); run it before relying on this
-runbook. If a partial PUT replaces the ruleset, re-send the full file instead
-(`gh api -X PUT repos/OWNER/REPO/rulesets/$id --input rulesets/require-sandbox-check.json`
-with `enforcement` edited). Only the gate is suspended: the generic
-`protect-default-branch` ruleset (PRs required, linear history) stays on.
+Use `disabled`, not `evaluate`: **verified 2026-11-15** (probe, `gh` 2.103.3,
+owner `studcavity`, public repo) that `evaluate` is refused with HTTP 422 on
+that account, so `disabled` is the only way to suspend the gate there. Also
+verified in the same run: a *partial* PUT of `-f enforcement=disabled` keeps
+the `required_status_checks` rule intact, merges then succeed, and a partial
+PUT of `-f enforcement=active` closes the gate again (a fresh PR is blocked).
+So the two commands above are correct as written; the full-file `--input`
+fallback is only for a future change in GitHub's behaviour (the probe would
+report it). Only the gate is suspended: the generic `protect-default-branch`
+ruleset (PRs required, linear history) stays on.
 
 **After any level:** file an issue saying what was overridden and why (a
 `Sandbox-Action` trailer in the next commit does it), fix the root cause, and
