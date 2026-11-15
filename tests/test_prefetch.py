@@ -134,8 +134,8 @@ def args(**kw):
 
 
 def plan(**kw):
-    import claude_sandbox as cs
-    return cs.prefetch_plan(args(**kw))
+    import sandbox_backend_github as bg
+    return bg.prefetch_plan(args(**kw))
 
 
 def test_full_plan_covers_the_independent_reads_the_launch_makes():
