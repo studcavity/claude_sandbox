@@ -152,10 +152,11 @@ this session is lost when the sandbox ends.
   failure isn't yours, tell the user.
 - Judge a run by its exit status, not the tail of its output (`set -o
   pipefail`, or PIPESTATUS). Never report "tests pass" without a zero exit.
-- If the repo has CI, make sure new tests run there. GitHub rejects pushes
-  that change `.github/workflows/*` from this sandbox, on purpose: commit the
-  workflow somewhere else (e.g. `ci/`) and give the user the `git mv` to run on
-  their host.
+- If the repo has CI, make sure new tests run there. Edit
+  `.github/workflows/*` in place, don't park it elsewhere (e.g. `ci/`): the
+  user approves the change in session, and the launcher holds the PR for their
+  confirmation when it files it. Say in your final message that the branch
+  changes a workflow.
 - If something can't be tested here (hardware, external services, interactive
   UIs), isolate the logic that can be, and say what needs manual verification.
 - Record test tooling in `$deps_file` or the repo's own dependency files.
