@@ -11,6 +11,7 @@ import types
 import pytest
 
 import claude_sandbox as cs
+import sandbox_backend_github as bg
 import sandbox_github
 import sandbox_land
 import sandbox_sessions
@@ -103,10 +104,10 @@ def world(monkeypatch, tmp_path):
     gh = FakeGitHub("quirky-hopper")
     ran = []
     monkeypatch.setattr(cs, "Container", FakeContainer)
-    for mod in (cs, sandbox_sessions, sandbox_land, sandbox_github):
+    for mod in (bg, sandbox_sessions, sandbox_land, sandbox_github):
         monkeypatch.setattr(mod, "gh_api", gh)
-    monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
-    monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
+    monkeypatch.setattr(bg.GitHubBackend, "login", "studcavity", raising=False)
+    monkeypatch.setattr(bg, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(cs.sandbox_pool, "check", lambda *a: None)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
@@ -254,7 +255,7 @@ def test_a_provenance_failure_never_breaks_landing_or_teardown(world, monkeypatc
 def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
     assert cs.main(argv(world, "--timings")) == 0
     err = capsys.readouterr().err
-    for stage in ("github login + scopes", "container launch + boot", "clone",
+    for stage in ("host checks (login, scopes)", "container launch + boot", "clone",
                   "session (interactive)", "land: PRs, provenance", "teardown"):
         assert stage in err
     assert "the session prompt appeared after" in err
@@ -383,7 +384,7 @@ def test_owner_lookup_failure_fails_closed(world, monkeypatch):
                         lambda self, argv, **k: sent.append(k["input"])
                         or types.SimpleNamespace(returncode=0, stderr=""),
                         raising=False)
-    monkeypatch.setattr(cs, "repo_owner",
+    monkeypatch.setattr(bg, "repo_owner",
                         lambda repo: (_ for _ in ()).throw(GitHubError("x", 500)))
     assert cs.main(argv(world)) == 0
     assert "projects" not in json.loads(sent[0])[".claude.json"]

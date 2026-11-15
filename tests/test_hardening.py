@@ -5,6 +5,7 @@ import os
 import pytest
 
 import claude_sandbox as cs
+import sandbox_backend_github as bg
 import sandbox_hardening as sh
 from sandbox_github import GitHubError
 
@@ -132,26 +133,26 @@ def box(make_args, monkeypatch):
 
 def use(monkeypatch, gh, answers=()):
     answers = list(answers)
-    monkeypatch.setattr(cs, "gh_api", gh)
-    monkeypatch.setattr(cs, "ask_hardening", lambda repo, c: answers.pop(0))
+    monkeypatch.setattr(bg, "gh_api", gh)
+    monkeypatch.setattr(bg, "ask_hardening", lambda repo, c: answers.pop(0))
 
 
 def test_a_yes_applies_and_the_launch_log_states_each_condition(box, monkeypatch, capsys):
     gh = Gh()
     use(monkeypatch, gh, [True, True])
-    box.harden_actions()
+    box.backend.harden_actions()
     assert [b for _, b in gh.puts] == [{"default_workflow_permissions": "read"},
                                        {"can_approve_pull_request_reviews": False}]
     err = capsys.readouterr().err
     assert "Actions settings" in err and err.count("ok     ") == 3
-    assert box.host_warnings == []
+    assert box.backend.host_warnings == []
 
 
 def test_a_no_leaves_a_warning_for_launch_and_exit(box, monkeypatch, capsys):
     use(monkeypatch, Gh(), [False, False])
-    box.harden_actions()
+    box.backend.harden_actions()
     assert "NOT MET" in capsys.readouterr().err
-    assert len(box.host_warnings) == 2
+    assert len(box.backend.host_warnings) == 2
     box.report_host_warnings()
     assert "the default workflow token can write" in capsys.readouterr().err
 
@@ -164,25 +165,25 @@ def test_never_prompts_without_a_terminal_or_with_the_flag(box, monkeypatch, how
         box.args.no_hardening_prompt = True
     else:
         monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
-    box.harden_actions()
-    assert gh.puts == [] and len(box.host_warnings) == 2
+    box.backend.harden_actions()
+    assert gh.puts == [] and len(box.backend.host_warnings) == 2
 
 
 def test_a_github_failure_never_blocks_the_launch(box, monkeypatch, capsys):
     def boom(*a, **k):
         raise OSError("gh vanished")
-    monkeypatch.setattr(cs, "gh_api", boom)
-    box.harden_actions()
+    monkeypatch.setattr(bg, "gh_api", boom)
+    box.backend.harden_actions()
     assert "couldn't check the repo's Actions settings" in capsys.readouterr().err
 
 
 def test_the_preflight_runs_the_check(box, monkeypatch):
     seen = []
-    monkeypatch.setattr(box, "protect_default_branch", lambda: seen.append("protect"))
-    monkeypatch.setattr(box, "harden_actions", lambda: seen.append("harden"))
+    monkeypatch.setattr(box.backend, "protect_default_branch", lambda: seen.append("protect"))
+    monkeypatch.setattr(box.backend, "harden_actions", lambda: seen.append("harden"))
     monkeypatch.setattr(cs.Container, "list_names", staticmethod(lambda cli: set()))
     monkeypatch.setattr(cs.sandbox_sessions, "reap_stale_keys", lambda *a: [])
-    box.preflight_github()
+    box.backend.preflight(lambda: cs.Container.list_names("incus"), box.name)
     assert seen == ["protect", "harden"]
 
 
@@ -196,11 +197,11 @@ def test_nothing_the_check_found_reaches_the_sessions_claude_md(box, repo_root, 
             t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
             "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
     use(monkeypatch, Gh("read", False), [])
-    box.harden_actions()
+    box.backend.harden_actions()
     clean = render()
-    box.host_warnings.clear()
+    box.backend.host_warnings.clear()
     use(monkeypatch, Gh("write", True, 3, 1), [False, False])
-    box.harden_actions()
-    assert box.host_warnings and render() == clean
+    box.backend.harden_actions()
+    assert box.backend.host_warnings and render() == clean
     for word in ("secrets exist", "can write to the repo", "default workflow token"):
         assert word not in clean

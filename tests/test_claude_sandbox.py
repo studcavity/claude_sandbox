@@ -12,6 +12,7 @@ import pytest
 import sandbox_volumes
 
 import claude_sandbox as cs
+import sandbox_backend_github as bg
 
 
 # --------------------------------------------------------------------------- #
@@ -191,13 +192,13 @@ def gh(monkeypatch):
         if "/contents/" in path:
             raise cs.GitHubError("nf", 404)
         return {"id": 42}
-    monkeypatch.setattr(cs, "gh_api", fake)
+    monkeypatch.setattr(bg, "gh_api", fake)
     return calls
 
 
 def _sandbox(make_args, monkeypatch, **kw):
     box = cs.Sandbox(make_args(**kw))
-    monkeypatch.setattr(cs.Sandbox, "login", cs.DEFAULT_GITHUB_USER,
+    monkeypatch.setattr(bg.GitHubBackend, "login", cs.DEFAULT_GITHUB_USER,
                         raising=False)
     return box
 
@@ -218,7 +219,7 @@ def test_teardown_deletes_deploy_key_and_container(make_args, monkeypatch, gh):
     box = _sandbox(make_args, monkeypatch, repo="me/p")
     deleted = []
     monkeypatch.setattr(box.box, "delete", lambda: deleted.append(True))
-    box.key_id, box.container_up = 42, True
+    box.backend.key_id, box.container_up = 42, True
     box.teardown()
     box.teardown()  # idempotent
     assert gh == [("DELETE", "/repos/me/p/keys/42")]
@@ -231,10 +232,10 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
 
     def boom(*a, **k):
         raise cs.GitHubError("down", 500)
-    monkeypatch.setattr(cs, "gh_api", boom)
+    monkeypatch.setattr(bg, "gh_api", boom)
     deleted = []
     monkeypatch.setattr(box.box, "delete", lambda: deleted.append(True))
-    box.key_id, box.container_up = 7, True
+    box.backend.key_id, box.container_up = 7, True
     box.teardown()
     assert deleted == [True]
 
@@ -285,16 +286,16 @@ def test_a_failing_volume_delete_is_reported_not_lost(
 ])
 def test_check_workflow_scope_warns_when_workflows_are_pushable(
         monkeypatch, capsys, scopes, warned):
-    monkeypatch.setattr(cs, "token_scopes", lambda: scopes)
-    cs.check_workflow_scope()
+    monkeypatch.setattr(bg, "token_scopes", lambda: scopes)
+    bg.check_workflow_scope()
     assert ("warning:" in capsys.readouterr().err) == warned
 
 
 def test_check_workflow_scope_never_raises(monkeypatch, capsys):
     def down():
         raise cs.GitHubError("GitHub GET / -> 503", 503)
-    monkeypatch.setattr(cs, "token_scopes", down)
-    cs.check_workflow_scope()
+    monkeypatch.setattr(bg, "token_scopes", down)
+    bg.check_workflow_scope()
     assert "couldn't verify" in capsys.readouterr().err
 
 
@@ -353,7 +354,7 @@ def gh_host(monkeypatch):
         if path.endswith("/" + cs.sandbox_host.HOST_FILE):
             return HOST_YAML
         raise cs.GitHubError("nf", 404)
-    monkeypatch.setattr(cs, "gh_api", fake)
+    monkeypatch.setattr(bg, "gh_api", fake)
 
 
 def test_usb_request_alone_attaches_nothing(make_args, monkeypatch, gh_host,
@@ -611,9 +612,9 @@ def test_github_user_and_email_defaults_come_from_env(monkeypatch):
 
 
 def test_check_expected_user():
-    assert cs.check_expected_user("studcavity", "studcavity") is None
-    assert cs.check_expected_user("StudCavity", "studcavity") is None
-    msg = cs.check_expected_user("mallory", "studcavity")
+    assert bg.check_expected_user("studcavity", "studcavity") is None
+    assert bg.check_expected_user("StudCavity", "studcavity") is None
+    msg = bg.check_expected_user("mallory", "studcavity")
     assert "mallory" in msg and "studcavity" in msg and "--no-user-check" in msg
 
 
@@ -623,8 +624,8 @@ def main_env(monkeypatch):
     seen = {"launched": False, "update": 0}
     monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
                         lambda *a, **k: seen.__setitem__("update", seen["update"] + 1))
-    monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
-    monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
+    monkeypatch.setattr(bg.GitHubBackend, "login", "studcavity", raising=False)
+    monkeypatch.setattr(bg, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: None)
     monkeypatch.setattr(cs.Sandbox, "resolve_usb", lambda self: [])
@@ -632,20 +633,20 @@ def main_env(monkeypatch):
                         lambda self, image: seen.__setitem__("launched", True)
                         or (_ for _ in ()).throw(RuntimeError("stop here")))
     monkeypatch.setattr(cs.Sandbox, "teardown", lambda self: None)
-    monkeypatch.setattr(cs.Sandbox, "preflight_github", lambda self: None)
+    monkeypatch.setattr(bg.GitHubBackend, "preflight", lambda self, *a: None)
     monkeypatch.setattr(cs.Sandbox, "land", lambda self: None)
     return seen
 
 
 def test_main_refuses_unexpected_gh_user(main_env, monkeypatch, capsys):
-    monkeypatch.setattr(cs.Sandbox, "login", "mallory", raising=False)
+    monkeypatch.setattr(bg.GitHubBackend, "login", "mallory", raising=False)
     assert cs.main(["proj"]) == 1
     assert "mallory" in capsys.readouterr().err
     assert not main_env["launched"]
 
 
 def test_main_no_user_check_flag(main_env, monkeypatch):
-    monkeypatch.setattr(cs.Sandbox, "login", "mallory", raising=False)
+    monkeypatch.setattr(bg.GitHubBackend, "login", "mallory", raising=False)
     cs.main(["proj", "--no-user-check"])
     assert main_env["launched"]
 
@@ -653,7 +654,7 @@ def test_main_no_user_check_flag(main_env, monkeypatch):
 def test_main_reports_missing_gh_cleanly(main_env, monkeypatch, capsys):
     def no_gh(self):
         raise cs.GitHubError("the GitHub CLI `gh` is not installed", 0)
-    monkeypatch.setattr(cs.Sandbox, "login", property(no_gh), raising=False)
+    monkeypatch.setattr(bg.GitHubBackend, "login", property(no_gh), raising=False)
     assert cs.main(["proj"]) == 1
     assert "gh" in capsys.readouterr().err and not main_env["launched"]
 
@@ -661,7 +662,7 @@ def test_main_reports_missing_gh_cleanly(main_env, monkeypatch, capsys):
 def test_setup_token_skips_the_gh_gate(main_env, monkeypatch):
     def boom(self):
         raise AssertionError("must not touch GitHub")
-    monkeypatch.setattr(cs.Sandbox, "login", property(boom), raising=False)
+    monkeypatch.setattr(bg.GitHubBackend, "login", property(boom), raising=False)
     cs.main(["--setup-token"])
     assert main_env["launched"]
 
@@ -678,7 +679,7 @@ def test_update_check_happens_before_any_github_or_container_work(
     order = []
     monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
                         lambda *a, **k: order.append("update"))
-    monkeypatch.setattr(cs.Sandbox, "login",
+    monkeypatch.setattr(bg.GitHubBackend, "login",
                         property(lambda self: order.append("gh") or "studcavity"),
                         raising=False)
     cs.main(["proj"])
@@ -780,8 +781,8 @@ def test_launch_passes_root_size(make_args, monkeypatch, fake_box):
 
 
 def test_repo_workdir():
-    assert cs.repo_workdir("me/proj") == "/home/ubuntu/proj"
-    assert cs.repo_workdir(None) == "/home/ubuntu"
+    assert bg.repo_workdir("me/proj") == "/home/ubuntu/proj"
+    assert bg.repo_workdir(None) == "/home/ubuntu"
 
 
 def test_disk_note_reflects_mounted_volumes(make_args, monkeypatch, fake_box):
@@ -852,7 +853,7 @@ def test_deploy_key_title_names_host_and_session(make_args, monkeypatch):
     posted = []
     monkeypatch.setattr(box.box, "user", lambda s, **k: type(
         "R", (), {"stdout": "ssh-ed25519 AAA"})())
-    monkeypatch.setattr(cs, "gh_api", lambda m, p, body=None, raw=False:
+    monkeypatch.setattr(bg, "gh_api", lambda m, p, body=None, raw=False:
                         posted.append(body) or {"id": 7, "ssh_keys": []})
     box.provision_key()
     key = [b for b in posted if b and "key" in b][0]
@@ -864,24 +865,24 @@ def test_deploy_key_title_names_host_and_session(make_args, monkeypatch):
 def test_land_is_skipped_when_it_should_be(make_args, monkeypatch, kw):
     base = dict(repo="o/r", no_pr=False)
     box = _sandbox(make_args, monkeypatch, **{**base, **kw})
-    box.key_id = 1
-    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    box.backend.key_id = 1
+    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: pytest.fail("landed"))
     box.land()
 
 
 def test_land_is_skipped_before_a_key_exists(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False)
-    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: pytest.fail("landed"))
     box.land()  # key_id is None: the session never got that far
 
 
 def test_land_failure_never_blocks_teardown(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False)
-    box.key_id = 1
+    box.backend.key_id = 1
 
     def boom(*a):
         raise cs.GitHubError("down", 0)
-    monkeypatch.setattr(cs.sandbox_land, "land", boom)
+    monkeypatch.setattr(bg.sandbox_land, "land", boom)
     box.land()  # logs a warning, does not raise
 
 
@@ -890,16 +891,16 @@ def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
     branch's deps file), not by what this launch happened to parse."""
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False,
                    name="quirky-hopper", no_deps=True)
-    box.key_id, box.deps = 1, None
+    box.backend.key_id, box.deps = 1, None
     got = []
-    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: got.append(a) or [])
+    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: got.append(a) or [])
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.land()
     assert got == [("o/r", "quirky-hopper", None)]  # no prompt
     got.clear()
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
     box.land()
-    assert got == [("o/r", "quirky-hopper", cs.confirm_held)]
+    assert got == [("o/r", "quirky-hopper", bg.confirm_held)]
 
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
@@ -1147,7 +1148,7 @@ def test_provision_key_is_two_execs_and_keeps_its_order(make_args, monkeypatch):
                    git_name="Ada", git_email="a@x.org")
     box.box = ArgvBox()
     api = []
-    monkeypatch.setattr(cs, "gh_api", lambda m, p, body=None, raw=False:
+    monkeypatch.setattr(bg, "gh_api", lambda m, p, body=None, raw=False:
                         api.append((m, p)) or ({"ssh_keys": ["ssh-ed25519 KEY"]} if p == "/meta"
                                                else {"id": 7}))
     box.provision_key()
@@ -1158,7 +1159,7 @@ def test_provision_key_is_two_execs_and_keeps_its_order(make_args, monkeypatch):
     assert "git config --global user.name Ada" in execs[1][1]
     assert "commit.gpgsign true" in execs[1][1]                         # signing key, same exec
     assert api == [("GET", "/meta"), ("POST", "/repos/o/r/keys")]      # key still added after meta
-    assert box.key_id == 7
+    assert box.backend.key_id == 7
 
 
 def test_the_real_tar_binary_extracts_the_archive_to_the_right_places(repo_root, tmp_path):
@@ -1181,7 +1182,7 @@ def test_the_real_tar_binary_extracts_the_archive_to_the_right_places(repo_root,
     ("y", True), ("YES", True), ("", False), ("n", False), ("maybe", False)])
 def test_confirm_held_defaults_to_no(monkeypatch, capsys, answer, expected):
     monkeypatch.setattr("builtins.input", lambda prompt="": answer)
-    assert cs.confirm_held("sbx/s/\x1b[31mw", ".github/x") is expected
+    assert bg.confirm_held("sbx/s/\x1b[31mw", ".github/x") is expected
     assert "\x1b" not in capsys.readouterr().err
 
 
@@ -1189,7 +1190,7 @@ def test_confirm_held_treats_eof_as_no(monkeypatch):
     def eof(prompt=""):
         raise EOFError
     monkeypatch.setattr("builtins.input", eof)
-    assert cs.confirm_held("sbx/s/w", ".github/x") is False
+    assert bg.confirm_held("sbx/s/w", ".github/x") is False
 
 
 # --- one landing pipeline (spec 06, problem 2) ------------------------------- #
@@ -1200,7 +1201,7 @@ def _pipeline(monkeypatch, land=None, prov=None):
         calls.append(("land", repo, session))
         if land:
             raise land
-        return [cs.sandbox_land.Landed("sbx/s/work", "main", "opened",
+        return [bg.sandbox_land.Landed("sbx/s/work", "main", "opened",
                                        "https://github.com/o/r/pull/7", 1)]
 
     def fake_post(repo, landed):
@@ -1208,37 +1209,37 @@ def _pipeline(monkeypatch, land=None, prov=None):
         if prov:
             raise prov
         return []
-    monkeypatch.setattr(cs.sandbox_land, "land", fake_land)
+    monkeypatch.setattr(bg.sandbox_land, "land", fake_land)
     monkeypatch.setattr(cs.sandbox_provenance, "post_session", fake_post)
-    monkeypatch.setattr(cs, "report_landing", lambda *a, **k: None)
-    monkeypatch.setattr(cs, "report_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(bg, "report_landing", lambda *a, **k: None)
+    monkeypatch.setattr(bg, "report_provenance", lambda *a, **k: None)
     return calls
 
 
 def test_the_pipeline_lands_then_posts_provenance(make_args, monkeypatch):
     calls = _pipeline(monkeypatch)
-    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    landed, ok = bg.land_and_report(make_args(repo="o/r"), "quirky-hopper")
     assert ok and len(landed) == 1
     assert [c[0] for c in calls] == ["land", "provenance"]
 
 
 def test_a_failed_landing_skips_provenance_but_never_raises(make_args, monkeypatch):
     calls = _pipeline(monkeypatch, land=cs.GitHubError("down", 0))
-    landed, ok = cs.land_and_report(make_args(repo="o/r"), "quirky-hopper")
+    landed, ok = bg.land_and_report(make_args(repo="o/r"), "quirky-hopper")
     assert landed == [] and not ok and [c[0] for c in calls] == ["land"]
 
 
 def test_a_failed_provenance_step_never_undoes_the_landing(make_args, monkeypatch):
     _pipeline(monkeypatch, prov=RuntimeError("boom"))
-    landed, ok = cs.land_and_report(make_args(repo="o/r"), None)
+    landed, ok = bg.land_and_report(make_args(repo="o/r"), None)
     assert ok and len(landed) == 1
 
 
 def test_no_pr_and_no_provenance_are_honoured(make_args, monkeypatch):
     calls = _pipeline(monkeypatch)
-    cs.land_and_report(make_args(repo="o/r"), "s", open_prs=False)
+    bg.land_and_report(make_args(repo="o/r"), "s", open_prs=False)
     assert calls == []
-    cs.land_and_report(make_args(repo="o/r", no_provenance=True), "s")
+    bg.land_and_report(make_args(repo="o/r", no_provenance=True), "s")
     assert [c[0] for c in calls] == ["land"]
 
 
@@ -1256,8 +1257,9 @@ def test_land_all_goes_through_the_same_pipeline(monkeypatch, kw, code):
 
 def test_landing_is_called_from_exactly_one_place():
     import inspect
-    src = inspect.getsource(cs)
+    src = inspect.getsource(bg)
     assert src.count("sandbox_land.land(") == 1
+    assert "sandbox_land" not in inspect.getsource(cs)
 
 
 def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):

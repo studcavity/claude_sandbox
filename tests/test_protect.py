@@ -5,6 +5,7 @@ import os
 import pytest
 
 import claude_sandbox as cs
+import sandbox_backend_github as bg
 import sandbox_protect as sp
 from sandbox_github import GitHubError
 
@@ -63,39 +64,39 @@ def flow(make_args, monkeypatch):
     monkeypatch.setattr(cs.sandbox_sessions, "check_protection",
                         lambda repo: ("main", "WARN" if st["state"] !=
                                       "protected" else None, st["state"]))
-    monkeypatch.setattr(cs.sandbox_protect, "existing_ruleset_names",
+    monkeypatch.setattr(bg.sandbox_protect, "existing_ruleset_names",
                         lambda r: st["existing"])
-    monkeypatch.setattr(cs.sandbox_protect, "fetch_repo_rulesets",
+    monkeypatch.setattr(bg.sandbox_protect, "fetch_repo_rulesets",
                         lambda r, b: st["fetch_args"].append((r, b))
                         or st["repo_rulesets"])
-    monkeypatch.setattr(cs.sandbox_protect, "discover_checks",
+    monkeypatch.setattr(bg.sandbox_protect, "discover_checks",
                         lambda r, b: st["checks"])
     st.setdefault("required", {"ci"})   # satisfied by default: no gap
-    monkeypatch.setattr(cs.sandbox_protect, "required_on",
+    monkeypatch.setattr(bg.sandbox_protect, "required_on",
                         lambda r, b: st["required"])
     def apply(r, rs):
         st["applied"].append(rs)
         st["required"] = set(st.get("required", ())) | set(sp.required_checks(rs))
         return 1
-    monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset", apply)
+    monkeypatch.setattr(bg.sandbox_protect, "apply_ruleset", apply)
 
     def answer(*a):
         st["asked"].append(a)
         return st["answers"].pop(0)
-    monkeypatch.setattr(cs, "ask_protect", lambda *a: answer("protect"))
-    monkeypatch.setattr(cs, "ask_checks", lambda *a: answer("checks"))
-    monkeypatch.setattr(cs, "ask_ruleset", lambda *a: answer(("ruleset", a[1])))
+    monkeypatch.setattr(bg, "ask_protect", lambda *a: answer("protect"))
+    monkeypatch.setattr(bg, "ask_checks", lambda *a: answer("checks"))
+    monkeypatch.setattr(bg, "ask_ruleset", lambda *a: answer(("ruleset", a[1])))
     return box, st
 
 
 def warned(box):
-    return "\n".join(box.host_warnings)
+    return "\n".join(box.backend.host_warnings)
 
 
 def test_declined_applies_nothing_and_warns_the_user(flow):
     box, st = flow
     st["answers"] = [False]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["applied"] == []
     assert "does not require pull requests" in warned(box)
 
@@ -103,7 +104,7 @@ def test_declined_applies_nothing_and_warns_the_user(flow):
 def test_yes_applies_ruleset_without_checks_by_default(flow):
     box, st = flow
     st["answers"] = [True]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     (rs,) = st["applied"]
     assert "required_status_checks" not in {r["type"] for r in rs["rules"]}
     assert "does not require" not in warned(box)
@@ -112,7 +113,7 @@ def test_yes_applies_ruleset_without_checks_by_default(flow):
 def test_yes_to_checks_requires_the_discovered_names(flow):
     box, st = flow
     st["checks"], st["answers"] = ["test (3.12)"], [True, True]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     (rs,) = st["applied"]
     assert rs["rules"][-1]["parameters"]["required_status_checks"] == [
         {"context": "test (3.12)"}]
@@ -122,7 +123,7 @@ def test_yes_to_checks_requires_the_discovered_names(flow):
 def test_no_to_checks_still_applies_base_ruleset(flow):
     box, st = flow
     st["checks"], st["answers"] = ["test (3.12)"], [True, False]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert "required_status_checks" not in {
         r["type"] for r in st["applied"][0]["rules"]}
 
@@ -131,31 +132,31 @@ def test_never_prompts_when_protected_or_flagged_or_not_a_tty(flow,
                                                               monkeypatch):
     box, st = flow
     st["state"] = "protected"
-    box.protect_default_branch()
-    assert st["asked"] == [] and box.host_warnings == []
+    box.backend.protect_default_branch()
+    assert st["asked"] == [] and box.backend.host_warnings == []
 
     st["state"] = "unprotected"
     box.args.no_protect_prompt = True
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and st["applied"] == []
 
     box.args.no_protect_prompt = False
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and st["applied"] == []
 
 
 def test_unknown_state_is_not_offered_a_change(flow):
     box, st = flow
     st["state"] = "unknown"
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and "couldn't verify" in warned(box)
 
 
 def test_existing_same_named_ruleset_is_not_duplicated(flow):
     box, st = flow
     st["existing"] = {"protect-default-branch"}
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and st["applied"] == []
 
 
@@ -165,8 +166,8 @@ def test_apply_failure_never_aborts_and_note_stays_honest(flow, monkeypatch):
 
     def boom(r, rs):
         raise GitHubError("403 plan has no rulesets", 403)
-    monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset", boom)
-    box.protect_default_branch()  # must not raise
+    monkeypatch.setattr(bg.sandbox_protect, "apply_ruleset", boom)
+    box.backend.protect_default_branch()  # must not raise
     assert "does not require pull requests" in warned(box)
 
 
@@ -218,13 +219,13 @@ def test_required_on_merges_both_and_reports_unreadable_as_none(monkeypatch):
 def test_exit_summary_repeats_the_launch_warnings(flow, capsys):
     box, st = flow
     st["state"] = "unknown"
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     launch = capsys.readouterr().err
     assert "warning: couldn't verify" in launch
     box.report_host_warnings()
     exit_ = capsys.readouterr().err
     assert "couldn't verify" in exit_ and "the session was not told" in exit_
-    box.host_warnings.clear()
+    box.backend.host_warnings.clear()
     box.report_host_warnings()
     assert capsys.readouterr().err == ""
 
@@ -232,7 +233,7 @@ def test_exit_summary_repeats_the_launch_warnings(flow, capsys):
 def test_a_protected_repo_with_unrequired_ci_jobs_warns_with_the_names(flow):
     box, st = flow
     st["state"], st["checks"], st["required"] = "protected", ["lint", "test"], {"lint"}
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert "`test`" in warned(box) and "`lint`" not in warned(box)
 
 
@@ -257,8 +258,8 @@ def test_the_sessions_claude_md_is_the_same_whatever_the_protection_state(
     for state, required, ci in STATES:
         st.update(state=state, required=set(required), checks=list(ci),
                   answers=[False, False], asked=[])
-        box.host_warnings.clear()
-        box.protect_default_branch()
+        box.backend.host_warnings.clear()
+        box.backend.protect_default_branch()
         rendered.add(_render(repo_root, box))
     assert len(rendered) == 1
     (md,) = rendered
@@ -396,7 +397,7 @@ def test_repo_defined_rulesets_replace_the_generic_one(flow):
     box, st = flow
     st["repo_rulesets"] = ([repo_rs()], [])
     st["answers"] = [True]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     (rs,) = st["applied"]
     assert rs["name"] == "require-x"          # not protect-default-branch
     assert st["asked"] == [(("ruleset", "require-x"),)]  # one question only
@@ -408,8 +409,8 @@ def test_repo_ruleset_is_offered_even_on_a_protected_branch(flow):
     st["state"] = "protected"
     st["repo_rulesets"] = ([repo_rs()], [])
     st["answers"] = [True]
-    box.protect_default_branch()
-    assert len(st["applied"]) == 1 and box.host_warnings == []
+    box.backend.protect_default_branch()
+    assert len(st["applied"]) == 1 and box.backend.host_warnings == []
 
 
 def test_declined_and_existing_repo_rulesets_apply_nothing(flow):
@@ -417,17 +418,17 @@ def test_declined_and_existing_repo_rulesets_apply_nothing(flow):
     st["state"] = "protected"
     st["repo_rulesets"] = ([repo_rs()], [])
     st["answers"] = [False]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["applied"] == [] and len(st["asked"]) == 1
     st["existing"], st["asked"] = {"require-x"}, []
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and st["applied"] == []
 
 
 def test_protected_repo_with_no_repo_rulesets_is_never_prompted(flow):
     box, st = flow
     st["state"] = "protected"
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["asked"] == [] and st["applied"] == []
     assert st["fetch_args"] == [("o/r", "main")]
 
@@ -436,7 +437,7 @@ def test_each_repo_ruleset_is_asked_separately(flow):
     box, st = flow
     st["repo_rulesets"] = ([repo_rs(name="one"), repo_rs(name="two")], [])
     st["answers"] = [True, False]
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert [r["name"] for r in st["applied"]] == ["one"]
     assert len(st["asked"]) == 2
 
@@ -444,10 +445,10 @@ def test_each_repo_ruleset_is_asked_separately(flow):
 def test_repo_rulesets_are_never_fetched_without_a_prompt(flow, monkeypatch):
     box, st = flow
     box.args.no_protect_prompt = True
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.args.no_protect_prompt = False
-    box.protect_default_branch()
+    box.backend.protect_default_branch()
     assert st["fetch_args"] == []
 
 

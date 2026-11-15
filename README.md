@@ -41,6 +41,8 @@ On every launch the program:
 | --- | --- |
 | `run.sh` | thin shim: `exec`s `claude_sandbox.py` |
 | `claude_sandbox.py` | CLI entry point and defaults, `Sandbox` lifecycle, pure rendering helpers |
+| `sandbox_backend.py` | `Backend`: the parts of a launch that depend on where the code comes from (credential, clone, CLAUDE.md access text, landing) |
+| `sandbox_backend_github.py` | the GitHub backend: deploy key, clone over SSH, PRs and provenance, protection and Actions checks |
 | `sandbox_bootstrap.py` | stdlib-only: create `venv/`, install requirements, re-exec |
 | `sandbox_update.py` | offer to `git pull` when this checkout is behind |
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |

@@ -54,7 +54,6 @@ Examples:
 """
 import argparse
 import collections
-import functools
 import getpass
 import os
 import re
@@ -76,18 +75,15 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
-import sandbox_land
-import sandbox_hardening
-import sandbox_protect
 import sandbox_provenance
 import sandbox_sessions
 import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
+import sandbox_backend_github
 import sandbox_github
-from sandbox_github import (GitHubError, gh_api, github_login, repo_owner,
-                            resolve_repo, token_scopes, validate_repo,
-                            workflow_push_warning)
+from sandbox_backend_github import GitHubBackend, access_lines
+from sandbox_github import GitHubError, resolve_repo, validate_repo
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
 from sandbox_util import log, sigint_to_child
 
@@ -376,29 +372,11 @@ def parse_probe(out):
             "usb": usb}
 
 
-def access_lines(workdir, repo, branch, read_only):
-    if not repo:
-        return [f"- Working directory: `{workdir}`. No repo was cloned.",
-                "- An SSH key is registered on the user's GitHub "
-                "**account** for this session, so you can clone and "
-                "push to any repo they can access."]
-    return [
-        f"- Working copy: `{workdir}`, a clone of `github.com/{repo}`"
-        + (f" (branch `{branch}`)" if branch else "") + ".",
-        f"- GitHub access is an SSH **deploy key scoped to `{repo}` "
-        "only**. Other repos can't be cloned or pushed over SSH. "
-        "`https://github.com/` URLs are rewritten to SSH.",
-        "- The deploy key is **read-only**: you cannot push. Tell the "
-        "user early that commits will be lost when the sandbox ends "
-        "unless they export them some other way."
-        if read_only else
-        "- The deploy key has write access, so you can push.",
-    ]
 
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None):
+                     disk_note="", session=None, access=None):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
@@ -413,7 +391,8 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         session=session or container,
         repo=repo or "(no repo)",
         prefix=sandbox_sessions.branch_prefix(session or container),
-        access="\n".join(access_lines(workdir, repo, branch, read_only)),
+        access="\n".join(access if access is not None else
+                          access_lines(workdir, repo, branch, read_only)),
         user=USER, uid=UID, home=HOME,
         sudo=("Passwordless `sudo` works, so installing apt packages is "
               "fine." if facts["sudo"] else
@@ -435,58 +414,12 @@ def render_deps_ref(template):
         deps_file=sandbox_deps.DEPS_FILE, user=USER)
 
 
-def ask_hardening(repo, cond):
-    """Interactive yes/no (default no) to change one Actions setting, showing
-    the exact call it would make."""
-    print(f"\n{repo}: {cond.text}.\nThe fix would make this call:\n  "
-          f"{sandbox_hardening.describe_fix(cond.fix)}", file=sys.stderr)
-    try:
-        return input("Apply it? [y/N] ").strip().lower() in ("y", "yes")
-    except EOFError:
-        return False
 
 
-def ask_protect(repo, branch, effects):
-    """Interactive yes/no (default no) to apply the protection ruleset."""
-    print(f"\n\033[1m{repo}: `{branch}` does not require pull requests.\033[0m"
-          "\nApply the protection ruleset? It would:", file=sys.stderr)
-    for e in effects:
-        print(f"  - {e}", file=sys.stderr)
-    try:
-        return input("Apply branch protections to this repo? [y/N] "
-                     ).strip().lower() in ("y", "yes")
-    except EOFError:
-        return False
 
 
-def ask_ruleset(repo, name, effects):
-    """Interactive yes/no (default no) to apply a ruleset the repo defines."""
-    print(f"\n\033[1m{repo} defines ruleset `{name}` "
-          "(rulesets/ on its default branch), not applied yet.\033[0m"
-          "\nApplying it would:", file=sys.stderr)
-    for e in effects:
-        print(f"  - {e}", file=sys.stderr)
-    try:
-        return input(f"Apply ruleset `{name}` to this repo? [y/N] "
-                     ).strip().lower() in ("y", "yes")
-    except EOFError:
-        return False
 
 
-def ask_checks(branch, checks):
-    """Interactive yes/no (default no) to also require these CI checks."""
-    print("\nThese checks passed on the latest commit of "
-          f"`{branch}`:", file=sys.stderr)
-    for c in checks:
-        print(f"  - {c}", file=sys.stderr)
-    print("Requiring them also makes PRs wait for them, and (strict mode) "
-          "need to be up to date with the base. A name that never reports "
-          "would block every merge.", file=sys.stderr)
-    try:
-        return input("Require these checks too? [y/N] ").strip().lower() in (
-            "y", "yes")
-    except EOFError:
-        return False
 
 
 def usb_spec(text):
@@ -511,57 +444,12 @@ def ask_usb(req):
         return False
 
 
-def check_expected_user(login, expected):
-    """Error text when gh is logged in as someone unexpected, else None."""
-    if login.lower() == expected.lower():
-        return None
-    return (f"gh is authenticated as {login!r}, expected {expected!r} "
-            "(--github-user); refusing to continue. Switch accounts with "
-            "`gh auth switch`, or pass --github-user / --no-user-check if "
-            "that is intended.")
 
 
-def confirm_held(branch, detail):
-    """Ask whether to open a PR for a branch held for touching privileged
-    files. Default no; no answer (EOF) is no. Both strings are session text,
-    so they are sanitised before they reach the terminal."""
-    print(f"\n\u26a0 {sandbox_land.clean_text(branch, 120)} touches "
-          f"{sandbox_land.clean_text(detail, 300)}\nThese run with extra "
-          "privilege once merged or on CI; review the diff first.",
-          file=sys.stderr)
-    try:
-        return input("Open a PR for it anyway? [y/N] ").strip().lower() in (
-            "y", "yes")
-    except EOFError:
-        return False
 
 
-def report_landing(results, session=None):
-    """Print the exit summary of PRs the launcher opened (to stderr)."""
-    print("\n" + sandbox_land.format_landing(
-        results, session, color=sys.stderr.isatty()), file=sys.stderr)
 
 
-def prefetch_plan(args):
-    """The independent GitHub reads a launch makes, to start together (see
-    sandbox_github.start_prefetch). Mirrors what the launch will actually ask
-    for, so nothing is fetched that a flag turns off."""
-    if not args.repo or args.setup_token or args.land_all or args.no_prefetch:
-        return []
-    repo = args.repo
-    specs: list = [("login",)]
-    if not args.no_deps:
-        specs.append(("api", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}", True))
-    if not args.no_usb:
-        specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
-    if not args.read_only:
-        specs += [("scopes",), ("api", f"/repos/{repo}", False),
-                  ("api", f"/repos/{repo}/keys?per_page=100", False),
-                  ("api", f"/repos/{repo}/actions/permissions/workflow", False),
-                  ("api", f"/repos/{repo}/actions/secrets?per_page=1", False),
-                  ("api", f"/repos/{repo}/actions/organization-secrets?per_page=1",
-                   False)]
-    return specs
 
 
 def refresh_argv(args, python, script):
@@ -624,47 +512,10 @@ def refresh_images(args):
     return 0
 
 
-def report_provenance(outcomes):
-    """Print the exit summary of `sandbox/provenance` statuses (to stderr)."""
-    text = sandbox_provenance.format_outcomes(outcomes)
-    if text:
-        print("\n" + text, file=sys.stderr)
 
 
-def land_and_report(args, session=None, open_prs=True):
-    """The one post-landing sequence, for a session's branches (every
-    session's when `session` is None): open PRs, then post their provenance.
-    Each step has its own try, so one failing never stops the next, and
-    nothing raises. -> (landed, ok), where ok is False if landing failed."""
-    who = session or "all sessions"
-    landed, ok = [], True
-    if open_prs:
-        try:
-            landed = sandbox_land.land(
-                args.repo, session, confirm_held if sys.stdin.isatty() else None)
-            report_landing(landed, session)
-        except Exception as e:
-            ok = False
-            log(f"warning: couldn't open PRs for {who}: {e}"
-                + (f"; push state is on GitHub under "
-                   f"{sandbox_sessions.branch_prefix(session)}" if session else ""))
-    if landed and not args.no_provenance:
-        try:
-            report_provenance(sandbox_provenance.post_session(args.repo, landed))
-        except Exception as e:
-            log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
-                f"for {who}: {e}")
-    return landed, ok
 
 
-def check_workflow_scope():
-    """Warn (never fail) if the sandbox WILL be able to push workflow files."""
-    try:
-        msg = workflow_push_warning(token_scopes())
-    except (GitHubError, OSError) as e:
-        msg = workflow_push_warning(None) + f" ({e})"
-    if msg:
-        log(f"warning: {msg}")
 
 
 # --------------------------------------------------------------------------- #
@@ -702,24 +553,27 @@ def size_arg(text):
     return text.strip()
 
 
-def repo_workdir(repo):
-    return f"{HOME}/{repo.split('/')[1]}" if repo else HOME
+
+
+def make_backend(args):
+    """The Backend for these arguments (see sandbox_backend)."""
+    return GitHubBackend(args)
 
 
 class Sandbox:
-    def __init__(self, args):
+    def __init__(self, args, backend=None):
         self.args = args
         self.cli = args.cli
+        self.backend = backend or make_backend(args)
         # The container name doubles as the session id (key title, branches).
         # Never reuse a name whose signing key is recorded for this repo: the
         # new key would vouch for the old session's branches.
         self.name = args.name or sandbox_sessions.pick_name(
             Container.list_names(self.cli)
-            | sandbox_provenance.recorded_sessions(args.repo))
+            | sandbox_provenance.recorded_sessions(self.backend.key_repo,
+                                                   self.backend.key_root))
         self.session_id = sandbox_sessions.validate_session(self.name)
-        self.host_warnings: list = []   # for the user; never in the session's CLAUDE.md
         self.box = Container(self.cli, self.name)
-        self.key_id = None
         self.container_up = False
         self._torn_down = False
         self._volumes_thread = None   # see teardown() / wait_volumes()
@@ -731,13 +585,6 @@ class Sandbox:
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{sandbox_deps.DEPS_FILE}`.")
 
-    @functools.cached_property
-    def login(self):
-        # Looked up on first use so --setup-token works without GitHub auth.
-        # Also proves `gh` is installed and logged in, before anything is built.
-        return github_login()
-
-    # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
         log(f"launching ephemeral container {self.name} ({image})")
         with sandbox_timing.stage("incus launch"):
@@ -765,7 +612,7 @@ class Sandbox:
 
     def attach_volumes(self):
         """Mount size-capped volumes over /tmp and the clone directory."""
-        mounts = sandbox_volumes.plan(self.name, repo_workdir(self.args.repo),
+        mounts = sandbox_volumes.plan(self.name, self.backend.workdir(),
                                       self.args.volume_size)
         self.volumes = sandbox_volumes.Volumes(
             self.cli, self.box, mounts, self.args.volume_size)
@@ -798,17 +645,13 @@ class Sandbox:
         """
         f = sandbox_deps.DEPS_FILE
         self.deps = None
-        if not self.args.repo:
+        if not self.backend.has_repo:
             return None
         if self.args.no_deps:
             self.deps_note = f"Skipped (`--no-deps`): `{f}` was not applied."
             return None
-        try:
-            raw = gh_api("GET", f"/repos/{self.args.repo}/contents/{f}",
-                         raw=True)
-        except GitHubError as e:
-            if e.code != 404:
-                raise
+        raw = self.backend.read_file(f)
+        if raw is None:
             self.deps_note = f"This repo has no `{f}`, so nothing extra was installed."
             return None
         deps = sandbox_deps.parse(raw)
@@ -845,20 +688,15 @@ class Sandbox:
         if a.no_usb:
             return []
         requests = []
-        if a.repo:
-            try:
-                raw = gh_api("GET", f"/repos/{a.repo}/contents/"
-                             f"{sandbox_host.HOST_FILE}", raw=True)
-                requests = sandbox_host.parse(raw)["usb"]
-            except GitHubError as e:
-                if e.code != 404:
-                    raise
+        raw = self.backend.read_file(sandbox_host.HOST_FILE)
+        if raw is not None:
+            requests = sandbox_host.parse(raw)["usb"]
         try:
             allow = sandbox_host.load_allowlist(a.usb_allow)
         except ValueError as e:
             raise RuntimeError(f"USB allowlist: {e}") from None
         self.usb_devices = sandbox_host.resolve_usb(
-            requests, a.usb, allow, a.repo,
+            requests, a.usb, allow, self.backend.key_repo,
             ask=ask_usb if sys.stdin.isatty() else None)
         for d in self.usb_devices:
             log(f"usb: {d['vendor_id']}:{d['product_id']} "
@@ -911,40 +749,17 @@ class Sandbox:
             f"  - {n}" for n in notes)
 
     def provision_key(self):
-        log("generating SSH key inside the container")
-        # One exec makes the key and prints its public half.
-        pubkey = self.box.user(
-            f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-            f"ssh-keygen -q -t ed25519 -N '' "
-            f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519 && "
-            "cat ~/.ssh/id_ed25519.pub", capture=True).stdout.strip()
-
-        # Pin GitHub host keys from the API (over the host's TLS) instead of
-        # trusting ssh-keyscan on first use.
-        meta = gh_api("GET", "/meta")
-        known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
-
-        title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
-                                           self.session_id)
-        if self.args.repo:
-            log(f"adding deploy key to {self.args.repo}")
-            resp = gh_api("POST", f"/repos/{self.args.repo}/keys",
-                          {"title": title, "key": pubkey,
-                           "read_only": self.args.read_only})
-        else:
-            log("adding SSH key to your GitHub account")
-            resp = gh_api("POST", "/user/keys",
-                          {"title": title, "key": pubkey})
-        self.key_id = resp["id"]
-
-        # known_hosts (from stdin), every git setting and, where there are
-        # commits to sign, the session's signing key: one exec.
-        signing = bool(self.args.repo and not self.args.read_only)
+        """The backend's network credential (if any), then known_hosts, every
+        git setting and, where there are commits to sign, the session's
+        signing key: one exec."""
+        known = self.backend.provision(self.box, self.name, self.session_id)
+        signing = self.backend.has_commits
         r = self.box.user(
-            "cat >> ~/.ssh/known_hosts && " + git_config_script(
-                self.args.git_name, self.args.git_email)
+            ("mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+             "cat >> ~/.ssh/known_hosts && " if known else "")
+            + git_config_script(self.args.git_name, self.args.git_email)
             + (" && " + sandbox_provenance.container_script() if signing else ""),
-            input=known, capture=signing)
+            input=known or None, capture=signing)
         if signing:
             self.record_signing_key(r.stdout)
 
@@ -955,8 +770,9 @@ class Sandbox:
         blocks the launch: without a recorded key its PRs fail the
         provenance check (closed)."""
         try:
-            if sandbox_provenance.save_key(self.args.repo, self.session_id,
-                                           (out.strip().splitlines() or [""])[0]):
+            if sandbox_provenance.save_key(self.backend.key_repo, self.session_id,
+                                           (out.strip().splitlines() or [""])[0],
+                                           root=self.backend.key_root):
                 log(f"warning: replaced the recorded signing key of an earlier "
                     f"session named {self.session_id}; its unmerged PRs will "
                     "fail the provenance check")
@@ -971,24 +787,13 @@ class Sandbox:
         self.box.user(CLAUDE_INSTALL, capture=True)
 
     def clone(self):
-        if not self.args.repo:
-            return HOME
-        repo_dir = repo_workdir(self.args.repo)
-        log(f"cloning {self.args.repo}")
-        self.box.user(f"git clone git@github.com:{self.args.repo}.git "
-                      f"{shlex.quote(repo_dir)}")
-        if not self.args.read_only:
-            # Never work on the default branch: concurrent sessions each get
-            # their own branch under sbx/<session>/ and land through PRs.
-            self.box.user(f"git -C {shlex.quote(repo_dir)} checkout -q -b "
-                          + shlex.quote(sandbox_sessions.work_branch(
-                              self.session_id)))
-        return repo_dir
+        """Put the code in the container (the backend decides how)."""
+        return self.backend.populate(self.box, self.session_id)
 
     def install_session_tools(self):
         """Put the checker in the sandbox so the session can lint its own
         commits (`sandbox-check`). Only where there are commits to lint."""
-        if not self.args.repo or self.args.read_only:
+        if not self.backend.has_commits:
             return
         # The directories are made as the session user (so they stay theirs);
         # the files then arrive as root in one tar stream: 2 execs, not 9.
@@ -1014,8 +819,10 @@ class Sandbox:
             template = f.read()
         md = render_claude_md(template, parse_probe(probe),
                               container=self.name, workdir=workdir,
-                              repo=self.args.repo,
+                              repo=self.backend.label,
                               read_only=self.args.read_only,
+                              access=self.backend.access_lines(
+                                  workdir, parse_probe(probe)["branch"]),
                               deps_note=self.deps_note,
                               session=self.session_id,
                               usb_devices=self.usb_devices, cli=self.cli,
@@ -1027,25 +834,11 @@ class Sandbox:
             ref = render_deps_ref(f.read())
         self.box.user(f"cat > {DEPS_REF_PATH}", input=ref)
 
-    def repo_trusted(self):
-        """Whether Claude Code may skip its trust dialog for the clone: only
-        for a repo the authenticated user owns. Fails closed."""
-        if not self.args.repo:
-            return False
-        try:
-            trusted, note = sandbox_claude_config.trust_decision(
-                repo_owner(self.args.repo), self.login)
-        except (GitHubError, KeyError, TypeError) as e:
-            trusted, note = False, f"couldn't check the repo owner ({e})"
-        if note:
-            log(f"warning: {note}")
-        return trusted
-
     def seed_claude(self, workdir, secrets):
         """Pre-answer Claude Code's first-run dialogs (see
         sandbox_claude_config). Never blocks the launch."""
         state = sandbox_claude_config.claude_state(
-            workdir, secrets, self.repo_trusted())
+            workdir, secrets, self.backend.trusted())
         r = self.box.user_argv(["python3", "-c",
                                 sandbox_claude_config.MERGE_SCRIPT],
                                input=sandbox_claude_config.merge_input(state),
@@ -1140,165 +933,32 @@ class Sandbox:
         log(f"saved token to {self.args.token_file} (mode 600)")
         return 0
 
-    def preflight_github(self):
-        """Advice and housekeeping before launch; never blocks the launch."""
-        a = self.args
-        if not a.repo or a.read_only:
-            return
-        self.protect_default_branch()
-        self.harden_actions()
-        try:
-            live = Container.list_names(self.cli)
-            gone = sandbox_sessions.reap_stale_keys(
-                a.repo, sandbox_sessions.host_id(), live | {self.name})
-            for key_id in gone:
-                log(f"removed stale deploy key {key_id} (its container is gone)")
-        except (GitHubError, subprocess.CalledProcessError, OSError) as e:
-            log(f"warning: couldn't reap stale deploy keys: {e}")
-
-    def protect_default_branch(self):
-        """Check that the default branch requires PRs; if it doesn't, offer
-        (on a terminal, default no) to apply rulesets/protect-main.json.
-        Advice only: never blocks the launch. What is still missing afterwards
-        becomes host-side warnings (self.host_warnings: printed now and in the
-        exit summary); nothing about the repo's protection reaches the
-        session, whatever its state."""
-        a = self.args
-        branch, state = "the default branch", "unknown"
-        try:
-            branch, warn, state = sandbox_sessions.check_protection(a.repo)
-            if (state in ("unprotected", "protected")
-                    and not a.no_protect_prompt and sys.stdin.isatty()):
-                state, _ = self.offer_protection(branch, state)
-        except (GitHubError, OSError, ValueError) as e:
-            log(f"warning: couldn't check or apply branch protection: {e}")
-        required = ci = None
-        if state in ("protected", "applied"):
-            required = sandbox_protect.required_on(a.repo, branch)
-            ci = sandbox_protect.discover_checks(a.repo, branch)
-        self.add_host_warnings(sandbox_protect.gap_warnings(
-            a.repo, branch, state, required, ci or []))
-
-    def harden_actions(self):
-        """Report whether the repo's Actions settings keep session code's CI
-        runs untrusted (read-only token, Actions can't approve PRs, no secrets
-        to reach) and, on a terminal and after a yes each, fix the settable
-        ones (see sandbox_hardening). Advice only: never blocks the launch;
-        what is still unmet becomes host-side warnings, never session text."""
-        a = self.args
-        ask = None
-        if not a.no_hardening_prompt and sys.stdin.isatty():
-            ask = lambda cond: ask_hardening(a.repo, cond)  # noqa: E731
-        try:
-            found, notes = sandbox_hardening.harden(a.repo, gh_api, ask)
-        except (GitHubError, OSError, ValueError) as e:
-            log(f"warning: couldn't check the repo's Actions settings: {e}")
-            return
-        log("Actions settings (no same-repo approval setting exists on "
-            "GitHub; these keep session code's CI runs untrusted):")
-        for line in notes + sandbox_hardening.summary_lines(found):
-            log(f"  {line}")
-        self.add_host_warnings(sandbox_hardening.warnings(found, bool(ask)),
-                               show=False)
-
-    def add_host_warnings(self, warnings, show=True):
-        """Keep each for the exit summary, and show it now unless already
-        shown."""
-        for w in warnings:
-            if show:
-                log(f"warning: {w}")
-        self.host_warnings.extend(warnings)
-
     def report_host_warnings(self):
         """Repeat the launch warnings at exit, where a long session hasn't
         scrolled them away. Never raises."""
-        if self.host_warnings:
+        warnings = self.backend.host_warnings
+        if warnings:
             print("\nrepo warnings (for you; the session was not told):\n"
-                  + "\n".join(f"  - {w}" for w in self.host_warnings),
+                  + "\n".join(f"  - {w}" for w in warnings),
                   file=sys.stderr)
 
-    def offer_protection(self, branch, state="unprotected"):
-        """Ask, then apply. Returns (state, required_checks).
-
-        Rulesets the repo defines itself (rulesets/*.json on its default
-        branch) win over the launcher's generic one and are offered even when
-        the branch is already protected (they may add e.g. a required check).
-        """
-        a = self.args
-        repo_rs, problems = sandbox_protect.fetch_repo_rulesets(a.repo, branch)
-        for p in problems:
-            log(f"warning: ignoring {p}")
-        existing = sandbox_protect.existing_ruleset_names(a.repo)
-        if repo_rs:
-            return self.offer_repo_rulesets(
-                branch, state, sandbox_protect.pending(repo_rs, existing))
-        if state != "unprotected":
-            return state, []
-        rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "rulesets", "protect-main.json")
-        ruleset = sandbox_protect.load_ruleset(rs_path)
-        if ruleset["name"] in existing:
-            log(f"ruleset {ruleset['name']!r} already exists but doesn't "
-                "require PRs on the default branch; fix it in Settings -> Rules")
-            return "unprotected", []
-        if not ask_protect(a.repo, branch, sandbox_protect.describe(ruleset,
-                                                                    branch)):
-            return "unprotected", []
-        checks = sandbox_protect.discover_checks(a.repo, branch)
-        if checks and not ask_checks(branch, checks):
-            checks = []
-        sandbox_protect.apply_ruleset(
-            a.repo, sandbox_protect.with_checks(ruleset, checks))
-        log(f"applied ruleset {ruleset['name']!r} to {a.repo}"
-            + (f", requiring: {', '.join(checks)}" if checks else
-               " (no required status checks)"))
-        return "applied", checks
-
-    def offer_repo_rulesets(self, branch, state, todo):
-        """Offer each not-yet-applied repo-defined ruleset, one yes/no each.
-        Returns (state, required_checks of the ones applied)."""
-        a = self.args
-        checks = set()
-        for rs in todo:
-            if not ask_ruleset(a.repo, rs["name"],
-                               sandbox_protect.describe_rules(rs, branch)):
-                continue
-            sandbox_protect.apply_ruleset(a.repo, rs)
-            checks.update(sandbox_protect.required_checks(rs))
-            log(f"applied ruleset {rs['name']!r} to {a.repo}")
-            if state == "unprotected" and any(
-                    r["type"] == "pull_request" for r in rs["rules"]):
-                state = "applied"
-        return state, sorted(checks)
+    def export(self):
+        """Copy the work out of the still-running container (after the
+        session, before teardown); a no-op for backends that push."""
+        if self.container_up:
+            self.backend.export(self.box, self.session_id)
 
     def land(self):
-        """Open PRs for this session's pushed branches (host-side, with the
-        user's gh login). Runs AFTER teardown (the session's key is revoked
-        and its container gone), so its branches can't move under the
-        checks. Never raises."""
-        a = self.args
-        if not a.repo or a.read_only or self.key_id is None:
-            return
-        land_and_report(a, self.session_id, open_prs=not a.no_pr)
+        """Bring the session's work back (PRs, or an import). Runs AFTER
+        teardown, so nothing the session left running can change it. Never
+        raises."""
+        self.backend.land(self.session_id)
 
     def teardown(self):
         if self._torn_down:
             return
         self._torn_down = True
-
-        if self.key_id is not None:
-            path = (f"/repos/{self.args.repo}/keys/{self.key_id}"
-                    if self.args.repo else f"/user/keys/{self.key_id}")
-            try:
-                gh_api("DELETE", path)
-                log(f"removed GitHub key {self.key_id}")
-            except Exception as e:  # never skip container cleanup
-                log(f"WARNING: could not delete GitHub key {self.key_id}: {e}")
-                log("remove it manually at https://github.com/settings/keys"
-                    if not self.args.repo else
-                    f"remove it at https://github.com/{self.args.repo}"
-                    "/settings/keys")
-
+        self.backend.revoke()  # never raises: container cleanup always runs
         if self.container_up:
             self.box.delete()
             log(f"destroyed container {self.name}")
@@ -1552,34 +1212,16 @@ def _launch(args):
                 interactive=sys.stdin.isatty(), ask=input)
 
     if args.land_all:
-        try:
-            if not args.no_user_check:
-                bad = check_expected_user(github_login(), args.github_user)
-                if bad:
-                    print(f"error: {bad}", file=sys.stderr)
-                    return 1
-            _, ok = land_and_report(args)
-            return 0 if ok else 1
-        except GitHubError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
+        return sandbox_backend_github.land_all(args)
 
     box = Sandbox(args)
-    sandbox_github.start_prefetch(prefetch_plan(args))
+    sandbox_github.start_prefetch(box.backend.prefetch_plan())
     if not args.setup_token:
-        with sandbox_timing.stage("github login + scopes"):
-            try:
-                login = box.login  # fail fast, before building or launching anything
-            except GitHubError as e:
-                print(f"error: {e}", file=sys.stderr)
+        with sandbox_timing.stage("host checks (login, scopes)"):
+            bad = box.backend.check_host()  # fail fast, before building anything
+            if bad:
+                print(f"error: {bad}", file=sys.stderr)
                 return 1
-            if not args.no_user_check:
-                bad = check_expected_user(login, args.github_user)
-                if bad:
-                    print(f"error: {bad}", file=sys.stderr)
-                    return 1
-            if not args.read_only:
-                check_workflow_scope()
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)
@@ -1594,11 +1236,12 @@ def _launch(args):
 
     try:
         if not args.setup_token:
-            with sandbox_timing.stage("usb requests + deps file (github)"):
+            with sandbox_timing.stage("usb requests + deps file"):
                 box.resolve_usb()  # prompt now, not after a long image build
                 box.load_deps()  # before the image: it may pick the base OS
             with sandbox_timing.stage("preflight (protection, stale keys)"):
-                box.preflight_github()
+                box.backend.preflight(lambda: Container.list_names(args.cli),
+                                      box.name)
         source = box.choose_image()
         image = source
         stale: list = []
@@ -1658,6 +1301,8 @@ def _launch(args):
         # between the landing's checks and the PRs it opens. Landing needs
         # only the user's gh login, never the key or the container.
         try:
+            with sandbox_timing.stage("export work"):
+                box.export()  # container still up; never raises
             with sandbox_timing.stage("teardown"):
                 box.teardown()
         finally:
