@@ -83,6 +83,7 @@ from sandbox_containers import HOME, UID, USER, Container
 import sandbox_backend_github
 import sandbox_github
 from sandbox_backend_github import GitHubBackend, access_lines
+from sandbox_backend_local import LocalBackend, resolve_local
 from sandbox_github import GitHubError, resolve_repo, validate_repo
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
 from sandbox_util import log, sigint_to_child
@@ -157,11 +158,13 @@ def marker_script(name, path=None):
             f"chmod 0644 {shlex.quote(path)}")
 
 
-def git_config_script(git_name=None, git_email=None):
+def git_config_script(git_name=None, git_email=None, github_ssh=True):
     """The `git config --global` calls a session needs, as one shell script:
-    https->ssh rewrite (the deploy key is ssh), optional identity, and the
+    https->ssh rewrite for GitHub (the deploy key is ssh; skipped when there is
+    no key, so public https clones still work), optional identity, and the
     linear-history settings. Values are quoted."""
-    cmds = ['git config --global url."git@github.com:".insteadOf "https://github.com/"']
+    cmds = (['git config --global url."git@github.com:".insteadOf "https://github.com/"']
+            if github_ssh else [])
     if git_name:
         cmds.append("git config --global user.name " + shlex.quote(git_name))
     if git_email:
@@ -460,6 +463,10 @@ def refresh_argv(args, python, script):
            "--hard-max-age", str(args.hard_max_age)]
     if args.repo:
         cmd += ["--repo", args.repo]
+    if getattr(args, "local", None):
+        cmd += ["--local", args.local]
+        if args.base:
+            cmd += ["--base", args.base]
     if args.image:
         cmd += ["--image", args.image]
     if args.disk_size:
@@ -557,6 +564,8 @@ def size_arg(text):
 
 def make_backend(args):
     """The Backend for these arguments (see sandbox_backend)."""
+    if getattr(args, "local", None):
+        return LocalBackend(args)
     return GitHubBackend(args)
 
 
@@ -757,7 +766,9 @@ class Sandbox:
         r = self.box.user(
             ("mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
              "cat >> ~/.ssh/known_hosts && " if known else "")
-            + git_config_script(self.args.git_name, self.args.git_email)
+            # known_hosts is GitHub's: only then is there an SSH key to use
+            + git_config_script(self.args.git_name, self.args.git_email,
+                                github_ssh=bool(known))
             + (" && " + sandbox_provenance.container_script() if signing else ""),
             input=known or None, capture=signing)
         if signing:
@@ -997,6 +1008,16 @@ def build_parser():
                         "is used as given")
     p.add_argument("--repo", metavar="OWNER/NAME",
                    help="same as REPOSITORY but requires the full owner/name")
+    p.add_argument("--local", metavar="PATH",
+                   help="work on a git repository on this machine instead of "
+                        "GitHub: its --base branch is copied in as a git "
+                        "bundle, and the session's sbx/<session>/* branches "
+                        "are imported back into it when the session ends "
+                        "(no network credential; see "
+                        "docs/specs/08-local-backend.md)")
+    p.add_argument("--base", metavar="BRANCH",
+                   help="with --local: the branch to start from (default: "
+                        "the repository's checked-out branch)")
     p.add_argument("--account-key", action="store_true",
                    help="no repo: register the key on your whole GitHub "
                         "account instead (needs admin:public_key; the "
@@ -1155,13 +1176,23 @@ def normalize_args(args):
     """
     if args.repository and args.repo:
         raise ValueError("give the repository once: either REPOSITORY or --repo")
+    if args.base and not args.local:
+        raise ValueError("--base only applies with --local")
+    if args.local:
+        clash = [f for f, on in (("a repository", args.repository or args.repo),
+                                 ("--account-key", args.account_key),
+                                 ("--land-all", args.land_all),
+                                 ("--read-only", args.read_only)) if on]
+        if clash:
+            raise ValueError(f"--local can't be combined with {', '.join(clash)}")
+        args.local = resolve_local(args.local)
     if args.repo:
         args.repo = validate_repo(args.repo)
     elif args.repository:
         args.repo = resolve_repo(args.repository, args.github_user)
     if args.account_key and args.repo:
         raise ValueError("--account-key and a repository are mutually exclusive")
-    if not (args.repo or args.account_key or args.setup_token
+    if not (args.repo or args.local or args.account_key or args.setup_token
             or args.refresh_images):
         raise ValueError("a repository is required (or --account-key to use "
                          "an account-wide key, or --setup-token)")
