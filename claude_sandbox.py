@@ -73,6 +73,7 @@ import sandbox_host
 import sandbox_pool
 import sandbox_volumes
 import sandbox_actions
+import sandbox_check
 import sandbox_land
 import sandbox_protect
 import sandbox_sessions
@@ -374,6 +375,13 @@ def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
     print("\n" + sandbox_land.format_landing(
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
+
+
+def report_statuses(outcomes):
+    """Print the exit summary of `sandbox/check` statuses (to stderr)."""
+    text = sandbox_check.format_status_outcomes(outcomes)
+    if text:
+        print("\n" + text, file=sys.stderr)
 
 
 def report_actions(outcomes):
@@ -860,15 +868,23 @@ class Sandbox:
         a = self.args
         if not a.repo or a.read_only or self.key_id is None:
             return
+        landed = []
         if not a.no_pr:
             try:
-                report_landing(sandbox_land.land(
-                    a.repo, self.session_id, setup_paths(self.deps)),
-                    self.session_id)
+                landed = sandbox_land.land(
+                    a.repo, self.session_id, setup_paths(self.deps))
+                report_landing(landed, self.session_id)
             except Exception as e:
                 log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
                     "push state is on GitHub under "
                     f"{sandbox_sessions.branch_prefix(self.session_id)}")
+        if landed and not a.no_check_status:
+            try:
+                report_statuses(sandbox_check.post_session_statuses(
+                    a.repo, landed))
+            except Exception as e:
+                log(f"warning: couldn't post {sandbox_check.STATUS_CONTEXT} "
+                    f"for {self.session_id}: {e}")
         if not a.no_actions:
             try:
                 report_actions(sandbox_actions.run(a.repo, self.session_id))
@@ -931,6 +947,10 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-check-status", action="store_true",
+                   help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
+                        "status on the session's PRs (it is only posted where "
+                        "the repo's ruleset requires it)")
     p.add_argument("--no-actions", action="store_true",
                    help="don't act on `Sandbox-Action:` trailers in the "
                         "session's commit messages (e.g. file follow-up issues)")
@@ -1080,7 +1100,11 @@ def main(argv=None):
                 if bad:
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
-            report_landing(sandbox_land.land(args.repo))
+            landed = sandbox_land.land(args.repo)
+            report_landing(landed)
+            if landed and not args.no_check_status:
+                report_statuses(sandbox_check.post_session_statuses(
+                    args.repo, landed))
             if not args.no_actions:
                 report_actions(sandbox_actions.run(args.repo))
         except GitHubError as e:

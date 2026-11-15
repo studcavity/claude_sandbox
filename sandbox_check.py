@@ -54,6 +54,7 @@ import collections
 import re
 import subprocess
 import sys
+import urllib.parse
 
 import sandbox_actions
 import sandbox_names
@@ -331,9 +332,10 @@ def fetch_pr(url, number, base_sha, dest):
 
 def post_status_run(repo, pr=None, base=None, head=None, branch=None,
                     override=None, strict=False, api=None, url=None,
-                    out=print):
+                    out=print, result=None):
     """Check a range or a PR and post `sandbox/check`. -> exit code:
     0 success posted, 1 failure/refusal, 2 the checker crashed (`error` posted).
+    If `result` (a dict) is given it receives the posted state/description/sha.
     """
     import tempfile
     import sandbox_github
@@ -384,7 +386,70 @@ def post_status_run(repo, pr=None, base=None, head=None, branch=None,
     except RuntimeError as e:
         raise CheckError(f"couldn't post the status: {e}") from None
     out(f"posted {STATUS_CONTEXT} {state} on {sha[:7]}: {desc}")
+    if result is not None:
+        result.update(state=state, description=desc, sha=sha)
     return 2 if crashed and not override else (0 if state == "success" else 1)
+
+# --- gating a session's PRs (launcher wiring, plan 5d) ---------------------- #
+StatusOutcome = collections.namedtuple("StatusOutcome", "pr state detail")
+
+
+def gate_required(api, repo):
+    """Does the default branch's effective ruleset require `sandbox/check`?
+    The launcher only posts the status where the repo opted in this way."""
+    default = api("GET", f"/repos/{repo}")["default_branch"]
+    rules = api("GET", f"/repos/{repo}/rules/branches/"
+                f"{urllib.parse.quote(default, safe='')}") or []
+    return any(r.get("type") == "required_status_checks"
+               and any(c.get("context") == STATUS_CONTEXT for c in
+                       (r.get("parameters") or {}).get("required_status_checks")
+                       or [])
+               for r in rules)
+
+
+def pr_numbers(landed):
+    """PR numbers of the open PRs a landing produced (duck-typed on
+    `.outcome` and `.detail`, which holds the PR URL for opened/exists, so this
+    module needn't import sandbox_land)."""
+    nums = []
+    for l in landed:
+        tail = (l.detail or "").rstrip("/").rsplit("/", 1)[-1]
+        if l.outcome in ("opened", "exists") and tail.isdigit():
+            nums.append(int(tail))
+    return nums
+
+
+def post_session_statuses(repo, landed, api=None, poster=None):
+    """Post `sandbox/check` for each PR a session opened, if the repo requires
+    it -> [StatusOutcome]. One PR failing never affects the others."""
+    import sandbox_github
+    api = api or sandbox_github.gh_api
+    nums = pr_numbers(landed)
+    if not nums or not gate_required(api, repo):
+        return []
+    poster = poster or post_status_run
+    out = []
+    for n in nums:
+        res: dict = {}
+        try:
+            poster(repo, pr=n, api=api, out=lambda s: None, result=res)
+            out.append(StatusOutcome(n, res.get("state", "?"),
+                                     res.get("description", "")))
+        except Exception as e:  # CheckError, GitHub or git trouble: report, go on
+            out.append(StatusOutcome(n, "failed", str(e)[:200]))
+    return out
+
+
+def format_status_outcomes(outcomes):
+    if not outcomes:
+        return ""
+    lines = [f"{STATUS_CONTEXT} status"]
+    for o in outcomes:
+        lines.append(f"  #{o.pr}: {o.state}" + (f" ({o.detail})" if o.detail else ""))
+        if o.state in ("failed", "error", "failure"):
+            lines.append(f"     fix, or re-run: python sandbox_check.py "
+                         f"--post-status OWNER/REPO --pr {o.pr}")
+    return "\n".join(lines)
 
 
 

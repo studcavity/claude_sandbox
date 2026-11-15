@@ -274,3 +274,71 @@ def test_shipped_ruleset_requires_exactly_the_status_context(repo_root):
     (rule,) = rs["rules"]
     assert rule["parameters"]["strict_required_status_checks_policy"] is True
     assert json.load(open(path))["name"] == "require-sandbox-check"
+
+
+# --- gating a session's PRs (plan 5d) ---------------------------------------- #
+def landed(*pairs):
+    from sandbox_land import Landed     # the real type: a renamed field must fail here
+    return [Landed("b", "main", o, u, 1) for o, u in pairs]
+
+
+class RulesApi:
+    def __init__(self, required=True, ctx="sandbox/check"):
+        self.required, self.ctx, self.calls = required, ctx, []
+
+    def __call__(self, method, path, body=None, raw=False):
+        self.calls.append(path)
+        if path == "/repos/o/r":
+            return {"default_branch": "main"}
+        if path == "/repos/o/r/rules/branches/main":
+            return [{"type": "pull_request"},
+                    {"type": "required_status_checks", "parameters": {
+                        "required_status_checks": [{"context": self.ctx}]}}
+                    ] if self.required else [{"type": "pull_request"}]
+        raise AssertionError(path)
+
+
+def test_gate_required_detects_the_context_in_the_effective_rules():
+    assert sc.gate_required(RulesApi(), "o/r") is True
+    assert sc.gate_required(RulesApi(required=False), "o/r") is False
+    assert sc.gate_required(RulesApi(ctx="commit-metadata"), "o/r") is False
+
+
+def test_pr_numbers_only_from_opened_or_existing_prs():
+    got = sc.pr_numbers(landed(("opened", "https://github.com/o/r/pull/7"),
+                               ("exists", "https://github.com/o/r/pull/8/"),
+                               ("held", ""), ("empty", ""),
+                               ("opened", "not-a-pr-url")))
+    assert got == [7, 8]
+
+
+def test_statuses_are_posted_only_where_the_repo_requires_them():
+    calls = []
+    poster = lambda repo, pr, **k: calls.append(pr)
+    none = sc.post_session_statuses("o/r", landed(("opened", "x/pull/7")),
+                                    api=RulesApi(required=False), poster=poster)
+    assert none == [] and calls == []
+    out = sc.post_session_statuses("o/r", landed(("opened", "x/pull/7")),
+                                   api=RulesApi(), poster=poster)
+    assert calls == [7] and [o.pr for o in out] == [7]
+
+
+def test_no_prs_means_no_api_calls_at_all():
+    api = RulesApi()
+    assert sc.post_session_statuses("o/r", landed(("held", "")), api=api) == []
+    assert api.calls == []
+
+
+def test_one_prs_failure_is_reported_and_does_not_stop_the_others():
+    def poster(repo, pr, result, **k):
+        if pr == 7:
+            raise sc.CheckError("PR #7 comes from a fork")
+        result.update(state="success", description="0 errors, 0 warnings")
+    out = sc.post_session_statuses(
+        "o/r", landed(("opened", "x/pull/7"), ("opened", "x/pull/8")),
+        api=RulesApi(), poster=poster)
+    assert [(o.pr, o.state) for o in out] == [(7, "failed"), (8, "success")]
+    text = sc.format_status_outcomes(out)
+    assert "#7: failed (PR #7 comes from a fork)" in text and "--pr 7" in text
+    assert "#8: success" in text and "--pr 8" not in text
+    assert sc.format_status_outcomes([]) == ""
