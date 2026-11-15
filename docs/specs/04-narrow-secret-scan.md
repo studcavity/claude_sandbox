@@ -1,6 +1,6 @@
 # Spec 04: a narrower secret scan, aimed at what the sandbox actually holds
 
-Source: `docs/plans/simplification.md` item 4. Status: open. It doesn't
+Source: `docs/plans/simplification.md` item 4. Status: implemented, option A (option B, an exact-match tripwire on the host, not done; push protection unverified). It doesn't
 depend on the other specs, though specs 01-03 remove some of the call sites
 below.
 

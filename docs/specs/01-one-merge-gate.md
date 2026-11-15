@@ -1,6 +1,6 @@
 # Spec 01: one merge gate for the commit checker
 
-Source: `docs/plans/simplification.md` item 1. Status: open, nothing started.
+Source: `docs/plans/simplification.md` item 1. Status: implemented, option A (only the `commit-metadata` Actions job gates). Repos that applied `require-sandbox-check.json` must delete it (README has the commands).
 
 ## Problem
 
