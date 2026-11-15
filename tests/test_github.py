@@ -152,10 +152,13 @@ def test_token_scopes_tolerates_crlf_header_blocks(gh):
     assert g.token_scopes() == {"repo"}
 
 
-def test_workflow_push_warning():
-    assert g.workflow_push_warning({"repo", "workflow"}) is None
-    missing = g.workflow_push_warning({"repo"})
-    assert "lacks the `workflow` scope" in missing
-    assert "gh auth refresh -s workflow" in missing
+def test_workflow_push_warning_fires_when_the_sandbox_could_push_workflows():
+    """The scope lets a session push a workflow that runs with Actions
+    secrets on push, before any PR exists; lacking it is the safe default."""
+    assert g.workflow_push_warning({"repo"}) is None
+    has = g.workflow_push_warning({"repo", "workflow"})
+    assert "has the `workflow` scope" in has and "secrets" in has
+    assert "--remove-scopes workflow" in has
+    assert "-s workflow" not in has   # never advise granting it
     unknown = g.workflow_push_warning(None)
-    assert "couldn't verify" in unknown and "gh auth refresh" in unknown
+    assert "couldn't verify" in unknown and "secrets" in unknown

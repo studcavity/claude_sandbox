@@ -367,3 +367,55 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
     # sandbox/check is a commit STATUS the checker posts, not a CI job
     assert sandbox_check.STATUS_CONTEXT in required
     assert required - {sandbox_check.STATUS_CONTEXT} <= jobs
+
+
+# --- rulesets/optional: opt-in, applied by hand ---------------------------- #
+OPTIONAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
+    __file__))), "rulesets", "optional")
+ADMIN_BYPASS = [{"actor_id": 5, "actor_type": "RepositoryRole",
+                 "bypass_mode": "always"}]
+
+
+def _optional(name):
+    with open(os.path.join(OPTIONAL, name)) as f:
+        return json.load(f)
+
+
+def test_branch_ruleset_confines_non_admins_to_sandbox_branches():
+    """Deploy keys aren't admins, so with this a session can only create,
+    update or delete branches under sbx/ (no gh-pages, no release branch)."""
+    rs = _optional("sandbox-branches-only.json")
+    assert rs["target"] == "branch" and rs["enforcement"] == "active"
+    assert rs["conditions"]["ref_name"] == {"include": ["~ALL"],
+                                            "exclude": ["refs/heads/sbx/**"]}
+    assert rs["bypass_actors"] == ADMIN_BYPASS   # never DeployKey
+    assert {r["type"] for r in rs["rules"]} == {"creation", "update", "deletion"}
+
+
+def test_tag_ruleset_stops_non_admins_pushing_tags():
+    """A pushed tag runs tag-triggered (release) workflows on code the
+    session wrote, with whatever publishing secrets they use."""
+    rs = _optional("no-tag-pushes.json")
+    assert rs["target"] == "tag" and rs["bypass_actors"] == ADMIN_BYPASS
+    assert rs["conditions"]["ref_name"]["include"] == ["~ALL"]
+    assert {r["type"] for r in rs["rules"]} == {"creation", "update", "deletion"}
+
+
+def test_optional_rulesets_are_never_offered_automatically():
+    """They carry a bypass actor, which repo-supplied rulesets must not: the
+    launcher's validator refuses them, and they live in a subdirectory the
+    launcher's listing skips."""
+    for name in os.listdir(OPTIONAL):
+        with pytest.raises(ValueError):
+            sp.validate_repo_ruleset(_optional(name))
+
+
+def test_required_actions_checks_are_pinned_to_github_actions():
+    """Without integration_id, any app or token that can post a status named
+    `commit-metadata` satisfies the requirement."""
+    root = os.path.dirname(OPTIONAL)
+    with open(os.path.join(root, "require-commit-metadata.json")) as f:
+        rs = json.load(f)
+    (rule,) = rs["rules"]
+    assert rule["parameters"]["required_status_checks"] == [
+        {"context": "commit-metadata", "integration_id": 15368}]

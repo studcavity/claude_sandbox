@@ -15,9 +15,10 @@ repo-scoped GitHub deploy key. The key and container are destroyed on exit.
 ```
 - `gh` on host (every GitHub call goes through it; keep it updated)
 - authenticated to the account you launch as, with `gh auth login`
-- optional: `gh auth refresh -s workflow` so the sandbox can push changes to
-  `.github/workflows/` (the launcher warns at startup when it can't; this lets
-  sandboxed sessions edit CI, which can read the repo's Actions secrets)
+- **not** the `workflow` scope (`gh auth status` lists scopes). With it the
+  sandbox's deploy key can push `.github/workflows/` changes, and a workflow
+  with an `on: push` trigger runs at once with the repo's Actions secrets,
+  before any PR or review. The launcher warns at startup if the token has it.
 
 ## usage
 ```
@@ -205,6 +206,27 @@ Also:
   use the "Update branch" button when PRs collide.
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
+
+### Optional: confine deploy keys to `sbx/` (apply by hand)
+A deploy key can create any branch and push tags. A pushed tag runs
+tag-triggered (release) workflows on code the session wrote, with whatever
+publishing secrets they use; a pushed branch runs any unfiltered `on: push`
+workflow. Two rulesets in `rulesets/optional/` stop that for everyone but
+repo admins (deploy keys are never admins):
+```
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/sandbox-branches-only.json
+gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/no-tag-pushes.json
+```
+- `sandbox-branches-only`: outside `refs/heads/sbx/**`, non-admins can't
+  create, update or delete branches. That includes non-admin collaborators
+  merging PRs and bots pushing to e.g. `gh-pages`; skip it if you rely on those.
+- `no-tag-pushes`: non-admins can't create, move or delete tags. That
+  includes release bots using `GITHUB_TOKEN`.
+They have an admin bypass, which repo-supplied rulesets may not have, so the
+launcher never offers them; that is why they sit in a subdirectory.
+`require-commit-metadata.json` pins its check to GitHub Actions
+(`integration_id` 15368), so no other app or token can satisfy it by posting
+a status with the same name.
 
 ## USB passthrough
 Sandboxes get no host hardware by default. Two separate repo files exist on
