@@ -15,10 +15,12 @@ workflow code with the repo's Actions secrets), the deps/host files and
 git hooks and CODEOWNERS.
 """
 import collections
+import re
 import urllib.parse
 
 import sandbox_deps
 import sandbox_host
+import sandbox_record
 import sandbox_untrusted
 from sandbox_github import gh_api
 from sandbox_sessions import BRANCH_ROOT, branch_prefix
@@ -52,19 +54,65 @@ def clean_text(text, limit):
     return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
-def pr_text(session, branch, subjects):
-    """(title, body) for a session branch from its commit subjects."""
+MAX_RECORD_ITEMS = 10
+
+
+def safe_line(text, limit):
+    """clean_text, but a line that looks like it holds a credential is replaced
+    by a note: commit messages are already in the repo, a PR body is a second
+    place to leak the same thing."""
+    hits = sandbox_untrusted.find_secrets(text)
+    if hits:
+        return f"[withheld: appears to contain {', '.join(hits)}]"
+    return clean_text(text, limit)
+
+
+def record_section(rec):
+    """Markdown for what the commits say about their own verification and
+    follow-ups (see sandbox_record). Every line of session text is sanitised."""
+    out = ["### What the commits say", "",
+           "_Lifted from the commit messages by the launcher; untrusted like "
+           "everything below._", ""]
+
+    def sha(x):
+        return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
+
+    def block(title, items, fmt):
+        if not items:
+            return
+        out.append(f"**{title}** ({len(items)})")
+        out.extend("- " + fmt(i) for i in items[:MAX_RECORD_ITEMS])
+        if len(items) > MAX_RECORD_ITEMS:
+            out.append(f"- ...and {len(items) - MAX_RECORD_ITEMS} more")
+        out.append("")
+    block("Verified", rec.verified, lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
+    block("Not verified", rec.not_verified,
+          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
+    block("Follow-ups", rec.follow_ups,
+          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
+    block("Issues the launcher will file", rec.issues,
+          lambda i: f"`{sha(i[0])}` {safe_line(i[2], 120)} "
+                    f"(`{safe_line(i[1], 100)}`)")
+    if not rec.verified and not rec.not_verified:
+        out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
+    return "\n".join(out)
+
+
+def pr_text(session, branch, subjects, record=None):
+    """(title, body) for a session branch from its commit subjects (and, if
+    given, the Record of what its commits say about themselves)."""
     tail = branch.split("/", 2)[-1]
     first = clean_text(subjects[0], 80) if subjects else tail
     title = f"[{session}] " + (first if len(subjects) == 1 else
                                f"{clean_text(tail, 40)} ({len(subjects)} commits)")
-    shown = "\n".join(clean_text(s, 120) for s in subjects[:MAX_SUBJECTS])
+    shown = "\n".join(safe_line(s, 120) for s in subjects[:MAX_SUBJECTS])
     more = len(subjects) - MAX_SUBJECTS
     body = (f"Opened by claude_sandbox when session `{session}` ended, from "
             f"branch `{clean_text(branch, 120)}`.\n\n"
             "Everything below was written by an AI session and is untrusted: "
             "review the diff, not this text.\n\n"
-            f"````\n{shown}\n````\n"
+            + (record_section(record) + "\n" if record is not None else "")
+            + f"````\n{shown}\n````\n"
             + (f"\n...and {more} more commits.\n" if more > 0 else ""))
     return title, body
 
@@ -130,7 +178,10 @@ def land_branch(repo, branch, default, siblings=(), extra_sensitive=()):
                       "exists", open_[0]["html_url"], inc["ahead_by"])
     subjects = [c["commit"]["message"].split("\n", 1)[0]
                 for c in inc.get("commits") or []]
-    title, body = pr_text(session, branch, subjects)
+    record = sandbox_record.extract(
+        [((c.get("sha") or "")[:7], c["commit"]["message"])
+         for c in inc.get("commits") or []])
+    title, body = pr_text(session, branch, subjects, record)
     if base != default:
         body += (f"\nStacked on `{clean_text(base, 120)}`: merge that PR "
                  "first. This PR's diff is only what this branch adds.\n")
