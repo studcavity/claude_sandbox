@@ -73,6 +73,7 @@ import sandbox_host
 import sandbox_pool
 import sandbox_volumes
 import sandbox_land
+import sandbox_protect
 import sandbox_sessions
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
@@ -232,12 +233,12 @@ def access_lines(workdir, repo, branch, read_only):
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None):
+                     disk_note="", session=None, protection_note=""):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $disk, $session, $prefix); write $$ for a
+    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo, $protection); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -245,6 +246,9 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
     return string.Template(template).substitute(
         container=container,
         session=session or container,
+        repo=repo or "(no repo)",
+        protection=protection_note or "Not applicable (no repo, or a "
+                                      "read-only key).",
         prefix=sandbox_sessions.branch_prefix(session or container),
         access="\n".join(access_lines(workdir, repo, branch, read_only)),
         user=USER, uid=UID, home=HOME,
@@ -261,6 +265,57 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         usb=sandbox_host.usb_section(usb_devices, cli, container,
                                      facts["usb"]) or "No USB devices were requested.",
     )
+
+def protection_note(repo, branch, state, checks=()):
+    """Repo-specific text for the sandbox CLAUDE.md about default-branch
+    protection and required status checks."""
+    facts = {
+        "protected": f"`{branch}` already requires pull requests.",
+        "applied": f"The launcher applied the protection ruleset to `{branch}` "
+                   "at the start of this session.",
+        "unprotected": f"`{branch}` does **not** require pull requests: no "
+                       "ruleset is enforcing the branch workflow, so it is "
+                       "only a convention here.",
+        "unknown": f"Whether `{branch}` is protected could not be verified.",
+    }[state]
+    if checks:
+        req = ("Required status checks: " + ", ".join(f"`{c}`" for c in checks)
+               + ".")
+    elif state == "applied":
+        req = "No status checks are required yet."
+    else:
+        req = "Required status checks: none known."
+    return f"{facts} {req} (Repo: `{repo}`.)"
+
+
+def ask_protect(repo, branch, effects):
+    """Interactive yes/no (default no) to apply the protection ruleset."""
+    print(f"\n\033[1m{repo}: `{branch}` does not require pull requests.\033[0m"
+          "\nApply the protection ruleset? It would:", file=sys.stderr)
+    for e in effects:
+        print(f"  - {e}", file=sys.stderr)
+    try:
+        return input("Apply branch protections to this repo? [y/N] "
+                     ).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def ask_checks(branch, checks):
+    """Interactive yes/no (default no) to also require these CI checks."""
+    print("\nThese checks passed on the latest commit of "
+          f"`{branch}`:", file=sys.stderr)
+    for c in checks:
+        print(f"  - {c}", file=sys.stderr)
+    print("Requiring them also makes PRs wait for them, and (strict mode) "
+          "need to be up to date with the base. A name that never reports "
+          "would block every merge.", file=sys.stderr)
+    try:
+        return input("Require these checks too? [y/N] ").strip().lower() in (
+            "y", "yes")
+    except EOFError:
+        return False
+
 
 def usb_spec(text):
     """argparse type for --usb: normalised (vid, pid) text 'vid:pid'."""
@@ -300,15 +355,10 @@ def setup_paths(deps):
     return [s["path"] for s in (deps or {}).get("setup") or []]
 
 
-def report_landing(results):
-    if not results:
-        log("no session branches were pushed; nothing to open a PR for")
-    for branch, outcome, detail in results:
-        what = {"opened": "opened PR", "exists": "PR already open",
-                "empty": "nothing new, no PR", "held":
-                "HELD, no PR (touches privileged files; review the branch "
-                "by hand)"}[outcome]
-        log(f"{branch}: {what}" + (f" {detail}" if detail else ""))
+def report_landing(results, session=None):
+    """Print the exit summary of PRs the launcher opened (to stderr)."""
+    print("\n" + sandbox_land.format_landing(
+        results, session, color=sys.stderr.isatty()), file=sys.stderr)
 
 
 def check_workflow_scope():
@@ -368,6 +418,7 @@ class Sandbox:
         self.name = args.name or sandbox_sessions.pick_name(
             Container.list_names(self.cli))
         self.session_id = sandbox_sessions.validate_session(self.name)
+        self.protection_note = ""
         self.box = Container(self.cli, self.name)
         self.key_id = None
         self.container_up = False
@@ -638,6 +689,7 @@ class Sandbox:
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
                               session=self.session_id,
+                              protection_note=self.protection_note,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
@@ -698,12 +750,7 @@ class Sandbox:
         a = self.args
         if not a.repo or a.read_only:
             return
-        try:
-            branch, warn = sandbox_sessions.check_protection(a.repo)
-            if warn:
-                log(f"warning: {warn}")
-        except GitHubError as e:
-            log(f"warning: couldn't check branch protection: {e}")
+        self.protect_default_branch()
         try:
             live = Container.list_names(self.cli)
             gone = sandbox_sessions.reap_stale_keys(
@@ -713,6 +760,47 @@ class Sandbox:
         except (GitHubError, subprocess.CalledProcessError, OSError) as e:
             log(f"warning: couldn't reap stale deploy keys: {e}")
 
+    def protect_default_branch(self):
+        """Check that the default branch requires PRs; if it doesn't, offer
+        (on a terminal, default no) to apply rulesets/protect-main.json.
+        Advice only: never blocks the launch. Records protection_note for the
+        session's CLAUDE.md."""
+        a = self.args
+        branch, state, checks = "the default branch", "unknown", []
+        try:
+            branch, warn, state = sandbox_sessions.check_protection(a.repo)
+            if warn:
+                log(f"warning: {warn}")
+            if (state == "unprotected" and not a.no_protect_prompt
+                    and sys.stdin.isatty()):
+                state, checks = self.offer_protection(branch)
+        except (GitHubError, OSError, ValueError) as e:
+            log(f"warning: couldn't check or apply branch protection: {e}")
+        self.protection_note = protection_note(a.repo, branch, state, checks)
+
+    def offer_protection(self, branch):
+        """Ask, then apply. Returns (state, required_checks)."""
+        a = self.args
+        rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "rulesets", "protect-main.json")
+        ruleset = sandbox_protect.load_ruleset(rs_path)
+        if ruleset["name"] in sandbox_protect.existing_ruleset_names(a.repo):
+            log(f"ruleset {ruleset['name']!r} already exists but doesn't "
+                "require PRs on the default branch; fix it in Settings -> Rules")
+            return "unprotected", []
+        if not ask_protect(a.repo, branch, sandbox_protect.describe(ruleset,
+                                                                    branch)):
+            return "unprotected", []
+        checks = sandbox_protect.discover_checks(a.repo, branch)
+        if checks and not ask_checks(branch, checks):
+            checks = []
+        sandbox_protect.apply_ruleset(
+            a.repo, sandbox_protect.with_checks(ruleset, checks))
+        log(f"applied ruleset {ruleset['name']!r} to {a.repo}"
+            + (f", requiring: {', '.join(checks)}" if checks else
+               " (no required status checks)"))
+        return "applied", checks
+
     def land(self):
         """Open PRs for this session's pushed branches (host-side, with the
         user's gh login). Never raises: teardown must still run."""
@@ -721,7 +809,7 @@ class Sandbox:
             return
         try:
             report_landing(sandbox_land.land(
-                a.repo, self.session_id, setup_paths(self.deps)))
+                a.repo, self.session_id, setup_paths(self.deps)), self.session_id)
         except Exception as e:
             log(f"warning: couldn't open PRs for {self.session_id}: {e}; push "
                 f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session_id)}")
@@ -781,6 +869,10 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-protect-prompt", action="store_true",
+                   help="don't offer to apply the default-branch protection "
+                        "ruleset when the repo lacks one (the warning still "
+                        "prints)")
     p.add_argument("--land-all", action="store_true",
                    help="open PRs for every session's unmerged sbx/* branch "
                         "in the repo, then exit (recovery after a crashed "

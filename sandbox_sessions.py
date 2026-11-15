@@ -123,6 +123,15 @@ def reap_stale_keys(repo, host, live_sessions, delete=None):
     return gone
 
 
+def protection_state(rule_types, classic_requires_pr):
+    """'protected', 'unprotected' or 'unknown' (see protection_warning)."""
+    if "pull_request" in (rule_types or ()) or classic_requires_pr:
+        return "protected"
+    if rule_types is None and classic_requires_pr is None:
+        return "unknown"
+    return "unprotected"
+
+
 def protection_warning(branch, rule_types, classic_requires_pr):
     """Warning text if `branch` doesn't require pull requests, else None.
 
@@ -141,7 +150,7 @@ def protection_warning(branch, rule_types, classic_requires_pr):
 
 
 def check_protection(repo):
-    """(default_branch, warning or None) for the repo, from the GitHub API.
+    """(default_branch, warning or None, state) from the GitHub API.
 
     Read-only; errors other than 'not found' make the answer 'unknown', never
     an exception, because this is advice, not a gate.
@@ -159,4 +168,5 @@ def check_protection(repo):
         classic = "required_pull_request_reviews" in (prot or {})
     except GitHubError as e:
         classic = False if e.code == 404 else None
-    return branch, protection_warning(branch, rule_types, classic)
+    return (branch, protection_warning(branch, rule_types, classic),
+            protection_state(rule_types, classic))
