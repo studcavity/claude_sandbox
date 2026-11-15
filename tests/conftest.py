@@ -77,7 +77,7 @@ def make_args(tmp_path):
     def _make(**kw):
         base = dict(repo=None, repository=None, account_key=False,
                     github_user="studcavity", no_user_check=False,
-                    no_update_check=True, read_only=False, no_pr=False, no_protect_prompt=False, no_provenance=False, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
+                    no_update_check=True, read_only=False, no_pr=False, no_protect_prompt=False, no_hardening_prompt=False, no_provenance=False, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
                     land_all=False, image=None,
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,

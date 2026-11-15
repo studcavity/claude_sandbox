@@ -75,6 +75,7 @@ import sandbox_host
 import sandbox_pool
 import sandbox_volumes
 import sandbox_land
+import sandbox_hardening
 import sandbox_protect
 import sandbox_provenance
 import sandbox_sessions
@@ -352,6 +353,17 @@ def render_deps_ref(template):
         deps_file=sandbox_deps.DEPS_FILE, user=USER)
 
 
+def ask_hardening(repo, cond):
+    """Interactive yes/no (default no) to change one Actions setting, showing
+    the exact call it would make."""
+    print(f"\n{repo}: {cond.text}.\nThe fix would make this call:\n  "
+          f"{sandbox_hardening.describe_fix(cond.fix)}", file=sys.stderr)
+    try:
+        return input("Apply it? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def ask_protect(repo, branch, effects):
     """Interactive yes/no (default no) to apply the protection ruleset."""
     print(f"\n\033[1m{repo}: `{branch}` does not require pull requests.\033[0m"
@@ -462,7 +474,11 @@ def prefetch_plan(args):
         specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
     if not args.read_only:
         specs += [("scopes",), ("api", f"/repos/{repo}", False),
-                  ("api", f"/repos/{repo}/keys?per_page=100", False)]
+                  ("api", f"/repos/{repo}/keys?per_page=100", False),
+                  ("api", f"/repos/{repo}/actions/permissions/workflow", False),
+                  ("api", f"/repos/{repo}/actions/secrets?per_page=1", False),
+                  ("api", f"/repos/{repo}/actions/organization-secrets?per_page=1",
+                   False)]
     return specs
 
 
@@ -1010,6 +1026,7 @@ class Sandbox:
         if not a.repo or a.read_only:
             return
         self.protect_default_branch()
+        self.harden_actions()
         try:
             live = Container.list_names(self.cli)
             gone = sandbox_sessions.reap_stale_keys(
@@ -1042,10 +1059,34 @@ class Sandbox:
         self.add_host_warnings(sandbox_protect.gap_warnings(
             a.repo, branch, state, required, ci or []))
 
-    def add_host_warnings(self, warnings):
-        """Show each now, and keep it for the exit summary."""
+    def harden_actions(self):
+        """Report whether the repo's Actions settings keep session code's CI
+        runs untrusted (read-only token, Actions can't approve PRs, no secrets
+        to reach) and, on a terminal and after a yes each, fix the settable
+        ones (see sandbox_hardening). Advice only: never blocks the launch;
+        what is still unmet becomes host-side warnings, never session text."""
+        a = self.args
+        ask = None
+        if not a.no_hardening_prompt and sys.stdin.isatty():
+            ask = lambda cond: ask_hardening(a.repo, cond)  # noqa: E731
+        try:
+            found, notes = sandbox_hardening.harden(a.repo, gh_api, ask)
+        except (GitHubError, OSError, ValueError) as e:
+            log(f"warning: couldn't check the repo's Actions settings: {e}")
+            return
+        log("Actions settings (no same-repo approval setting exists on "
+            "GitHub; these keep session code's CI runs untrusted):")
+        for line in notes + sandbox_hardening.summary_lines(found):
+            log(f"  {line}")
+        self.add_host_warnings(sandbox_hardening.warnings(found, bool(ask)),
+                               show=False)
+
+    def add_host_warnings(self, warnings, show=True):
+        """Keep each for the exit summary, and show it now unless already
+        shown."""
         for w in warnings:
-            log(f"warning: {w}")
+            if show:
+                log(f"warning: {w}")
         self.host_warnings.extend(warnings)
 
     def report_host_warnings(self):
@@ -1188,6 +1229,10 @@ def build_parser():
                    help=f"don't post the `{sandbox_provenance.CONTEXT}` commit "
                         "status (every commit signed by the session's own key "
                         "or yours) on the session's PRs")
+    p.add_argument("--no-hardening-prompt", action="store_true",
+                   help="don't offer to tighten the repo's Actions settings "
+                        "(read-only default token, Actions can't approve PRs); "
+                        "the check and its warnings still run")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "
