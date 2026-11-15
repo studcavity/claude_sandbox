@@ -72,6 +72,7 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
+import sandbox_actions
 import sandbox_land
 import sandbox_protect
 import sandbox_sessions
@@ -359,6 +360,13 @@ def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
     print("\n" + sandbox_land.format_landing(
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
+
+
+def report_actions(outcomes):
+    """Print the exit summary of follow-up actions (to stderr)."""
+    text = sandbox_actions.format_outcomes(outcomes)
+    if text:
+        print("\n" + text, file=sys.stderr)
 
 
 def check_workflow_scope():
@@ -805,14 +813,23 @@ class Sandbox:
         """Open PRs for this session's pushed branches (host-side, with the
         user's gh login). Never raises: teardown must still run."""
         a = self.args
-        if not a.repo or a.read_only or a.no_pr or self.key_id is None:
+        if not a.repo or a.read_only or self.key_id is None:
             return
-        try:
-            report_landing(sandbox_land.land(
-                a.repo, self.session_id, setup_paths(self.deps)), self.session_id)
-        except Exception as e:
-            log(f"warning: couldn't open PRs for {self.session_id}: {e}; push "
-                f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session_id)}")
+        if not a.no_pr:
+            try:
+                report_landing(sandbox_land.land(
+                    a.repo, self.session_id, setup_paths(self.deps)),
+                    self.session_id)
+            except Exception as e:
+                log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
+                    "push state is on GitHub under "
+                    f"{sandbox_sessions.branch_prefix(self.session_id)}")
+        if not a.no_actions:
+            try:
+                report_actions(sandbox_actions.run(a.repo, self.session_id))
+            except Exception as e:
+                log(f"warning: couldn't run follow-up actions for "
+                    f"{self.session_id}: {e}")
 
     def teardown(self):
         if self._torn_down:
@@ -869,6 +886,9 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-actions", action="store_true",
+                   help="don't act on `Sandbox-Action:` trailers in the "
+                        "session's commit messages (e.g. file follow-up issues)")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "
@@ -1016,6 +1036,8 @@ def main(argv=None):
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
             report_landing(sandbox_land.land(args.repo))
+            if not args.no_actions:
+                report_actions(sandbox_actions.run(args.repo))
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1

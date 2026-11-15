@@ -796,3 +796,31 @@ def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
     assert {"pull_request", "non_fast_forward", "deletion"} <= types
     assert rs["bypass_actors"] == [] and rs["enforcement"] == "active"
     assert rs["conditions"]["ref_name"]["include"] == ["~DEFAULT_BRANCH"]
+
+
+def test_actions_run_after_prs_even_with_no_pr_and_honour_no_actions(
+        make_args, monkeypatch):
+    got = []
+    monkeypatch.setattr(cs.sandbox_actions, "run",
+                        lambda *a: got.append(a) or [])
+    monkeypatch.setattr(cs.sandbox_land, "land",
+                        lambda *a: pytest.fail("landed"))
+    box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=True,
+                   name="quirky-hopper")
+    box.key_id = 1
+    box.land()
+    assert got == [("o/r", "quirky-hopper")]
+    got.clear()
+    box.args.no_actions = True
+    box.land()
+    assert got == []
+
+
+def test_action_failure_never_blocks_teardown(make_args, monkeypatch):
+    def boom(*a):
+        raise cs.GitHubError("down", 0)
+    monkeypatch.setattr(cs.sandbox_actions, "run", boom)
+    monkeypatch.setattr(cs.sandbox_land, "land", lambda *a: [])
+    box = _sandbox(make_args, monkeypatch, repo="o/r")
+    box.key_id = 1
+    box.land()

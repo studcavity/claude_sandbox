@@ -202,6 +202,14 @@ later. Put it there rather than in a stray notes file or only in chat.
   follow-up is done, say so in the commit that does it (`Resolves follow-up
   from <short-sha>: ...`). Never rewrite pushed history to edit one; add a new
   commit instead.
+- **Structured follow-ups.** To have the launcher file a GitHub issue for a
+  follow-up when the session ends, add a trailer to the LAST paragraph of the
+  commit message (alongside `Co-Authored-By:`), one line of JSON:
+  `Sandbox-Action: {"v": 1, "type": "issue", "id": "smoke", "title": "Run ./smoke.sh on a host", "body": "why it was blocked"}`
+  `id` is `[A-Za-z0-9._-]{1,40}`, unique in that commit. Say a later commit
+  addressed one with `{"v": 1, "type": "resolve", "id": "r1", "ref": "<sha7+>:<id>"}`
+  and it won't be filed. Anything malformed or unknown is silently ignored, so
+  keep the plain `Follow-up:` prose line too. Full spec: `sandbox_actions.py`.
 
 ## Testing: part of the repo, not just the session
 Work should always come with automated tests that **live in the repo** and

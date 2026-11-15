@@ -58,6 +58,7 @@ On every launch the program:
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
+| `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
 | `sandbox_land.py` | host-side: open PRs for a session's branches, hold privileged ones |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
@@ -85,6 +86,13 @@ Any number of sandboxes can run on one repo at once. What keeps them apart:
   `./run.sh REPO --land-all` opens PRs for every unmerged `sbx/*` branch
   (recovery after a crashed launcher; it also grabs live sessions' work).
   Text from the session is sanitised (no live `@mentions`, labelled untrusted).
+- **Follow-up actions.** A commit message can end with
+  `Sandbox-Action: {"v": 1, "type": "issue", "id": "x", "title": "..."}`
+  trailers. After the PRs, the launcher files an issue per unaddressed item
+  and comments on the commit with the link (that comment is also the
+  idempotency record, so re-running never duplicates). Messages that don't
+  match the spec are ignored. New action types are new `(type, version)`
+  handlers; see `sandbox_actions.py`. `--no-actions` skips this.
 - **Exit summary.** The launcher prints a block listing every branch with its
   PR number, target, commit count and URL (or why none was opened):
   ```
