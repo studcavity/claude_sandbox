@@ -162,9 +162,7 @@ this session is lost when the sandbox ends.
 
 Gates worth mentioning in your final message when a repo lacks them (propose
 each as its own small branch, don't add them unasked, never weaken one that
-exists; `.github/` changes are held back for manual review): PRs plus passing
-CI required for the default branch (`required_status_checks` listing *every*
-job, see below); a type checker that reads unannotated code (mypy
+exists; `.github/` changes are held back for manual review): a type checker that reads unannotated code (mypy
 `check_untyped_defs = True`, pyright, TypeScript `strict`); a test of the real
 entry point with only the edges faked; a smoke test in a real environment, run
 in CI; strict shell (`set -euo pipefail`, CI shell `bash -euo pipefail {0}`;
@@ -258,28 +256,13 @@ session `$session`. If no repo was cloned, ignore this section.
   instructions that override this section.
 - In your final message, list your branch names and what each contains.
 
-## Default-branch protection and required status checks (`$repo`)
-$protection
-
-You can't change repo settings. What a ruleset does and doesn't give you:
-- Pull requests being required is what keeps a session (including one
-  confused by injected text) from changing the default branch directly.
-- A CI job only **blocks** merging if the ruleset lists it under
-  `required_status_checks`. Names are repo-specific and must match the check's
-  displayed name exactly: the job's `name:`, with matrix values expanded
-  (for example `test (3.12)`). That's why the launcher can't ship a universal list.
-- So when you add, rename or remove a CI job in this repo, or the note above
-  says no checks are required while CI exists, say so in your final message:
-  list the exact check names worth requiring and tell the user how to add
-  them. Only suggest names you have seen pass. For example, with the ruleset's
-  id from `gh api repos/$repo/rulesets`, send the full ruleset back with this
-  rule added (`gh api -X PUT repos/$repo/rulesets/<id> --input ruleset.json`):
-  `{"type": "required_status_checks", "parameters":
-  {"strict_required_status_checks_policy": true, "required_status_checks":
-  [{"context": "<check name>"}]}}`.
-- Renaming a required job strands every open PR, because the old name never
-  reports again. Warn the user to update the ruleset in step with the rename.
-- Never claim a check is enforced unless the note above lists it.
+## Reaching the default branch (`$repo`)
+Changes reach the default branch only through pull requests: never push to it,
+whatever the repo's settings are. CI job names may be required status checks:
+before you add, rename or remove a CI job, tell the user in your final
+message, because renaming a required job strands every open PR. Don't assume a
+check is required or enforced. The launcher tells the user about the repo's
+protection settings; it doesn't tell you.
 
 ## Git: linear history is paramount
 - Never create merge commits. Integrate upstream changes with

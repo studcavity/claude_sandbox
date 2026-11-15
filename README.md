@@ -203,9 +203,28 @@ PR is now blocked by a context that never reports: delete it.
 A test keeps every required check name equal to a real CI job name, except
 `sandbox/provenance`, which is a commit status.
 
-Each session's CLAUDE.md states this repo's protection status and required
-checks, and tells the session to name the checks to require whenever it adds,
-renames or removes a CI job (renaming a required job strands open PRs). Also:
+**Where protection gaps are reported.** To **you**, never to the session: at
+launch (a `warning:` line) and again in the exit summary ("repo warnings"), so
+a long session doesn't scroll them away. They are: the default branch isn't
+protected, or that couldn't be verified; no status check is required to merge;
+and CI jobs that passed on the default branch but aren't required. The
+session's CLAUDE.md is identical whatever the state (a test checks it): a list
+of a repo's weak points is a map for a prompt-injected session. It only says to
+use PRs, never push to the default branch, and tell you before changing a CI
+job's name.
+
+**Required status checks.** A CI job only blocks a merge if a ruleset lists it.
+To add the ones the launcher named: `gh api repos/OWNER/REPO/rulesets` (note
+the ruleset's id), save it with `gh api repos/OWNER/REPO/rulesets/<id> >
+ruleset.json`, add this rule to its `rules`, and
+`gh api -X PUT repos/OWNER/REPO/rulesets/<id> --input ruleset.json`:
+`{"type": "required_status_checks", "parameters":
+{"strict_required_status_checks_policy": true, "required_status_checks":
+[{"context": "<check name>"}]}}`. Use names that have passed (they must match
+the job's displayed name, matrix values expanded, e.g. `test (3.12)`). Renaming
+a required job strands every open PR, so update the ruleset in step.
+
+Also:
 - Keep repo Actions secrets minimal. A PR from a same-repo branch runs the
   branch's workflow code *with* secrets; put real secrets in an Environment
   restricted to the default branch.

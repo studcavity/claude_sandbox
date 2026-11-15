@@ -373,7 +373,6 @@ def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
         cs.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/some-repo", "owner/some-repo", False,
         "- apt: `a`\n- binaries: `b`", session="quirky-hopper",
-        protection_note=cs.protection_note("o/r", "main", "protected", ("a", "b")),
         disk_note="- " + "disk note " * 30)
     assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
         f"{len(md)} chars: move detail to an on-demand reference file")
