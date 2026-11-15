@@ -97,6 +97,16 @@ it's a copy-on-write clone instead of an unpack.
 The image contains no credentials: SSH keys and git identity are still
 created per session.
 
+## nested containers (`--nesting`)
+`--nesting` launches the sandbox with `security.nesting=true`, so containers
+can run inside it (for example this repo's `tests/integration`). If the repo's
+deps installed `incus`, the launcher also, after the deps install, gives root a
+small subuid/subgid range (the default one doesn't fit inside the sandbox's own
+id map), makes the incus socket world-accessible (the sandbox is throwaway and
+`ubuntu` already has passwordless sudo) and runs `incus admin init --minimal`.
+Without `--nesting` nothing changes. Trade-off: nesting loosens the sandbox's
+isolation from the host a little, so use it only for repos that need it.
+
 ## repo dependencies
 A repo can put a `claude_sandbox_deps.yaml` at the root of its default branch
 to have tooling installed in the container before the session starts:

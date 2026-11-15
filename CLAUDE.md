@@ -51,6 +51,9 @@ Unit tests fake `subprocess`, so they can't catch bugs in how incus actually
 behaves (e.g. `incus exec` stdin vs `/dev/stdin`). `tests/integration/` holds
 opt-in tests marked `incus`; they skip unless `CS_INTEGRATION=1` and incus are
 present. `./smoke.sh [owner/repo]` runs them (plus a real launch with a repo).
+Launch a sandbox with `--nesting` (this repo's deps install `incus`) and the
+integration tests can run inside it; without `--nesting` they skip or fail at
+container start.
 Enable the pre-push warning with `git config core.hooksPath .githooks`.
 The launcher also runs `Container.self_check()` right after boot, so a broken
 exec/stdin path fails immediately with a clear error.

@@ -13,9 +13,11 @@ class Container:
     def __init__(self, cli, name):
         self.cli, self.name = cli, name
 
-    def launch(self, image, ephemeral):
+    def launch(self, image, ephemeral, config=None):
+        cfg = [a for k, v in (config or {}).items()
+               for a in ("-c", f"{k}={v}")]
         run([self.cli, "launch", image, self.name]
-            + (["--ephemeral"] if ephemeral else []))
+            + (["--ephemeral"] if ephemeral else []) + cfg)
 
     def delete(self):
         run([self.cli, "delete", "--force", self.name], check=False, capture=True)

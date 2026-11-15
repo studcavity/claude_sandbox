@@ -50,7 +50,7 @@ def make_args(tmp_path):
         base = dict(repo=None, read_only=False, image="ubuntu:24.04",
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
-                    rebuild=False, max_age=7, model="default", no_deps=False,
+                    rebuild=False, nesting=False, max_age=7, model="default", no_deps=False,
                     claude_md=os.path.join(REPO_ROOT, "sandbox_CLAUDE.md"),
                     setup_token=False,
                     token_file=str(tmp_path / "oauth_token"))

@@ -5,7 +5,7 @@
 
 # Where/when this toolchain was resolved, so it can be reproduced later.
 # Refresh both whenever you edit this file (inert metadata, never executed).
-last_generated: "2026-11-15T00:40:00Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
+last_generated: "2026-11-15T01:06:52Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
 platform: |                              # lsb_release -a; uname -m
   Distributor ID: Ubuntu
   Description:    Ubuntu 24.04.5 LTS
@@ -16,6 +16,9 @@ platform: |                              # lsb_release -a; uname -m
 # Debian/Ubuntu packages (optionally pinned: name=version).
 apt:
   - shfmt
+  # Nested containers for tests/integration (launch with --nesting; the
+  # launcher then fixes subuid/socket and runs `incus admin init --minimal`).
+  - incus
 
 # Prebuilt binaries -> /usr/local/bin/<name>. sha256 is required and covers
 # the downloaded file (here, the archive); archive_path picks the file inside.

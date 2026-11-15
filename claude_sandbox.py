@@ -208,6 +208,27 @@ def check_workflow_scope(token):
 # --------------------------------------------------------------------------- #
 # sandbox
 # --------------------------------------------------------------------------- #
+# Run as root after deps install. Incus's default subuid range
+# (1000000:1000000000) can't fit inside this container's own id map, so use a
+# small one; the socket is world-accessible because the sandbox is throwaway
+# and `ubuntu` already has passwordless sudo.
+NESTING_SETUP = r"""
+command -v incus >/dev/null || exit 0
+sed -i '/^root:/d' /etc/subuid /etc/subgid
+echo root:100000:65536 | tee -a /etc/subuid >> /etc/subgid
+mkdir -p /etc/systemd/system/incus.socket.d
+printf '[Socket]\nSocketMode=0666\n' > /etc/systemd/system/incus.socket.d/mode.conf
+systemctl daemon-reload
+systemctl restart incus.socket incus
+incus admin init --minimal
+"""
+
+
+def launch_config(args):
+    """Instance config for `launch`. --nesting allows containers inside."""
+    return {"security.nesting": "true"} if args.nesting else {}
+
+
 class Sandbox:
     def __init__(self, args):
         self.args = args
@@ -230,7 +251,7 @@ class Sandbox:
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
         log(f"launching ephemeral container {self.name} ({image})")
-        self.box.launch(image, ephemeral=True)
+        self.box.launch(image, ephemeral=True, config=launch_config(self.args))
         self.container_up = True
         self.box.wait_network()
         self.box.self_check()  # fail fast, before any real work
@@ -246,6 +267,12 @@ class Sandbox:
                           "(apt-get update -qq && apt-get install -y -qq tmux)",
                           capture=True)
             self.box.user("cat > ~/.tmux.conf", input=TMUX_CONF)
+
+    def setup_nesting(self):
+        """With --nesting, make a preinstalled incus usable inside the sandbox."""
+        if self.args.nesting:
+            log("configuring nested incus (skipped if incus isn't installed)")
+            self.box.root(NESTING_SETUP, capture=True)
 
     def load_deps(self):
         """Fetch and validate the repo's claude_sandbox_deps.yaml (host only).
@@ -454,6 +481,10 @@ def build_parser():
     p.add_argument("--tmux", action="store_true",
                    help="wrap the session in tmux inside the container "
                         "(mouse scrolling, 100k-line history)")
+    p.add_argument("--nesting", action="store_true",
+                   help="allow containers inside the sandbox "
+                        "(security.nesting=true) and set up incus if the "
+                        "repo's deps installed it")
     p.add_argument("--no-cache", action="store_true",
                    help="launch --image directly and install everything at "
                         "boot instead of using the cached base image")
@@ -527,6 +558,7 @@ def main(argv=None):
             box.install_claude()
             return box.setup_token()
         box.install_deps()  # before any credential is in the container
+        box.setup_nesting()
         box.provision_key()
         box.install_claude()
         workdir = box.clone()

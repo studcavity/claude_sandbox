@@ -26,6 +26,13 @@ def test_launch_and_delete(calls):
     assert calls[1][1]["check"] is False
 
 
+def test_launch_passes_config(calls):
+    sc.Container("incus", "box").launch("img", False,
+                                        config={"security.nesting": "true"})
+    assert calls[0][0] == ["incus", "launch", "img", "box",
+                           "-c", "security.nesting=true"]
+
+
 def test_root_argv_passes_env_and_cwd_without_shell(calls):
     sc.Container("lxc", "box").root_argv(["echo", "a b"], env={"K": "v"},
                                          cwd="/tmp")

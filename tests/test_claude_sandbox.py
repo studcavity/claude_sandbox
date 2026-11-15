@@ -190,10 +190,38 @@ def test_launch_runs_self_check_right_after_network(make_args, monkeypatch,
                                                     fake_box):
     box = _sandbox(make_args, monkeypatch)
     order = []
-    fake_box.launch = lambda image, ephemeral: order.append("launch")
+    fake_box.launch = lambda image, ephemeral, config=None: order.append("launch")
     fake_box.wait_network = lambda: order.append("network")
     fake_box.self_check = lambda: order.append("self_check")
     fake_box.root = lambda script, **kw: order.append("root")
     box.box = fake_box
     box.launch("ubuntu:24.04")
     assert order[:3] == ["launch", "network", "self_check"]
+
+
+def test_launch_config_only_sets_nesting_when_asked(make_args):
+    assert cs.launch_config(make_args()) == {}
+    assert cs.launch_config(make_args(nesting=True)) == {
+        "security.nesting": "true"}
+
+
+def test_setup_nesting_is_noop_without_flag(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch)
+    box.box = fake_box
+    box.setup_nesting()
+    assert fake_box.calls == []
+    box = _sandbox(make_args, monkeypatch, nesting=True)
+    box.box = fake_box
+    box.setup_nesting()
+    assert fake_box.calls == [("root", cs.NESTING_SETUP)]
+
+
+def test_nesting_setup_script_shape():
+    s = cs.NESTING_SETUP
+    assert s.index("command -v incus") < s.index("subuid")  # guarded first
+    assert "root:100000:65536" in s and "incus admin init --minimal" in s
+    assert "SocketMode=0666" in s
+
+
+def test_parser_has_nesting_flag():
+    assert cs.build_parser().parse_args(["--nesting"]).nesting is True
