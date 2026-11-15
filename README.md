@@ -24,6 +24,13 @@ Edit `github_user` and `git_email` at the top of `run.sh`, then:
 ```
 ./run.sh <repository> [extra flags]
 ```
+`run.sh` first checks whether this checkout is behind its upstream. If so it
+lists the new commits and, on a terminal, asks `git pull now? [y/N]` (it uses
+`git pull --ff-only`, then restarts itself; a failed or declined pull just
+continues). Without a terminal it only prints the notice. Pass
+`--no-update-check` (anywhere in the args; `run.sh` consumes it) to skip the
+check and its `git fetch`.
+
 `run.sh` checks that `gh` is logged in as the expected user, sets up a
 `venv` from `requirements.txt`, and runs `claude_sandbox.py` against
 `<github_user>/<repository>`. Any extra flags go to `claude_sandbox.py`
