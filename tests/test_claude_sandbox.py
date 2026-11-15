@@ -333,7 +333,7 @@ def test_usb_attached_after_deps_before_key(monkeypatch):
     """Source-order guard: installers run before hardware is present and
     hardware is attached before any credential is provisioned."""
     import inspect
-    src = inspect.getsource(cs.main)
+    src = inspect.getsource(cs._launch)
     assert (src.index("box.install_deps()") < src.index("box.attach_usb()")
             < src.index("box.provision_key()"))
 
@@ -429,7 +429,7 @@ def test_run_setup_noop_without_setup(make_args, monkeypatch, fake_box):
 
 def test_setup_runs_after_clone_and_before_credentials():
     import inspect
-    src = inspect.getsource(cs.main)
+    src = inspect.getsource(cs._launch)
     assert (src.index("box.clone()") < src.index("box.run_setup(")
             < src.index("box.session("))
     # credentials are only pushed by session(); setup must not touch them
@@ -605,7 +605,7 @@ def test_default_image_without_deps_or_flag(make_args, monkeypatch):
 def test_deps_are_read_before_the_base_image_is_built():
     """The repo's image: must be known before ensure_base_image runs."""
     import inspect
-    src = inspect.getsource(cs.main)
+    src = inspect.getsource(cs._launch)
     assert (src.index("box.load_deps()") < src.index("box.choose_image()")
             < src.index("ensure_base_image("))
 

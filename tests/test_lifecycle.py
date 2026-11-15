@@ -173,3 +173,45 @@ def test_a_status_failure_never_breaks_landing_or_teardown(world, monkeypatch):
                         lambda api, repo: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cs.main(argv(world)) == 0
     assert ("DELETE", "/repos/o/r/keys/5") in [(m, p) for m, p, _ in world.gh.calls]
+
+
+# --- --timings (plan 1a) ------------------------------------------------------- #
+def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
+    assert cs.main(argv(world, "--timings")) == 0
+    err = capsys.readouterr().err
+    for stage in ("github login + scopes", "container launch + boot", "clone",
+                  "session (interactive)", "land: PRs, statuses, actions", "teardown"):
+        assert stage in err
+    assert "the session prompt appeared after" in err
+
+
+def test_timings_are_off_by_default_and_leave_no_global_behind(world, capsys):
+    import sandbox_timing
+    assert cs.main(argv(world)) == 0
+    assert "timings" not in capsys.readouterr().err
+    assert sandbox_timing.ACTIVE is None
+    cs.main(argv(world, "--timings"))
+    assert sandbox_timing.ACTIVE is None            # uninstalled even after a run
+
+
+def test_timings_json_is_written_and_implies_the_report(world, capsys):
+    import json
+    path = world.tmp / "t.json"
+    assert cs.main(argv(world, "--timings-json", str(path))) == 0
+    data = json.loads(path.read_text())
+    assert data["marks"]["prompt"] >= 0
+    assert "teardown" in [s["name"] for s in data["stages"]]
+    assert "timings" in capsys.readouterr().err
+
+
+def test_the_report_survives_a_crash(world, monkeypatch, capsys):
+    def boom(self, workdir):
+        raise RuntimeError("session blew up")
+    monkeypatch.setattr(cs.Sandbox, "session", boom)
+    assert cs.main(argv(world, "--timings")) == 1
+    assert "teardown" in capsys.readouterr().err
+
+
+def test_an_unwritable_json_path_is_a_warning_not_a_failure(world, capsys):
+    assert cs.main(argv(world, "--timings-json", "/nonexistent-dir/t.json")) == 0
+    assert "couldn't write" in capsys.readouterr().err

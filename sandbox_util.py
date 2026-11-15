@@ -3,6 +3,9 @@ import contextlib
 import signal
 import subprocess
 import sys
+import time
+
+import sandbox_timing
 
 
 def log(msg):
@@ -10,8 +13,16 @@ def log(msg):
 
 
 def run(cmd, check=True, capture=False, input=None):
-    return subprocess.run(cmd, check=check, text=True,
-                          capture_output=capture, input=input)
+    if sandbox_timing.ACTIVE is None:
+        return subprocess.run(cmd, check=check, text=True,
+                              capture_output=capture, input=input)
+    start = time.perf_counter()
+    try:
+        return subprocess.run(cmd, check=check, text=True,
+                              capture_output=capture, input=input)
+    finally:
+        sandbox_timing.count(sandbox_timing.label_for(cmd),
+                             time.perf_counter() - start)
 
 
 @contextlib.contextmanager

@@ -77,6 +77,7 @@ import sandbox_check
 import sandbox_land
 import sandbox_protect
 import sandbox_sessions
+import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
 from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
@@ -506,19 +507,22 @@ class Sandbox:
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
         log(f"launching ephemeral container {self.name} ({image})")
-        self.box.launch(image, ephemeral=True, config=launch_config(self.args),
-                        root_size=self.args.disk_size)
+        with sandbox_timing.stage("incus launch"):
+            self.box.launch(image, ephemeral=True, config=launch_config(self.args),
+                            root_size=self.args.disk_size)
         self.container_up = True
-        self.box.wait_network()
-        self.box.self_check()  # fail fast, before any real work
-        # Lets repo scripts refuse to run anywhere but inside a sandbox.
-        self.box.put_file(SANDBOX_MARKER, self.name.encode() + b"\n", "0644")
+        with sandbox_timing.stage("wait for network"):
+            self.box.wait_network()
+        with sandbox_timing.stage("self-check + marker + package probe"):
+            self.box.self_check()  # fail fast, before any real work
+            # Lets repo scripts refuse to run anywhere but inside a sandbox.
+            self.box.put_file(SANDBOX_MARKER, self.name.encode() + b"\n", "0644")
 
-        # No-ops when launched from the cached image.
-        self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
-                      "(apt-get update -qq && "
-                      "apt-get install -y -qq git curl openssh-client)",
-                      capture=True)
+            # No-ops when launched from the cached image.
+            self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
+                          "(apt-get update -qq && "
+                          "apt-get install -y -qq git curl openssh-client)",
+                          capture=True)
 
         if self.args.tmux:
             self.box.root("command -v tmux >/dev/null || "
@@ -800,6 +804,7 @@ class Sandbox:
         cmd[cmd.index("--cwd") + 1] = workdir
 
         log("starting session (exit Claude Code to tear everything down)")
+        sandbox_timing.mark("prompt")
         with sigint_to_child():
             subprocess.run(cmd)
 
@@ -995,6 +1000,12 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--timings", action="store_true",
+                   help="print where the launch spent its time (stages, and "
+                        "how many gh / incus calls ran) when it ends")
+    p.add_argument("--timings-json", metavar="PATH",
+                   help="also write the timings as JSON (implies --timings), "
+                        "to compare runs")
     p.add_argument("--no-check-status", action="store_true",
                    help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
                         "status on the session's PRs (it is only posted where "
@@ -1144,10 +1155,30 @@ def main(argv=None):
     if not os.path.isfile(args.claude_md):
         p.error(f"--claude-md: no such file: {args.claude_md}")
 
+    timings = None
+    if args.timings or args.timings_json:
+        timings = sandbox_timing.Timings()
+        sandbox_timing.install(timings)
+    try:
+        return _launch(args)
+    finally:
+        if timings is not None:
+            sandbox_timing.install(None)
+            print("\n" + timings.report(), file=sys.stderr)
+            if args.timings_json:
+                try:
+                    sandbox_timing.write_json(timings, args.timings_json)
+                    log(f"timings written to {args.timings_json}")
+                except OSError as e:
+                    log(f"warning: couldn't write {args.timings_json}: {e}")
+
+
+def _launch(args):
     if not args.no_update_check:
-        sandbox_update.check_for_updates(
-            os.path.dirname(os.path.abspath(__file__)), sys.argv,
-            interactive=sys.stdin.isatty(), ask=input)
+        with sandbox_timing.stage("update check (git fetch)"):
+            sandbox_update.check_for_updates(
+                os.path.dirname(os.path.abspath(__file__)), sys.argv,
+                interactive=sys.stdin.isatty(), ask=input)
 
     if args.land_all:
         try:
@@ -1171,64 +1202,77 @@ def main(argv=None):
 
     box = Sandbox(args)
     if not args.setup_token:
-        try:
-            login = box.login  # fail fast, before building or launching anything
-        except GitHubError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-        if not args.no_user_check:
-            bad = check_expected_user(login, args.github_user)
-            if bad:
-                print(f"error: {bad}", file=sys.stderr)
+        with sandbox_timing.stage("github login + scopes"):
+            try:
+                login = box.login  # fail fast, before building or launching anything
+            except GitHubError as e:
+                print(f"error: {e}", file=sys.stderr)
                 return 1
-        if not args.read_only:
-            check_workflow_scope()
+            if not args.no_user_check:
+                bad = check_expected_user(login, args.github_user)
+                if bad:
+                    print(f"error: {bad}", file=sys.stderr)
+                    return 1
+            if not args.read_only:
+                check_workflow_scope()
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
 
-    pool_err = sandbox_pool.check(args.cli, args.grow_pool)
+    with sandbox_timing.stage("incus pool check"):
+        pool_err = sandbox_pool.check(args.cli, args.grow_pool)
     if pool_err:
         print(f"error: {pool_err}", file=sys.stderr)
         return 1
 
     try:
         if not args.setup_token:
-            box.resolve_usb()  # prompt now, not after a long image build
-            box.load_deps()  # before the image: it may pick the base OS
-        if not args.setup_token:
-            box.preflight_github()
+            with sandbox_timing.stage("usb requests + deps file (github)"):
+                box.resolve_usb()  # prompt now, not after a long image build
+                box.load_deps()  # before the image: it may pick the base OS
+            with sandbox_timing.stage("preflight (protection, stale keys)"):
+                box.preflight_github()
         source = box.choose_image()
         image = source
-        if not args.no_cache:
-            image = ensure_base_image(args.cli, source,
-                                      args.max_age, args.rebuild,
-                                      args.disk_size)
-        if box.deps and not args.no_cache:
-            baked = ensure_deps_image(args.cli, image, box.deps,
-                                      args.max_age, args.rebuild,
-                                      args.disk_size)
-            if baked:
-                image, box.deps_baked = baked, True
-                box.deps_note += ("\n(Preinstalled in a cached image; edits "
-                                  "to the file apply on the next launch.)")
-        box.launch(image)
+        with sandbox_timing.stage("images (cache lookup / build)"):
+            if not args.no_cache:
+                image = ensure_base_image(args.cli, source,
+                                          args.max_age, args.rebuild,
+                                          args.disk_size)
+            if box.deps and not args.no_cache:
+                baked = ensure_deps_image(args.cli, image, box.deps,
+                                          args.max_age, args.rebuild,
+                                          args.disk_size)
+                if baked:
+                    image, box.deps_baked = baked, True
+                    box.deps_note += ("\n(Preinstalled in a cached image; edits "
+                                      "to the file apply on the next launch.)")
+        with sandbox_timing.stage("container launch + boot"):
+            box.launch(image)
         if args.setup_token:
             box.install_claude()
             return box.setup_token()
-        box.attach_volumes()  # before the clone, so it lands on its own volume
-        box.install_deps()  # before any credential is in the container
-        box.setup_nesting()
-        box.attach_usb()
-        box.provision_key()
-        box.install_claude()
-        workdir = box.clone()
-        box.run_setup(workdir)  # before Claude credentials reach the container
-        box.install_session_tools()
-        box.write_claude_md(workdir)
-        box.session(workdir)
+        with sandbox_timing.stage("volumes"):
+            box.attach_volumes()  # before the clone, so it lands on its own volume
+        with sandbox_timing.stage("install deps"):
+            box.install_deps()  # before any credential is in the container
+            box.setup_nesting()
+            box.attach_usb()
+        with sandbox_timing.stage("ssh key + deploy key + git config"):
+            box.provision_key()
+        with sandbox_timing.stage("claude install check"):
+            box.install_claude()
+        with sandbox_timing.stage("clone"):
+            workdir = box.clone()
+        with sandbox_timing.stage("repo setup scripts"):
+            box.run_setup(workdir)  # before Claude credentials reach the container
+        with sandbox_timing.stage("session tools + CLAUDE.md"):
+            box.install_session_tools()
+            box.write_claude_md(workdir)
+        with sandbox_timing.stage("session (interactive)"):
+            box.session(workdir)
     except KeyboardInterrupt:
         log("interrupted")
     except (subprocess.CalledProcessError, RuntimeError) as e:
@@ -1239,8 +1283,10 @@ def main(argv=None):
                   else err, file=sys.stderr)
         return 1
     finally:
-        box.land()  # host-side, uses the user's gh; before the key is revoked
-        box.teardown()
+        with sandbox_timing.stage("land: PRs, statuses, actions"):
+            box.land()  # host-side, uses the user's gh; before the key is revoked
+        with sandbox_timing.stage("teardown"):
+            box.teardown()
     return 0
 
 
