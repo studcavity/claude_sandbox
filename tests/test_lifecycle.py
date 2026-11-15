@@ -5,11 +5,13 @@ together (e.g. an instance attribute shadowing a method that main() calls)
 passes them all. These tests run the real main() and real Sandbox methods
 against a recording container, a scripted GitHub and a captured subprocess.
 """
+import json
 import types
 
 import pytest
 
 import claude_sandbox as cs
+import sandbox_github
 import sandbox_land
 import sandbox_sessions
 from sandbox_github import GitHubError
@@ -55,6 +57,7 @@ class FakeContainer:
 class FakeGitHub:
     def __init__(self, session):
         self.calls, self.session = [], session
+        self.owner = "studcavity"
 
     def __call__(self, method, path, body=None, raw=False):
         self.calls.append((method, path, body))
@@ -67,7 +70,8 @@ class FakeGitHub:
         if method == "POST" and path.endswith("/pulls"):
             return {"html_url": "https://github.com/o/r/pull/7"}
         if path == "/repos/o/r":
-            return {"default_branch": "main"}
+            return {"default_branch": "main",
+                    "owner": {"login": self.owner}}
         if "/rules/branches/" in path:
             return [{"type": "pull_request"}]
         if path.endswith("/protection"):
@@ -91,7 +95,7 @@ def world(monkeypatch, tmp_path):
     gh = FakeGitHub("quirky-hopper")
     ran = []
     monkeypatch.setattr(cs, "Container", FakeContainer)
-    for mod in (cs, sandbox_sessions, sandbox_land):
+    for mod in (cs, sandbox_sessions, sandbox_land, sandbox_github):
         monkeypatch.setattr(mod, "gh_api", gh)
     monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
     monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
@@ -273,3 +277,42 @@ def test_the_default_hard_cap_is_thirty_days(world, monkeypatch):
                         lambda *a, **k: seen.update(k) or "img")
     cs.main(argv(world))
     assert seen["hard_max_age_days"] == 30.0 and callable(seen["on_stale"])
+
+
+def test_own_repo_is_pre_trusted_and_themed(world, monkeypatch):
+    sent = []
+    monkeypatch.setattr(FakeContainer, "user_argv",
+                        lambda self, argv, **k: sent.append((argv, k["input"]))
+                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        raising=False)
+    assert cs.main(argv(world)) == 0
+    (argv_, stdin), = sent
+    assert argv_[:2] == ["python3", "-c"]
+    state = json.loads(stdin)
+    assert state[".claude/settings.json"] == {"theme": "dark-daltonized"}
+    projects = state[".claude.json"]["projects"]
+    assert [v for v in projects.values()] == [{"hasTrustDialogAccepted": True}]
+
+
+def test_foreign_repo_is_not_pre_trusted(world, monkeypatch, capsys):
+    world.gh.owner = "someone-else"
+    sent = []
+    monkeypatch.setattr(FakeContainer, "user_argv",
+                        lambda self, argv, **k: sent.append(k["input"])
+                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        raising=False)
+    assert cs.main(argv(world)) == 0
+    assert "projects" not in json.loads(sent[0])[".claude.json"]
+    assert "not pre-trusting" in capsys.readouterr().err
+
+
+def test_owner_lookup_failure_fails_closed(world, monkeypatch):
+    sent = []
+    monkeypatch.setattr(FakeContainer, "user_argv",
+                        lambda self, argv, **k: sent.append(k["input"])
+                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        raising=False)
+    monkeypatch.setattr(cs, "repo_owner",
+                        lambda repo: (_ for _ in ()).throw(GitHubError("x", 500)))
+    assert cs.main(argv(world)) == 0
+    assert "projects" not in json.loads(sent[0])[".claude.json"]

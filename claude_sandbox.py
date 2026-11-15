@@ -68,6 +68,7 @@ if __name__ == "__main__":
     import sandbox_bootstrap
     sandbox_bootstrap.ensure_venv(os.path.dirname(os.path.abspath(__file__)))
 
+import sandbox_claude_config
 import sandbox_deps
 import sandbox_host
 import sandbox_pool
@@ -81,8 +82,9 @@ import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
 import sandbox_github
-from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
-                            token_scopes, validate_repo, workflow_push_warning)
+from sandbox_github import (GitHubError, gh_api, github_login, repo_owner,
+                            resolve_repo, token_scopes, validate_repo,
+                            workflow_push_warning)
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
 from sandbox_util import log, sigint_to_child
 
@@ -889,13 +891,41 @@ class Sandbox:
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
                       input=md)
 
-    def push_secrets(self):
+    def repo_trusted(self):
+        """Whether Claude Code may skip its trust dialog for the clone: only
+        for a repo the authenticated user owns. Fails closed."""
+        if not self.args.repo:
+            return False
+        try:
+            trusted, note = sandbox_claude_config.trust_decision(
+                repo_owner(self.args.repo), self.login)
+        except (GitHubError, KeyError, TypeError) as e:
+            trusted, note = False, f"couldn't check the repo owner ({e})"
+        if note:
+            log(f"warning: {note}")
+        return trusted
+
+    def seed_claude(self, workdir, secrets):
+        """Pre-answer Claude Code's first-run dialogs (see
+        sandbox_claude_config). Never blocks the launch."""
+        state = sandbox_claude_config.claude_state(
+            workdir, secrets, self.repo_trusted())
+        r = self.box.user_argv(["python3", "-c",
+                                sandbox_claude_config.MERGE_SCRIPT],
+                               input=sandbox_claude_config.merge_input(state),
+                               capture=True, check=False)
+        if r.returncode != 0:
+            log("warning: couldn't pre-answer Claude Code's first-run "
+                f"dialogs: {(r.stderr or '').strip()[-200:]}")
+
+    def push_secrets(self, workdir):
         """Write credentials to a 0600 file in the container via stdin.
 
         `incus exec --env K=V` would put them on the host's process list.
         Returns a shell prefix that loads and removes the file.
         """
         secrets = claude_secrets(os.environ, self.args.token_file)
+        self.seed_claude(workdir, secrets)
         if not secrets:
             log("no Claude credential found; run /login in the session "
                 "(or create one with --setup-token)")
@@ -903,14 +933,11 @@ class Sandbox:
         log("passing " + " and ".join(secrets) + " into the sandbox")
         self.box.user(f"umask 077 && cat > {SECRETS_FILE}",
                       input=secrets_script(secrets))
-        # Already logged in, so skip Claude Code's first-run onboarding.
-        self.box.user("[ -e ~/.claude.json ] || "
-                      "echo '{\"hasCompletedOnboarding\": true}' > ~/.claude.json")
         return f". {SECRETS_FILE} && rm -f {SECRETS_FILE} && "
 
     def session(self, workdir):
         env = {k: os.environ[k] for k in TERM_ENV_VARS if os.environ.get(k)}
-        script = session_script(workdir, self.push_secrets(),
+        script = session_script(workdir, self.push_secrets(workdir),
                                 shell=self.args.shell, model=self.args.model,
                                 tmux=self.args.tmux)
         cmd = self.box.user_cmd("bash", "-lc", script, env=env)
