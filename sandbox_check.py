@@ -4,6 +4,7 @@
     python sandbox_check.py BASE HEAD --post-status OWNER/REPO [--strict]
     python sandbox_check.py --post-status OWNER/REPO --pr N [--strict]
     python sandbox_check.py --post-status OWNER/REPO --pr N --override REASON
+    python sandbox_check.py --file-issues OWNER/REPO [--since REV | --last N] [--dry-run]
 
 Prints GitHub annotations (`::error::`, `::warning::`, `::notice::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
@@ -22,6 +23,15 @@ posted if it moved. A crashed checker posts `error`, never `success`.
 docs/plans/README.md: it posts `success` for that one SHA with an
 `OVERRIDDEN by <login>: <reason>` description and comments on the PR. Verified
 against real GitHub on 2026-11-15 (scripts/probe_commit_status.sh).
+
+--file-issues: the post-merge filer. The launcher files `Sandbox-Action` issues
+when a session ends, from its UNMERGED branches. Commits that reach the default
+branch without that run (launcher crashed, --no-actions, merged first, pushed
+by other tooling) are never filed; this scans commits already on the current
+branch (run it in a checkout of the repo) with the same parser, handlers,
+sanitising, secret scan, labels and dedupe as the launcher, so running it twice
+or alongside the launcher is safe. --dry-run lets reads through and records,
+but never performs, a write.
 
 Rules and severities
   error  merge commit (history must stay linear)
@@ -451,6 +461,61 @@ def format_status_outcomes(outcomes):
                          f"--post-status OWNER/REPO --pr {o.pr}")
     return "\n".join(lines)
 
+# --- post-merge filing (plan 5e) --------------------------------------------- #
+DEFAULT_LAST = 50
+
+
+def read_commits(since=None, last=DEFAULT_LAST, head="HEAD", cwd=None):
+    """[(sha, message)], oldest first, for `since..head` or the last N commits."""
+    for r in (since or "", head):
+        if r.startswith("-"):
+            raise CheckError(f"not a revision: {r!r}")
+    args = ["log", "-z", "--reverse", "--format=%H%x1f%B"]
+    args += [f"{since}..{head}"] if since else [f"--max-count={int(last)}", head]
+    raw = git(*args, cwd=cwd)
+    out = []
+    for chunk in raw.split("\0"):
+        sha, sep, message = chunk.strip("\n").partition("\x1f")
+        if sep and re.fullmatch(r"[0-9a-f]{40}", sha):
+            out.append((sha, message))
+    return out
+
+
+class DryRunApi:
+    """Reads go through; every write is recorded and answered with a stub."""
+
+    def __init__(self, api):
+        self.api, self.writes = api, []
+
+    def __call__(self, method, path, body=None, raw=False):
+        if method == "GET":
+            return self.api(method, path, body, raw=raw)
+        self.writes.append((method, path, body))
+        return {"html_url": "(dry run: not created)"}
+
+
+def file_issues_run(repo, since=None, last=DEFAULT_LAST, dry_run=False,
+                    api=None, cwd=None, out=print):
+    """Scan commits for Sandbox-Action trailers and carry them out -> exit code
+    (0 ok, 1 if any item failed)."""
+    import sandbox_github
+    sandbox_github.validate_repo(repo)
+    api = api or sandbox_github.gh_api
+    if dry_run:
+        api = DryRunApi(api)
+    actions = sandbox_actions.parse_commits(read_commits(since, last, cwd=cwd))
+    outcomes = sandbox_actions.execute(
+        sandbox_actions.Context(repo, "all", [], api), actions)
+    if dry_run:
+        for method, path, body in api.writes:
+            if path.endswith("/issues") and method == "POST":
+                out(f"would file: {body['title']!r} "
+                    f"labels={','.join(body['labels'])}")
+    text = sandbox_actions.format_outcomes(outcomes)
+    out(text or "no Sandbox-Action trailers found in "
+        + (f"{since}..HEAD" if since else f"the last {last} commits"))
+    return 1 if any(o.status == "failed" for o in outcomes) else 0
+
 
 
 # --- output ---------------------------------------------------------------- #
@@ -490,7 +555,29 @@ def main(argv=None):
     ap.add_argument("--override", metavar="REASON",
                     help="with --pr: break glass. Post success for this PR's "
                     "head commit only, with the reason, and comment on the PR")
+    ap.add_argument("--file-issues", metavar="OWNER/REPO",
+                    help="file issues for Sandbox-Action trailers in commits "
+                    "on the current branch (post-merge filer)")
+    ap.add_argument("--since", metavar="REV",
+                    help="with --file-issues: scan REV..HEAD")
+    ap.add_argument("--last", type=int, default=DEFAULT_LAST, metavar="N",
+                    help=f"with --file-issues: scan the last N commits "
+                    f"(default {DEFAULT_LAST}; ignored with --since)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="with --file-issues: show what would be filed")
     a = ap.parse_args(argv)
+    if a.file_issues:
+        if a.post_status or a.pr or a.override or a.base or a.head or a.branch:
+            ap.error("--file-issues stands alone (use --since/--last/--dry-run)")
+        if a.last < 1:
+            ap.error("--last must be at least 1")
+        try:
+            return file_issues_run(a.file_issues, a.since, a.last, a.dry_run)
+        except CheckError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+    if (a.since or a.dry_run) and not a.file_issues:
+        ap.error("--since and --dry-run need --file-issues OWNER/REPO")
     if (a.pr or a.override) and not a.post_status:
         ap.error("--pr and --override need --post-status OWNER/REPO")
     if a.override and not a.pr:
