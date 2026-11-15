@@ -2,7 +2,6 @@ import pytest
 
 import sandbox_issues as si
 import sandbox_land as sl
-import sandbox_record as sr
 import sandbox_templates as st
 
 
@@ -12,7 +11,7 @@ def tdir(tmp_path, **files):
     return str(tmp_path)
 
 
-GOOD_PR = "$session $branch $record $subjects $more untrusted"
+GOOD_PR = "$session $branch $caveats $subjects $more untrusted"
 GOOD_ISSUE = "$commit $item $body untrusted"
 
 
@@ -22,10 +21,10 @@ def test_the_shipped_templates_load():
 
 
 @pytest.mark.parametrize("text,fragment", [
-    ("$session $branch $subjects $more untrusted", "missing $record"),
-    ("$session $branch $record $subjects $more $extra untrusted", "unknown $extra"),
-    ("$session $branch $record $subjects $more", "untrusted"),
-    ("$session $branch $record $subjects $more untrusted costs $5 now", "lone `$`"),
+    ("$session $branch $subjects $more untrusted", "missing $caveats"),
+    ("$session $branch $caveats $subjects $more $extra untrusted", "unknown $extra"),
+    ("$session $branch $caveats $subjects $more", "untrusted"),
+    ("$session $branch $caveats $subjects $more untrusted costs $5 now", "lone `$`"),
 ])
 def test_a_template_that_drops_or_invents_something_is_refused(tmp_path, text, fragment):
     with pytest.raises(st.TemplateError, match="lone|" + fragment.replace("$", r"\$")):
@@ -76,25 +75,25 @@ def test_issue_body_is_exactly_the_documented_text():
     assert got == old_issue(sha, "i1", "the body", marker)
 
 
-def old_pr(session, branch, shown, record_text, more):
+def old_pr(session, branch, shown, caveats_text, more):
     return (f"Opened by claude_sandbox when session `{session}` ended, from "
             f"branch `{branch}`.\n\n"
             "Everything below was written by an AI session and is untrusted: "
             "review the diff, not this text.\n\n"
-            + record_text + f"````\n{shown}\n````\n" + more)
+            + caveats_text + f"````\n{shown}\n````\n" + more)
 
 
 @pytest.mark.parametrize("n_subjects", [1, 3, 25])
-@pytest.mark.parametrize("with_record", [False, True])
-def test_pr_body_is_byte_identical_to_the_old_inline_text(n_subjects, with_record):
+@pytest.mark.parametrize("with_caveats", [False, True])
+def test_pr_body_is_byte_identical_to_the_old_inline_text(n_subjects, with_caveats):
     subjects = [f"feat: change {i}" for i in range(n_subjects)]
-    rec = sr.extract([("aaaaaaa", "feat: x\n\nVerified: pytest")]) if with_record else None
-    _, body = sl.pr_text("sess", "sbx/sess/work", subjects, rec)
+    items = sl.not_verified_lines([("aaaaaaa", "feat: x\n\nNot verified: pytest")]) if with_caveats else None
+    _, body = sl.pr_text("sess", "sbx/sess/work", subjects, items)
     shown = "\n".join(sl.safe_line(s, 120) for s in subjects[:sl.MAX_SUBJECTS])
     more = n_subjects - sl.MAX_SUBJECTS
     assert body == old_pr(
         "sess", "sbx/sess/work", shown,
-        (sl.record_section(rec) + "\n") if rec else "",
+        (sl.caveats_section(items) + "\n") if items is not None else "",
         f"\n...and {more} more commits.\n" if more > 0 else "")
 
 

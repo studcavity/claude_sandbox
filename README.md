@@ -56,10 +56,9 @@ On every launch the program:
 | `sandbox_protect.py` | offer and apply the default-branch rulesets (`rulesets/`) |
 | `sandbox_todo.py` | stdlib-only: the `todo/<name>.md` follow-up request format (name, size, heading) |
 | `sandbox_issues.py` | files an issue for each `todo/` file a commit adds to the default branch (the post-merge filer, run by `file-issues.yml` or by hand) |
-| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
+| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with the commits' `Not verified` lines), hold privileged ones |
 | `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`) |
 | `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
-| `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
 | `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
 | `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
 | `sandbox_templates.py` | validated `templates/pr.md` and `templates/issue.md` |

@@ -26,7 +26,6 @@ import urllib.parse
 import sandbox_deps
 import sandbox_host
 import sandbox_labels
-import sandbox_record
 import sandbox_templates
 import sandbox_untrusted
 from sandbox_github import GitHubError, gh_api
@@ -60,7 +59,9 @@ def clean_text(text, limit):
     return sandbox_untrusted.one_line(text, limit, backticks_to_quotes=True)
 
 
-MAX_RECORD_ITEMS = 10
+MAX_CAVEATS = 10
+MAX_LINES_PER_MESSAGE = 400   # a commit message is read, not parsed forever
+_NOT_VERIFIED = re.compile(r"(?i)^\s*not\s+verified\b")
 
 
 def safe_line(text, limit):
@@ -73,31 +74,37 @@ def safe_line(text, limit):
     return clean_text(text, limit)
 
 
-def record_section(rec):
-    """Markdown for what the commits say about their own verification and
-    follow-ups (see sandbox_record). Every line of session text is sanitised."""
-    out = ["### What the commits say", "",
+def not_verified_lines(commits):
+    """[(short sha, full message)] -> [(short sha, line)]: every line that
+    starts with `Not verified`, oldest commit first. These are the caveats a
+    reviewer most needs, so they are lifted into the PR body; the rest of what
+    a commit says about itself stays in the commit."""
+    out: list = []
+    for sha, message in commits:
+        out.extend((sha, line.strip()) for line in
+                   message.splitlines()[:MAX_LINES_PER_MESSAGE]
+                   if _NOT_VERIFIED.match(line))
+    return out
+
+
+def caveats_section(items):
+    """Markdown for the `Not verified` lines (see not_verified_lines). Every
+    line of session text is sanitised and secret-checked."""
+    out: list = ["### Not verified, according to the commits", "",
            "_Lifted from the commit messages by the launcher; untrusted like "
            "everything below._", ""]
 
     def sha(x):
         return x if re.fullmatch(r"[0-9a-f]{4,40}", x or "") else "?"
-
-    def block(title, items, fmt):
-        if not items:
-            return
-        out.append(f"**{title}** ({len(items)})")
-        out.extend("- " + fmt(i) for i in items[:MAX_RECORD_ITEMS])
-        if len(items) > MAX_RECORD_ITEMS:
-            out.append(f"- ...and {len(items) - MAX_RECORD_ITEMS} more")
+    if not items:
+        out += ["_No commit says anything is not verified._", ""]
+    else:
+        out.append(f"({len(items)})")
+        out.extend(f"- `{sha(s)}` {safe_line(t, 160)}"
+                   for s, t in items[:MAX_CAVEATS])
+        if len(items) > MAX_CAVEATS:
+            out.append(f"- ...and {len(items) - MAX_CAVEATS} more")
         out.append("")
-    block("Verified", rec.verified, lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Not verified", rec.not_verified,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    block("Follow-ups", rec.follow_ups,
-          lambda i: f"`{sha(i[0])}` {safe_line(i[1], 160)}")
-    if not rec.verified and not rec.not_verified:
-        out += ["_No `Verified` / `Not verified` statement in any commit._", ""]
     return "\n".join(out)
 
 
@@ -118,9 +125,9 @@ def label_pr(repo, pr, session):
         pass
 
 
-def pr_text(session, branch, subjects, record=None):
+def pr_text(session, branch, subjects, caveats=None):
     """(title, body) for a session branch from its commit subjects (and, if
-    given, the Record of what its commits say about themselves)."""
+    given, its `Not verified` lines: see not_verified_lines)."""
     tail = branch.split("/", 2)[-1]
     first = clean_text(subjects[0], 80) if subjects else tail
     title = f"[{session}] " + (first if len(subjects) == 1 else
@@ -129,7 +136,7 @@ def pr_text(session, branch, subjects, record=None):
     more = len(subjects) - MAX_SUBJECTS
     body = sandbox_templates.render(
         "pr.md", session=session, branch=clean_text(branch, 120),
-        record=(record_section(record) + "\n") if record is not None else "",
+        caveats=(caveats_section(caveats) + "\n") if caveats is not None else "",
         subjects=shown,
         more=f"\n...and {more} more commits.\n" if more > 0 else "")
     return title, body
@@ -186,10 +193,10 @@ def land_branch(repo, branch, default, extra_sensitive=(), confirm=None):
                       "exists", open_[0]["html_url"], cum["ahead_by"])
     subjects = [c["commit"]["message"].split("\n", 1)[0]
                 for c in cum.get("commits") or []]
-    record = sandbox_record.extract(
+    caveats = not_verified_lines(
         [((c.get("sha") or "")[:7], c["commit"]["message"])
          for c in cum.get("commits") or []])
-    title, body = pr_text(session, branch, subjects, record)
+    title, body = pr_text(session, branch, subjects, caveats)
     pr = gh_api("POST", f"/repos/{repo}/pulls",
                 {"title": title, "head": branch, "base": default, "body": body,
                  "maintainer_can_modify": False})
