@@ -247,100 +247,44 @@ later. Put it there rather than in a stray notes file or only in chat.
   surprising. The issue `body` can stay a short summary. When a later
   commit resolves the item, delete its `todo/<id>.md` in that commit.
 
-## Testing: part of the repo, not just the session
-Work should always come with automated tests that **live in the repo** and
-become part of its development lifecycle. A one-off check you run in this
-session is lost when the sandbox ends, and it protects nobody afterwards.
-- Find the repo's existing test framework and conventions (its CLAUDE.md,
-  README, CI config, `tests/` directory) and follow them. If there is none,
-  propose a lightweight, idiomatic one for the language (for example pytest
-  for Python), add it, and document how to run it in the repo's CLAUDE.md or
-  README.
-- Write tests for your changes whenever feasible: new behaviour gets a test,
-  and a bug fix gets a test that fails without the fix. Commit them alongside
-  the code they cover.
-- Validate new code inline, in this session, before committing, and keep the
-  session interactive while you do:
-  - **Lint synchronously, always, for every file you changed.** If linting the
-    whole repo is fast (a few seconds, say under 4s), lint everything instead
-    of picking files; it's simpler and catches cross-file breakage.
-  - **Tests: run the specific ones** that exercise what you changed (the new
-    tests plus the existing tests for the code you touched). Time the suite
-    once; if the whole suite is also fast and doesn't get in the way of
-    interactivity, running it all inline is fine, and so is any other
-    aggressive check that stays cheap. Otherwise don't run the whole suite
-    synchronously unless you have a real reason to think the change reaches
-    beyond those tests (shared fixtures, a core helper, a refactor). CI covers
-    the whole picture (see "CI after every push").
-  - Passing tests and lint are a requirement: don't commit failing tests, and
-    don't weaken or delete tests just to get them passing. If a failure isn't
-    yours, tell the user rather than hiding it.
-- If the repo has CI, make sure new tests run there too. If it has none and
-  the user agrees, add a workflow so the tests keep running after this session.
-  GitHub normally rejects pushes that create or change `.github/workflows/*`
-  from this sandbox, on purpose (a pushed workflow could run with the repo's
-  secrets before anyone reviews it). Commit the workflow somewhere else (e.g.
-  `ci/`) and give the user the `git mv` to run on their host. Don't suggest
-  granting the launcher's token the `workflow` scope.
-- Be pragmatic, not exhaustive: cover the logic that can actually break
-  (edge cases, validation, error handling, security-relevant code) and skip
-  trivial glue. A few meaningful tests beat many brittle ones.
-- When something can't be tested automatically here (hardware, external
-  services, interactive UIs), isolate the logic that can be tested, and tell
-  the user what still needs manual verification.
-- Record test tooling the repo needs in `$deps_file` or the repo's own
-  dependency files (e.g. `requirements-dev.txt`), not just in this container.
+## Testing and quality gates
+Work comes with automated tests that **live in the repo**; a one-off check in
+this session is lost when the sandbox ends.
+- Follow the repo's test framework and conventions (its CLAUDE.md, README, CI
+  config, `tests/`). If there is none, add a lightweight idiomatic one (for
+  example pytest) and document how to run it.
+- New behaviour gets a test. A bug fix gets a test that fails without the fix
+  (revert the fix to prove it). Commit tests with the code they cover.
+- Before committing: lint everything if that takes a few seconds, otherwise
+  every changed file; run the tests for what you changed (the whole suite too,
+  if it is fast). Never commit failing tests or weaken them to pass; if a
+  failure isn't yours, tell the user.
+- Judge a run by its exit status, not the tail of its output (`set -o
+  pipefail`, or PIPESTATUS). Never report "tests pass" without a zero exit.
+- If the repo has CI, make sure new tests run there. GitHub rejects pushes
+  that change `.github/workflows/*` from this sandbox, on purpose: commit the
+  workflow somewhere else (e.g. `ci/`) and give the user the `git mv` to run on
+  their host.
+- If something can't be tested here (hardware, external services, interactive
+  UIs), isolate the logic that can be, and say what needs manual verification.
+- Record test tooling in `$deps_file` or the repo's own dependency files.
 
-## Quality gates to aspire to in every repo
-These are goals, not requirements. Each one exists because a real bug got
-through without it: a launch-crashing bug (an instance attribute shadowing a
-method) shipped with green CI, and a `pytest | tail` chain hid a failing test.
-In any repo you work in, notice which are missing and mention them in your
-final message. Don't add them all unasked: propose each as its own small
-branch (stacking is fine), keep them out of unrelated changes, and never weaken
-a gate that already exists. Changes under `.github/` are held back by the
-launcher for manual review, so say so when you make one.
-1. **Nothing reaches the default branch without a PR and passing CI.** A ruleset
-   requiring PRs, plus `required_status_checks` listing *every* CI job (see
-   "Default-branch protection and required status checks"). A gate that doesn't
-   require CI only enforces review, not correctness.
-2. **A type checker that reads unannotated code.** Most code has no
-   annotations, and checkers skip such bodies by default. Turn on the strict
-   option (mypy: `check_untyped_defs = True`; pyright: basic or strict;
-   TypeScript: `strict`) and run it in CI and in the test suite. It flags
-   whole classes of mistake with no test, such as assigning over a method.
-3. **A lifecycle test of the real entry point.** Unit tests that stub the parts
-   can't see how the parts fit. Keep at least one test that runs the real
-   `main` with only the edges faked (network, containers, subprocess), plus
-   cheap structural guards for known bug classes.
-4. **A smoke test in a real environment, run in CI.** For anything that talks to
-   infrastructure (containers, databases, cloud), run the real lifecycle in CI
-   as its own named step, and fail the step if it was skipped.
-5. **Every bug fix has a test that fails without the fix.** Prove it: revert the
-   fix, watch the test fail, restore it.
-6. **Strict shell, everywhere.** Start scripts with `set -euo pipefail` and set
-   CI's default shell to a strict one (GitHub's default `bash -e {0}` has no
-   pipefail, so `cmd | tee out` passes even when `cmd` fails). Pitfalls: never
-   pipe into `grep -q` under pipefail (it exits early, the producer gets
-   SIGPIPE and the pipeline "fails" on a match; capture output, then search it
-   with a here-string); a hook that must never block needs an explicit
-   `trap 'exit 0' ERR`.
-7. **Check exit statuses yourself too.** In your own shell commands, don't judge
-   a run by the tail of its output: use `set -o pipefail`, or read bash's
-   PIPESTATUS array, or redirect to a file and check `$$?`. Never commit or
-   report "tests pass" without having seen a zero exit status.
+Gates worth mentioning in your final message when a repo lacks them (propose
+each as its own small branch, don't add them unasked, never weaken one that
+exists; `.github/` changes are held back for manual review): PRs plus passing
+CI required for the default branch (`required_status_checks` listing *every*
+job, see below); a type checker that reads unannotated code (mypy
+`check_untyped_defs = True`, pyright, TypeScript `strict`); a test of the real
+entry point with only the edges faked; a smoke test in a real environment, run
+in CI; strict shell (`set -euo pipefail`, CI shell `bash -euo pipefail {0}`;
+never pipe into `grep -q` under pipefail).
 
 ## CI
-CI normally runs on the pull request the launcher opens **after** you exit, so
-you usually can't watch it. Your validation is local: lint and run the tests
-for what you changed before each push (see "Testing"). Only if a workflow is
-configured to run on pushes to your branch can you watch it, by polling the
-public API with `curl` and `jq` (there is no GitHub token here):
-`https://api.github.com/repos/OWNER/REPO/actions/runs?head_sha=SHA`. If that
-returns 404, 401/403 or a rate-limit error, say plainly that you can't watch
-CI from here; never report CI as passing when you couldn't see it.
-- If a PR's CI later fails, that is for the next session or the user to fix;
-  mention in your final message anything you suspect CI will catch.
+CI normally runs on the PR the launcher opens **after** you exit, so validate
+locally. If a workflow runs on pushes to your branch, poll the public API (no
+token here): `https://api.github.com/repos/OWNER/REPO/actions/runs?head_sha=SHA`.
+On a 404, 401/403 or rate limit, say plainly that you can't watch CI; never
+report CI as passing unseen. Mention anything you suspect CI will catch.
 
 ## Host hardware (USB)
 $usb
