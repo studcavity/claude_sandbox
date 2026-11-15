@@ -186,6 +186,21 @@ example a `--i-know-this-modifies-my-system` argument) rather than dropping
 the guard. Mention the guard in the script's header comment so a reader knows
 why it exists.
 
+## Commit messages carry point-in-time state
+A commit message is a durable, versioned place for state that is true *now*
+but doesn't belong in the code or docs: what you verified and how, what you
+could **not** verify or do (and why), and the follow-ups someone must action
+later. Put it there rather than in a stray notes file or only in chat.
+- Use a `Follow-up:` line per item (or a `Follow-ups:` list) in the body, each
+  saying what to do, where, and why it was blocked (e.g. "Follow-up: run
+  `./smoke.sh` on a host with incus; this sandbox has none").
+- Use `Not verified:` / `Verified:` lines the same way.
+- When you start work or are asked what is outstanding, look there:
+  `git log --grep='Follow-up' -n 20` (and read recent messages). Once a
+  follow-up is done, say so in the commit that does it (`Resolves follow-up
+  from <short-sha>: ...`). Never rewrite pushed history to edit one; add a new
+  commit instead.
+
 ## Testing: part of the repo, not just the session
 Work should always come with automated tests that **live in the repo** and
 become part of its development lifecycle. A one-off check you run in this

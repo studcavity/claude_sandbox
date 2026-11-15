@@ -99,6 +99,12 @@ The launcher also runs `Container.self_check()` right after boot, so a broken
 exec/stdin path fails immediately with a clear error.
 
 ### Rules
+- **Commit messages are where point-in-time state lives**: what was and
+  wasn't verified, and follow-ups that were necessary but couldn't be actioned
+  (no incus here, needs the host, needs a real GitHub key). Use `Follow-up:`,
+  `Verified:` and `Not verified:` lines. Look for open ones with
+  `git log --grep='Follow-up'`, and close them in the commit that resolves
+  them (`Resolves follow-up from <sha>`). Don't rewrite pushed history to edit.
 - **Changes to `sandbox_containers.py`, `sandbox_images.py` or
   `sandbox_deps.py` need a real-container run.** Run `./smoke.sh` on a host
   with incus and put `Verified: ./smoke.sh` in the commit message. If you are

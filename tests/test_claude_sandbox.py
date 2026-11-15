@@ -677,3 +677,8 @@ def test_claude_md_stresses_ephemeral_session(repo_root):
     md = _render(repo_root, [])
     assert "entirely ephemeral" in md and "wip/" in md
     assert "out of memory" in md and "host reboot" in md
+
+
+def test_claude_md_documents_commit_message_followups(repo_root):
+    md = _render(repo_root, [])
+    assert "Follow-up:" in md and "git log --grep='Follow-up'" in md
