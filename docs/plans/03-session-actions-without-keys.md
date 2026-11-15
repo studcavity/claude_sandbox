@@ -88,8 +88,7 @@ needs a `.pem` private key on the host (manual custody, rotation, a file
 that must be mode 600), a one-time App creation and per-repo install that only
 the user can do, a host-side refresher for sessions > 1 h, and still puts a
 usable token in a container where the agent has `sudo`, so it cannot enforce
-the format. It trades the problem away from custody-free options for little
-gain. Revisit only if a *bot identity* for authorship becomes a requirement or
+the format. It gives up the custody-free options for little gain. Revisit only if a *bot identity* for authorship becomes a requirement or
 the launcher must run without the user's `gh` login; record the decision in a
 commit if so.
 

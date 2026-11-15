@@ -51,9 +51,10 @@ Per PR as a whole:
   `sandbox` and `session:<id>`; branch is under `sbx/<session>/`;
 - **every `Follow-up:` in the PR's commits is listed in the PR body** and every
   `Not verified:` is surfaced, so a reviewer can't miss them;
-- consistency: nothing in the PR body claims "tests pass" if a commit says
-  "Not verified" for tests is *not* attempted (semantic, skipped); instead
-  require that the body's Verified/Not-verified sections be present;
+- consistency: semantic contradictions (a body claiming "tests pass" while a
+  commit says `Not verified:` for tests) can't be detected reliably, so don't
+  try; instead require that the body's Verified and Not verified sections
+  exist and reproduce every `Not verified:` line from the commits;
 - size/scope: warn on large diffs spanning unrelated areas (heuristic);
 - privileged paths touched are named in the body (they are held for review).
 Rules and severities (`error` | `warn` | `off`) have defaults in the launcher
