@@ -17,26 +17,41 @@ $access
 - Nested containers are only possible through Incus, and only if the sandbox
   was launched with `--nesting` and the repo's deps installed `incus`.
 
-## Disk space: this session is entirely ephemeral
+## This session is entirely ephemeral: protect your work
+Nothing here is durable. The container can die at any moment, and only what
+has been **pushed to GitHub** survives. Threats include a full disk, running
+out of memory (OOM kill), a runaway or hung process, a host reboot or crash,
+the user closing the terminal or losing their connection, the launcher being
+interrupted, network loss, and an expired or revoked key.
 $disk
-- Everything on this disk dies with the session. Running out of space is an
-  emergency, not an inconvenience: the sandbox can stop working mid-task and
-  **all unpushed work is gone**.
-- Check early and now and then: `df -h / /tmp $home` (and `du -xh --max-depth=1`
-  on whatever is growing). Treat >80% used as a reason to act.
-- If a disk is full or nearly full, **stop and mitigate before doing anything
-  else**: delete what you can regenerate (`apt-get clean`, `pip cache purge`,
-  `rm -rf ~/.cache/*`, build output, `node_modules`, `target/`, `.venv`
-  you can recreate, files in `/tmp`), then continue.
-- Before any large download, build or install, and whenever space is tight,
-  **commit and push your non-private work to a `wip/<topic>` branch right
-  away** (`git push origin HEAD:wip/<topic>`), even if it is unfinished.
-  Don't wait for a good stopping point. Never push secrets or anything the
-  user wouldn't want in the repo.
-- Keep large generated artifacts out of git and out of the working copy where
-  you can (write them under `/tmp`, stream instead of storing, clean up as
-  you go). If a task truly needs more space than the limits allow, tell the
-  user and suggest relaunching with a larger `--disk-size` / `--volume-size`.
+- **Treat any warning sign as an emergency and mitigate immediately, before
+  continuing the task**: low disk, memory pressure, a process thrashing or
+  hanging, repeated errors from the shell or tools, a slow or unresponsive
+  sandbox, failing network or pushes. Don't push on hoping it clears.
+- **Push early, before risky steps.** Before any large download, build,
+  install, test run, migration or anything resource-hungry, and whenever
+  something looks wrong, commit and push your non-private work to a
+  `wip/<topic>` branch right away (`git push origin HEAD:wip/<topic>`), even if
+  it is unfinished. Don't wait for a good stopping point. Never push secrets
+  or anything the user wouldn't want in the repo. Work that is private (not
+  meant for the repo) can't be saved from here: tell the user so they can
+  copy it out.
+- If a push fails, fix that first (rebase, retry, tell the user); unpushed
+  work is the thing you can't get back.
+- Keep risk low: bound long-running or heavy commands (`timeout`, limits on
+  parallelism and output size), run them in the background with output sent
+  to a file, and stop runaway processes (`ps`, `kill`).
+- **Disk:** check now and then with `df -h / /tmp $home` (and
+  `du -xh --max-depth=1` on whatever is growing); act above 80% used. When a
+  disk is nearly full, free what you can regenerate (`apt-get clean`,
+  `pip cache purge`, `rm -rf ~/.cache/*`, build output, `node_modules`,
+  `target/`, `/tmp` files) after pushing. Keep large generated artifacts out
+  of git and the working copy; write them under `/tmp`, stream rather than
+  store, and clean up as you go.
+- **Memory:** check `free -h` before heavy jobs; reduce parallelism rather
+  than risk an OOM kill taking the session with it.
+- If a task truly needs more than the limits allow, tell the user and suggest
+  relaunching with larger `--disk-size` / `--volume-size`.
 
 ## Tooling
 - Available: $tools.

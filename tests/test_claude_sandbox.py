@@ -673,6 +673,7 @@ def test_disk_note_reflects_mounted_volumes(make_args, monkeypatch, fake_box):
     assert "30GiB" in note and "`/tmp`" in note and "/home/ubuntu/p" not in note
 
 
-def test_claude_md_stresses_ephemeral_disk(repo_root):
+def test_claude_md_stresses_ephemeral_session(repo_root):
     md = _render(repo_root, [])
     assert "entirely ephemeral" in md and "wip/" in md
+    assert "out of memory" in md and "host reboot" in md
