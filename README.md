@@ -146,8 +146,7 @@ because it has no bypass actors):
 ```
 gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/protect-main.json
 ```
-It requires PRs for the default branch and blocks force-push, deletion and
-merge commits.
+It requires PRs for the default branch and blocks force-push and deletion.
 
 You don't have to run that by hand: when a launch finds the default branch
 doesn't require PRs and you are at a terminal, it asks
@@ -166,7 +165,7 @@ effects listed first, even when the branch is already protected (GitHub layers
 rulesets). Because that file is untrusted text that edits repo settings, it
 must pass a strict allowlist (`sandbox_protect.validate_repo_ruleset`): default
 branch only, no bypass actors, enforcement `active`/`evaluate`, and only the
-rule types `deletion`, `non_fast_forward`, `required_linear_history`,
+rule types `deletion`, `non_fast_forward`,
 `pull_request`, `required_status_checks` and `required_signatures`. Invalid
 files are skipped with a warning.
 

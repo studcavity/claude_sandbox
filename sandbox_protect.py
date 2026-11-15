@@ -70,7 +70,7 @@ def apply_ruleset(repo, ruleset):
 def describe(ruleset, branch):
     """Plain-language effect, shown before asking."""
     return [f"require a pull request to change `{branch}` (no direct pushes)",
-            "block force-pushes and deletion of it, and require linear history",
+            "block force-pushes and deletion of it",
             "no bypass actors: this includes you, so you will merge through "
             "PRs too (edit or delete the ruleset in Settings -> Rules to undo)"]
 
@@ -81,8 +81,8 @@ MAX_REPO_RULESETS = 10
 MAX_RULESET_BYTES = 20_000
 RULESET_KEYS = {"name", "target", "enforcement", "conditions", "bypass_actors",
                 "rules"}
-RULE_TYPES = {"deletion", "non_fast_forward", "required_linear_history",
-              "pull_request", "required_status_checks", "required_signatures"}
+RULE_TYPES = {"deletion", "non_fast_forward", "pull_request",
+              "required_status_checks", "required_signatures"}
 _FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json$")
 
 
@@ -181,7 +181,6 @@ def describe_rules(ruleset, branch):
     said = {
         "deletion": f"block deletion of `{branch}`",
         "non_fast_forward": f"block force-pushes to `{branch}`",
-        "required_linear_history": "require linear history",
         "pull_request": f"require a pull request to change `{branch}` "
                         "(no direct pushes)",
         "required_signatures": "require signed commits",
