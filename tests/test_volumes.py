@@ -118,3 +118,33 @@ def test_delete_says_when_a_volume_is_gone(monkeypatch, capsys):
     v.pool, v.created = "default", ["vol"]
     v.delete()
     assert "deleted volume vol" in capsys.readouterr().err
+
+
+# --- kept work volumes (local backend, spec 08) -------------------------------
+def test_a_kept_work_volume_is_named_apart_and_labelled():
+    m = sv.plan("c1", "/home/ubuntu/p", "20GiB", keep_work={"session": "s", "base": "ab"})
+    tmp, work = m
+    assert tmp.volume.startswith(sv.VOLUME_PREFIX) and not tmp.keep
+    assert work.volume.startswith(sv.KEEP_PREFIX) and work.keep
+    assert work.config == ((sv.META_PREFIX + "base", "ab"),
+                           (sv.META_PREFIX + "session", "s"))
+
+
+def test_the_sweep_never_takes_a_kept_volume(now):
+    vols = json.dumps([_vol(sv.KEEP_PREFIX + "c-work", age_h=1000)])
+    assert sv.orphans(vols, NOW) == []
+
+
+def test_delete_leaves_kept_volumes_until_released(cli):
+    m = sv.plan("c1", "/home/ubuntu/p", "20GiB", keep_work={"session": "s"})
+    v = sv.Volumes("incus", Box(), m, "20GiB")
+    v.attach()
+    assert ["incus", "storage", "volume", "create", "default", m[1].volume,
+            "size=20GiB", sv.META_PREFIX + "session=s"] in cli
+    v.delete()
+    deleted = [c[-1] for c in cli if c[1:4] == ["storage", "volume", "delete"]]
+    assert m[0].volume in deleted and m[1].volume not in deleted
+    assert v.created == [m[1].volume]
+    v.release()
+    assert ["incus", "storage", "volume", "delete", "default", m[1].volume] in cli
+    assert v.created == []

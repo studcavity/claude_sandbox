@@ -67,6 +67,13 @@ class Backend(abc.ABC):
         """Where the code lives in the container."""
         return HOME
 
+    def keep_work(self, session_id) -> Optional[dict]:
+        """Metadata for a work volume that must outlive the container until
+        land() says its work is safe (None: an ordinary volume)."""
+        return None
+
+    work_kept = False   # set by the launcher: the work volume is a kept one
+
     # -- host side, before the container exists ----------------------------------
     def check_host(self) -> Optional[str]:
         """Fail-fast checks before anything is built: error text, or None."""
@@ -110,6 +117,7 @@ class Backend(abc.ABC):
         """Remove the container's credential (part of teardown). Must never
         raise."""
 
-    def land(self, session_id):
-        """Bring the session's work back to the user, after teardown. Must
-        never raise."""
+    def land(self, session_id) -> bool:
+        """Bring the session's work back to the user, after teardown. ->
+        whether a kept work volume may now be deleted. Must never raise."""
+        return True

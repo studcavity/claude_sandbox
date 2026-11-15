@@ -70,8 +70,8 @@ $disk
   install, test run, migration or anything resource-hungry, and whenever
   something looks wrong, commit your non-private work on a `$prefix` branch
   right away (a `wip:` commit is fine), even if it is unfinished. There is no
-  push: committed work stays on the work volume, which outlives a crashed
-  container, and the user can recover it. Never commit secrets or anything
+  push: what you have committed is what the launcher copies out (see Access
+  for whether it survives a crashed container). Never commit secrets or anything
   the user wouldn't want in the repo. Work that is private (not meant for the
   repo) can't be saved from here: tell the user so they can copy it out.
 - **Running out of Claude credits ends the session with no warning**, exactly

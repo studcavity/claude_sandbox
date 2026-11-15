@@ -18,6 +18,11 @@ from typing import NamedTuple
 from sandbox_util import log, run
 
 VOLUME_PREFIX = "claude-sandbox-vol-"
+# A work volume that must outlive its container until the work on it has been
+# copied out (the local backend). Never matched by the orphan sweep; deleted by
+# release() once its work is safe, or by `--recover` after a crash.
+KEEP_PREFIX = "claude-sandbox-keep-"
+META_PREFIX = "user.claude-sandbox."   # incus user.* keys on a kept volume
 ORPHAN_MIN_AGE = datetime.timedelta(hours=1)  # never race a launch in progress
 DELETE_RETRIES = 15  # an ephemeral instance is removed asynchronously
 
@@ -28,21 +33,31 @@ class Mount(NamedTuple):
     path: str  # mount point inside the container
     mode: str  # chmod applied to the mount point
     owner: str  # chown applied to the mount point
+    config: tuple = ()  # (key, value) pairs set on the volume when created
+    keep: bool = False  # survives delete(); only release() removes it
 
 
-def plan(container, workdir, size, user="ubuntu"):
+def plan(container, workdir, size, user="ubuntu", keep_work=None):
     """Mounts to create for a container; none when size is falsy.
 
     /tmp is always covered; the clone directory is covered when there is one
-    (a bare $HOME workdir is left on the root disk).
+    (a bare $HOME workdir is left on the root disk). `keep_work` (a dict of
+    metadata) makes the clone directory's volume a kept one, labelled with
+    that metadata as user.claude-sandbox.<key>.
     """
     if not size:
         return []
     mounts = [Mount(f"{VOLUME_PREFIX}{container}-tmp", "cs-tmp", "/tmp",
                     "1777", "root:root")]
     if workdir and workdir.count("/") > 2:  # /home/<user>/<repo>, not $HOME
-        mounts.append(Mount(f"{VOLUME_PREFIX}{container}-work", "cs-work",
-                            workdir, "0755", f"{user}:{user}"))
+        if keep_work is None:
+            mounts.append(Mount(f"{VOLUME_PREFIX}{container}-work", "cs-work",
+                                workdir, "0755", f"{user}:{user}"))
+        else:
+            meta = tuple(sorted((META_PREFIX + k, str(v))
+                                for k, v in keep_work.items()))
+            mounts.append(Mount(f"{KEEP_PREFIX}{container}-work", "cs-work",
+                                workdir, "0755", f"{user}:{user}", meta, True))
     return mounts
 
 
@@ -106,7 +121,8 @@ class Volumes:
             self.sweep()
             for m in self.mounts:
                 run([self.cli, "storage", "volume", "create", self.pool,
-                     m.volume, f"size={self.size}"], capture=True)
+                     m.volume, f"size={self.size}",
+                     *[f"{k}={v}" for k, v in m.config]], capture=True)
                 self.created.append(m.volume)
                 run([self.cli, "config", "device", "add", self.box.name,
                      m.device, "disk", f"pool={self.pool}",
@@ -119,17 +135,33 @@ class Volumes:
             log(f"warning: separate volumes unavailable ({str(err).strip()}); "
                 "continuing with everything on the root disk")
 
+    def kept(self):
+        """Names of created volumes that delete() leaves in place."""
+        keep = {m.volume for m in self.mounts if m.keep}
+        return [n for n in self.created if n in keep]
+
     def delete(self):
-        """Delete what attach() created; call after the container is gone."""
+        """Delete what attach() created, except kept volumes; call after the
+        container is gone."""
+        kept = self.kept()
         for name in self.created:
-            for _ in range(DELETE_RETRIES):
-                r = run([self.cli, "storage", "volume", "delete", self.pool,
-                         name], check=False, capture=True)
-                if r.returncode == 0:
-                    log(f"deleted volume {name}")
-                    break
-                time.sleep(1)
-            else:
-                log(f"WARNING: could not delete volume {name}; "
-                    "the next launch will sweep it")
+            if name not in kept:
+                self._delete(name, "the next launch will sweep it")
+        self.created = kept
+
+    def release(self):
+        """Delete the kept volumes too (their work is safe elsewhere)."""
+        for name in self.kept():
+            self._delete(name, f"delete it with `{self.cli} storage volume "
+                               f"delete {self.pool} {name}`")
         self.created = []
+
+    def _delete(self, name, fallback):
+        for _ in range(DELETE_RETRIES):
+            r = run([self.cli, "storage", "volume", "delete", self.pool,
+                     name], check=False, capture=True)
+            if r.returncode == 0:
+                log(f"deleted volume {name}")
+                return
+            time.sleep(1)
+        log(f"WARNING: could not delete volume {name}; {fallback}")

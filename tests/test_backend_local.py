@@ -409,3 +409,62 @@ def test_the_background_refresh_keeps_the_local_source(make_args):
 def test_no_github_rewrite_without_a_key():
     assert "insteadOf" not in cs.git_config_script("a", "b", github_ssh=False)
     assert "insteadOf" in cs.git_config_script("a", "b")
+
+
+# --------------------------------------------------------------------------- #
+# kept work volume: released only once the work is safe
+# --------------------------------------------------------------------------- #
+def test_land_keeps_the_volume_when_the_export_failed(local, capsys):
+    be, box = local
+    be.populate(box, S)
+    be.work_kept, be.export_failed = True, True
+    assert be.land(S) is False
+    assert "--recover" in capsys.readouterr().err
+
+
+def test_land_frees_the_volume_after_an_import_or_when_nothing_is_new(local):
+    be, box = local
+    wd = be.populate(box, S)
+    be.export(box, S)
+    assert be.land(S) is True                 # nothing new
+    commit(pathlib.Path(wd), "w.txt", f"sbx/{S}/work")
+    be.export(box, S)
+    assert be.land(S) is True                 # imported
+
+
+def test_keep_work_metadata_lets_recover_find_everything(local):
+    be, _ = local
+    meta = be.keep_work(S)
+    assert meta == {"source": be.primary, "session": S, "base": be.base_sha,
+                    "workdir": be.workdir()}
+
+
+def test_access_lines_say_whether_work_survives_a_crash(local):
+    be, _ = local
+    be.resolve()
+    assert "is lost" in " ".join(be.access_lines("/w", None))
+    be.work_kept = True
+    assert "recover" in " ".join(be.access_lines("/w", None))
+
+
+def test_sandbox_releases_kept_volumes_only_when_the_backend_says_so(make_args):
+    class Vols:
+        released = 0
+
+        def release(self):
+            Vols.released += 1
+
+    class Be:
+        def __init__(self, ok):
+            self.ok = ok
+
+        def land(self, session):
+            return self.ok
+    for ok, n in ((False, 0), (True, 1)):
+        Vols.released = 0
+        sb = cs.Sandbox(make_args(repo="o/r"))
+        sb.backend, sb.volumes = Be(ok), Vols()
+        sb.land()
+        assert Vols.released == 0            # not beside the background delete
+        sb.wait_volumes()
+        assert Vols.released == n

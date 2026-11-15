@@ -309,6 +309,13 @@ class LocalBackend(Backend):
     def workdir(self):
         return f"{self.home}/{self.id.split('/', 1)[1].rsplit('-', 1)[0]}"
 
+    def keep_work(self, session_id):
+        """Everything `--recover` needs to export and import the work if the
+        launcher never gets to (set by the host; the container can't change a
+        volume's config)."""
+        return {"source": self.primary, "session": session_id,
+                "base": self.resolve(), "workdir": self.workdir()}
+
     # -- host side ---------------------------------------------------------------
     def resolve(self):
         """Pin the base branch and commit once; everything else reads from
@@ -372,6 +379,11 @@ class LocalBackend(Backend):
             "launcher copies your committed branches under "
             f"`{sandbox_sessions.branch_prefix(self.session_id)}` into the "
             "user's repository for review; nothing else leaves.",
+            f"- `{workdir}` is a volume that outlives this container: if the "
+            "container dies, the user can still recover your committed "
+            "branches from it." if self.work_kept else
+            f"- `{workdir}` is on the container's own disk: if the container "
+            "dies before the session ends, your work is lost.",
         ]
 
     def trusted(self):
@@ -403,16 +415,20 @@ class LocalBackend(Backend):
 
     # -- after the session ---------------------------------------------------------
     def land(self, session_id):
-        """Import the exported bundle into the primary, then report. Never
-        raises."""
+        """Import the exported bundle into the primary, then report. ->
+        whether the kept work volume may go. Never raises."""
         if not self.exported:
-            return
+            if self.export_failed:
+                self.recovery_hint()
+                return False
+            return True   # nothing new to import
         try:
             imported = import_bundle(self.primary, self.exported, session_id)
         except (LocalError, OSError, subprocess.SubprocessError) as e:
             log(f"warning: couldn't import the session's branches: {e}; "
                 f"the bundle is kept at {self.exported}")
-            return
+            self.recovery_hint()
+            return False
         try:
             print("\n" + report(self.primary, self.base, self.base_sha,
                                 session_id, imported,
@@ -422,7 +438,15 @@ class LocalBackend(Backend):
         except Exception as e:
             log(f"warning: couldn't build the review report: {e}")
         os.unlink(self.exported)
+        return True
 
+    def recovery_hint(self):
+        if self.work_kept:
+            log("the session's work is kept on its volume; import it with: "
+                f"./run.sh --local {shlex.quote(self.primary)} --recover")
+        else:
+            log("warning: the work directory was not a kept volume, so the "
+                "session's unexported work is lost")
 
 def import_bundle(primary, bundle, session):
     """Fetch this session's branches from a bundle file into the primary.
