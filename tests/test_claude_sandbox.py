@@ -848,3 +848,92 @@ def test_template_names_credits_as_a_way_work_is_lost(repo_root):
     section = t[start:t.index("\n## ", start + 1)]
     assert "credits" in section.lower()
     assert "no warning" in section and "commit and push after every coherent" in section
+
+
+# --- the checker inside the sandbox (plan 4d) -------------------------------------- #
+def test_session_tool_modules_cover_the_checkers_whole_import_graph(repo_root):
+    """If sandbox_check (or anything it imports) gains a MODULE-LEVEL import, the
+    copy in the sandbox must too, or `sandbox-check` dies there with ImportError.
+    Function-level imports (sandbox_github in --post-status, sandbox_land in
+    sandbox_actions.run) are the GitHub paths a session never takes there."""
+    import ast
+    seen, todo = set(), ["sandbox_check"]
+    while todo:
+        mod = todo.pop()
+        if mod in seen:
+            continue
+        seen.add(mod)
+        tree = ast.parse(open(os.path.join(repo_root, mod + ".py")).read())
+        for node in ast.iter_child_nodes(tree):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                     else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+            todo += [n for n in names if os.path.exists(os.path.join(repo_root, n + ".py"))]
+    assert seen == set(cs.SESSION_TOOL_MODULES)
+
+
+def test_session_tool_files_are_exactly_the_modules_plus_an_executable_wrapper(repo_root):
+    files = cs.session_tool_files(repo_root)
+    paths = [p for p, _, _ in files]
+    assert paths == ([f"{cs.SESSION_TOOL_DIR}/{m}.py" for m in cs.SESSION_TOOL_MODULES]
+                     + [cs.SESSION_TOOL_BIN])
+    modes = {p: m for p, _, m in files}
+    assert modes[cs.SESSION_TOOL_BIN] == "0755" and modes[paths[0]] == "0644"
+    assert files[0][1].startswith(b'"""sandbox_check.py')
+
+
+def test_install_session_tools_writes_each_file_via_put_file(make_args, monkeypatch, fake_box):
+    box = _sandbox(make_args, monkeypatch, repo="o/r")
+    box.box = fake_box
+    box.install_session_tools()
+    puts = [c for c in fake_box.calls if c[0] == "put_file"]
+    assert [c[1] for c in puts][-1] == cs.SESSION_TOOL_BIN
+    assert len(puts) == len(cs.SESSION_TOOL_MODULES) + 1
+    (mk,) = [c for c in fake_box.calls if c[0] == "user"]
+    assert "mkdir -p" in mk[1] and cs.SESSION_TOOL_DIR in mk[1]
+
+
+@pytest.mark.parametrize("kw", [dict(repo=None), dict(repo="o/r", read_only=True)])
+def test_no_tools_without_a_repo_to_commit_to(make_args, monkeypatch, fake_box, kw):
+    box = _sandbox(make_args, monkeypatch, **kw)
+    box.box = fake_box
+    box.install_session_tools()
+    assert fake_box.calls == []
+
+
+def test_the_installed_wrapper_really_lints_a_clones_commits(repo_root, tmp_path):
+    """Run the very files we install, the way the session would: a clone with an
+    `origin`, a session branch, no arguments."""
+    import subprocess
+
+    def sh(*a, cwd=None, env=None, check=True):
+        return subprocess.run(a, cwd=cwd, env=env, check=check, text=True,
+                              capture_output=True)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    origin, clone, home = tmp_path / "origin", tmp_path / "clone", tmp_path / "home"
+    sh(*git, "init", "-q", "-b", "main", str(origin))
+    (origin / "a.txt").write_text("1")
+    sh(*git, "-C", str(origin), "add", "-A")
+    sh(*git, "-C", str(origin), "commit", "-q", "-m", "feat: base")
+    sh(*git, "clone", "-q", str(origin), str(clone))
+    for path, data, _ in cs.session_tool_files(repo_root):
+        dest = home / os.path.relpath(path, cs.HOME)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    wrapper = home / os.path.relpath(cs.SESSION_TOOL_BIN, cs.HOME)
+    env = {**os.environ, "HOME": str(home)}
+
+    sh(*git, "-C", str(clone), "switch", "-q", "-c", "sbx/quirky-hopper/work")
+    (clone / "b.txt").write_text("2")
+    sh(*git, "-C", str(clone), "add", "-A")
+    sh(*git, "-C", str(clone), "commit", "-q", "-m",
+       "feat: ok\n\nSandbox-Session: quirky-hopper")
+    ok = sh("sh", str(wrapper), cwd=clone, env=env, check=False)
+    assert ok.returncode == 0 and "0 error(s)" in ok.stdout, ok.stdout + ok.stderr
+
+    (clone / "c.txt").write_text("3")
+    sh(*git, "-C", str(clone), "add", "-A")
+    sh(*git, "-C", str(clone), "commit", "-q", "-m", "fixup! feat: ok")   # no trailer either
+    bad = sh("sh", str(wrapper), cwd=clone, env=env, check=False)
+    assert bad.returncode == 1 and "::error::" in bad.stdout and "fixup" in bad.stdout
+    # arguments pass straight through to the checker
+    assert "usage" in sh("sh", str(wrapper), "--help", cwd=clone, env=env).stdout

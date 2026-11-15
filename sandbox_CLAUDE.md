@@ -225,6 +225,16 @@ later. Put it there rather than in a stray notes file or only in chat.
   and it won't be filed. Anything malformed or unknown is silently ignored by
   the launcher (and fails CI), so keep the plain `Follow-up:` prose line too.
   Full spec: `sandbox_actions.py`.
+- **Lint your own commits before you finish.** Run `sandbox-check` (no
+  arguments) inside the repo. It checks every commit you added since the
+  remote's default branch with the rules CI and the launcher use: the
+  `Sandbox-Session` trailer, action id shape, the `todo/<id>.md` brief, no
+  leftover `fixup!`, no merge commits, no credential-shaped text in messages or
+  added lines, and a `Verified` or `Not verified` statement on commits that
+  touch files needing a real run. Fix what it reports with new commits (or, for
+  commits only on your own unmerged branch, rebase and `git push
+  --force-with-lease`). It is a convenience, not a gate: you have `sudo`, so it
+  can't stop you. The same checks run on the host and in CI, and those decide.
 - **Every `issue` action gets a brief file, in the same commit, at
   `todo/<id>.md`** (CI fails without it; the path is how the item is found
   later). It exists to describe a

@@ -120,6 +120,37 @@ SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
                  "make", "gdb", "strace", "lsof", "htop", "dig", "nc", "tmux",
                  "curl", "wget")
 
+# The checker, copied into the sandbox so a session can lint its own commits
+# before it exits (plan 4d). Stdlib-only modules; the list is tested against
+# the checker's real import graph.
+SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
+SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
+SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
+                        "sandbox_names", "sandbox_templates", "sandbox_untrusted")
+SESSION_TOOL_WRAPPER = """#!/bin/sh
+# Installed by claude_sandbox. Lints this session's own commits (everything
+# since the remote's default branch) with the same rules CI and the launcher
+# use. With arguments it is just sandbox_check.py.
+set -eu
+tool="${HOME}/.local/share/claude-sandbox/sandbox_check.py"
+if [ "$#" -gt 0 ]; then exec python3 "$tool" "$@"; fi
+base=$(git rev-parse --verify -q origin/HEAD || git rev-parse --verify -q origin/main \
+       || git rev-parse --verify -q origin/master) || {
+  echo "sandbox-check: can't find origin's default branch" >&2; exit 2; }
+exec python3 "$tool" "$base" HEAD --branch "$(git rev-parse --abbrev-ref HEAD)"
+"""
+
+
+def session_tool_files(src_dir):
+    """[(path in the container, bytes, mode)] for the in-sandbox checker."""
+    files = []
+    for name in SESSION_TOOL_MODULES:
+        with open(os.path.join(src_dir, name + ".py"), "rb") as f:
+            files.append((f"{SESSION_TOOL_DIR}/{name}.py", f.read(), "0644"))
+    files.append((SESSION_TOOL_BIN, SESSION_TOOL_WRAPPER.encode(), "0755"))
+    return files
+
+
 DEFAULT_MODEL = "claude-sonnet-5-5"
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
 
@@ -704,6 +735,17 @@ class Sandbox:
                               self.session_id)))
         return repo_dir
 
+    def install_session_tools(self):
+        """Put the checker in the sandbox so the session can lint its own
+        commits (`sandbox-check`). Only where there are commits to lint."""
+        if not self.args.repo or self.args.read_only:
+            return
+        self.box.user("mkdir -p " + shlex.quote(SESSION_TOOL_DIR) + " "
+                      + shlex.quote(os.path.dirname(SESSION_TOOL_BIN)))
+        for path, data, mode in session_tool_files(
+                os.path.dirname(os.path.abspath(__file__))):
+            self.box.put_file(path, data, mode)
+
     def write_claude_md(self, workdir):
         """Render the --claude-md template into ~/.claude/ in the container."""
         probe = self.box.user(
@@ -1184,6 +1226,7 @@ def main(argv=None):
         box.install_claude()
         workdir = box.clone()
         box.run_setup(workdir)  # before Claude credentials reach the container
+        box.install_session_tools()
         box.write_claude_md(workdir)
         box.session(workdir)
     except KeyboardInterrupt:
