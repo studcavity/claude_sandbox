@@ -56,7 +56,8 @@ def test_apply_posts_the_ruleset(monkeypatch, base):
 def flow(make_args, monkeypatch):
     """Sandbox.protect_default_branch with a scripted GitHub and terminal."""
     st = {"state": "unprotected", "applied": [], "asked": [], "answers": [],
-          "existing": set(), "checks": []}
+          "existing": set(), "checks": [], "repo_rulesets": ([], []),
+          "fetch_args": []}
     box = cs.Sandbox(make_args(repo="o/r", no_protect_prompt=False))
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cs.sandbox_sessions, "check_protection",
@@ -64,6 +65,9 @@ def flow(make_args, monkeypatch):
                                       "protected" else None, st["state"]))
     monkeypatch.setattr(cs.sandbox_protect, "existing_ruleset_names",
                         lambda r: st["existing"])
+    monkeypatch.setattr(cs.sandbox_protect, "fetch_repo_rulesets",
+                        lambda r, b: st["fetch_args"].append((r, b))
+                        or st["repo_rulesets"])
     monkeypatch.setattr(cs.sandbox_protect, "discover_checks",
                         lambda r, b: st["checks"])
     monkeypatch.setattr(cs.sandbox_protect, "apply_ruleset",
@@ -74,6 +78,7 @@ def flow(make_args, monkeypatch):
         return st["answers"].pop(0)
     monkeypatch.setattr(cs, "ask_protect", lambda *a: answer("protect"))
     monkeypatch.setattr(cs, "ask_checks", lambda *a: answer("checks"))
+    monkeypatch.setattr(cs, "ask_ruleset", lambda *a: answer(("ruleset", a[1])))
     return box, st
 
 
@@ -176,3 +181,186 @@ def test_template_covers_stacking_and_status_checks(repo_root):
 
 def test_ruleset_roundtrips_as_json(base):
     json.dumps(sp.with_checks(base, ["x"]))
+
+
+# -- rulesets defined by the repo itself ------------------------------------ #
+def repo_rs(**kw):
+    rs = {"name": "require-x", "target": "branch", "enforcement": "active",
+          "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"],
+                                      "exclude": []}},
+          "bypass_actors": [],
+          "rules": [{"type": "required_status_checks", "parameters": {
+              "required_status_checks": [{"context": "ci"}]}}]}
+    rs.update(kw)
+    return rs
+
+
+def test_valid_repo_ruleset_is_normalised_and_input_untouched():
+    src = repo_rs()
+    del src["bypass_actors"]
+    out = sp.validate_repo_ruleset(src)
+    assert out["bypass_actors"] == [] and "bypass_actors" not in src
+
+
+@pytest.mark.parametrize("bad", [
+    [], "x", None, {**repo_rs(), "extra": 1},
+    repo_rs(name=""), repo_rs(name="a/b"), repo_rs(name=5),
+    repo_rs(target="tag"), repo_rs(enforcement="disabled"),
+    repo_rs(bypass_actors=[{"actor_id": 5, "actor_type": "RepositoryRole"}]),
+    repo_rs(conditions={"ref_name": {"include": ["refs/heads/*"],
+                                     "exclude": []}}),
+    repo_rs(conditions={"ref_name": {"include": ["~DEFAULT_BRANCH"],
+                                     "exclude": ["main"]}}),
+    repo_rs(conditions={"ref_name": {"include": ["~DEFAULT_BRANCH"],
+                                     "exclude": []}, "repository_name": {}}),
+    repo_rs(conditions=[]), repo_rs(conditions=None),
+    repo_rs(rules=[]), repo_rs(rules=[{"type": "workflows"}]),
+    repo_rs(rules=[{"type": "deletion", "x": 1}]),
+    repo_rs(rules=[{"type": "deletion", "parameters": []}]),
+    repo_rs(rules="deletion"), repo_rs(rules=["deletion"]),
+])
+def test_unsafe_or_malformed_repo_rulesets_are_rejected(bad):
+    with pytest.raises(ValueError):
+        sp.validate_repo_ruleset(bad)
+
+
+class Contents:
+    """Fake contents API for rulesets/: {name: (size, text)}."""
+    def __init__(self, files, listing_error=None):
+        self.files, self.error, self.calls = files, listing_error, []
+
+    def __call__(self, method, path, body=None, raw=False):
+        self.calls.append(path)
+        if self.error:
+            raise self.error
+        if path.startswith("/repos/o/r/contents/rulesets?"):
+            return [{"type": "file", "name": n, "size": sz}
+                    for n, (sz, _) in self.files.items()] + [
+                {"type": "dir", "name": "sub.json"}]
+        name = path.split("/rulesets/")[1].split("?")[0]
+        return self.files[name][1].encode()
+
+
+def test_fetch_reads_default_branch_and_skips_bad_files(monkeypatch):
+    good = json.dumps(repo_rs())
+    api = Contents({"ok.json": (len(good), good),
+                    "bad.json": (3, "[1]"),
+                    "evil.json": (10, json.dumps(repo_rs(bypass_actors=[1]))),
+                    "junk.json": (4, "nope"),
+                    "big.json": (sp.MAX_RULESET_BYTES + 1, "{}"),
+                    "notes.md": (1, "x"), ".hidden.json": (1, "{}")})
+    monkeypatch.setattr(sp, "gh_api", api)
+    found, problems = sp.fetch_repo_rulesets("o/r", "my branch")
+    assert [r["name"] for r in found] == ["require-x"]
+    assert len(problems) == 4 and all("rulesets/" in p for p in problems)
+    assert all("ref=my%20branch" in c for c in api.calls)
+    assert not any("notes.md" in c or "hidden" in c or "big.json" in c
+                   for c in api.calls[1:])
+
+
+def test_fetch_no_directory_is_normal_other_errors_raise(monkeypatch):
+    monkeypatch.setattr(sp, "gh_api", Contents({}, GitHubError("nf", 404)))
+    assert sp.fetch_repo_rulesets("o/r", "main") == ([], [])
+    monkeypatch.setattr(sp, "gh_api", Contents({}, GitHubError("no", 500)))
+    with pytest.raises(GitHubError):
+        sp.fetch_repo_rulesets("o/r", "main")
+
+
+def test_fetch_caps_the_number_of_files(monkeypatch):
+    t = json.dumps(repo_rs())
+    api = Contents({f"r{i}.json": (len(t), t) for i in range(15)})
+    monkeypatch.setattr(sp, "gh_api", api)
+    found, problems = sp.fetch_repo_rulesets("o/r", "main")
+    assert len(found) == sp.MAX_REPO_RULESETS and "15 ruleset files" in problems[0]
+
+
+def test_pending_required_checks_and_description():
+    a, b = repo_rs(), repo_rs(name="other")
+    assert sp.pending([a, b], {"require-x"}) == [b]
+    assert sp.required_checks(a) == ["ci"]
+    text = "\n".join(sp.describe_rules(a, "main"))
+    assert "`ci`" in text and "no bypass actors" in text
+    both = repo_rs(rules=[{"type": "pull_request"}, {"type": "deletion"}],
+                   enforcement="evaluate")
+    text = "\n".join(sp.describe_rules(both, "main"))
+    assert "pull request" in text and "deletion" in text and "evaluate" in text
+
+
+def test_repo_defined_rulesets_replace_the_generic_one(flow):
+    box, st = flow
+    st["repo_rulesets"] = ([repo_rs()], [])
+    st["answers"] = [True]
+    box.protect_default_branch()
+    (rs,) = st["applied"]
+    assert rs["name"] == "require-x"          # not protect-default-branch
+    assert st["asked"] == [(("ruleset", "require-x"),)]  # one question only
+    assert "`ci`" in box.protection_note
+    assert "No status checks" not in box.protection_note
+
+
+def test_repo_ruleset_is_offered_even_on_a_protected_branch(flow):
+    box, st = flow
+    st["state"] = "protected"
+    st["repo_rulesets"] = ([repo_rs()], [])
+    st["answers"] = [True]
+    box.protect_default_branch()
+    assert len(st["applied"]) == 1
+    assert "already requires pull requests" in box.protection_note
+    assert "`ci`" in box.protection_note
+
+
+def test_declined_and_existing_repo_rulesets_apply_nothing(flow):
+    box, st = flow
+    st["state"] = "protected"
+    st["repo_rulesets"] = ([repo_rs()], [])
+    st["answers"] = [False]
+    box.protect_default_branch()
+    assert st["applied"] == [] and len(st["asked"]) == 1
+    st["existing"], st["asked"] = {"require-x"}, []
+    box.protect_default_branch()
+    assert st["asked"] == [] and st["applied"] == []
+
+
+def test_protected_repo_with_no_repo_rulesets_is_never_prompted(flow):
+    box, st = flow
+    st["state"] = "protected"
+    box.protect_default_branch()
+    assert st["asked"] == [] and st["applied"] == []
+    assert st["fetch_args"] == [("o/r", "main")]
+
+
+def test_each_repo_ruleset_is_asked_separately(flow):
+    box, st = flow
+    st["repo_rulesets"] = ([repo_rs(name="one"), repo_rs(name="two")], [])
+    st["answers"] = [True, False]
+    box.protect_default_branch()
+    assert [r["name"] for r in st["applied"]] == ["one"]
+    assert len(st["asked"]) == 2
+
+
+def test_repo_rulesets_are_never_fetched_without_a_prompt(flow, monkeypatch):
+    box, st = flow
+    box.args.no_protect_prompt = True
+    box.protect_default_branch()
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
+    box.args.no_protect_prompt = False
+    box.protect_default_branch()
+    assert st["fetch_args"] == []
+
+
+def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
+    """Cross-reference: every ruleset we ship passes the same validation a
+    repo-defined one must, and every check it requires is a real CI job here
+    (a required check that never reports blocks every merge)."""
+    import glob
+    import yaml
+    jobs = set()
+    for wf in glob.glob(os.path.join(repo_root, ".github", "workflows", "*.yml")):
+        for key, job in yaml.safe_load(open(wf))["jobs"].items():
+            jobs.add(job.get("name", key))
+    required = set()
+    for path in glob.glob(os.path.join(repo_root, "rulesets", "*.json")):
+        rs = sp.validate_repo_ruleset(sp.load_ruleset(path))
+        required.update(sp.required_checks(rs))
+    assert "commit-metadata" in required
+    assert required <= jobs

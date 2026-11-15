@@ -74,10 +74,10 @@ def _q(s):
     return urllib.parse.quote(s, safe="/")
 
 
-def session_branches(repo, session=None):
+def session_branches(repo, session=None, api=None):
     """Branch names under sbx/<session>/ (or every session's, if None)."""
     prefix = branch_prefix(session) if session else BRANCH_ROOT + "/"
-    refs = gh_api("GET", f"/repos/{repo}/git/matching-refs/heads/"
+    refs = (api or gh_api)("GET", f"/repos/{repo}/git/matching-refs/heads/"
                          f"{_q(prefix)}?per_page=100") or []
     names = [r["ref"][len("refs/heads/"):] for r in refs]
     return [n for n in names if n.startswith(prefix)]

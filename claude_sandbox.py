@@ -72,6 +72,7 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
+import sandbox_actions
 import sandbox_land
 import sandbox_protect
 import sandbox_sessions
@@ -301,6 +302,20 @@ def ask_protect(repo, branch, effects):
         return False
 
 
+def ask_ruleset(repo, name, effects):
+    """Interactive yes/no (default no) to apply a ruleset the repo defines."""
+    print(f"\n\033[1m{repo} defines ruleset `{name}` "
+          "(rulesets/ on its default branch), not applied yet.\033[0m"
+          "\nApplying it would:", file=sys.stderr)
+    for e in effects:
+        print(f"  - {e}", file=sys.stderr)
+    try:
+        return input(f"Apply ruleset `{name}` to this repo? [y/N] "
+                     ).strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def ask_checks(branch, checks):
     """Interactive yes/no (default no) to also require these CI checks."""
     print("\nThese checks passed on the latest commit of "
@@ -359,6 +374,13 @@ def report_landing(results, session=None):
     """Print the exit summary of PRs the launcher opened (to stderr)."""
     print("\n" + sandbox_land.format_landing(
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
+
+
+def report_actions(outcomes):
+    """Print the exit summary of follow-up actions (to stderr)."""
+    text = sandbox_actions.format_outcomes(outcomes)
+    if text:
+        print("\n" + text, file=sys.stderr)
 
 
 def check_workflow_scope():
@@ -771,20 +793,34 @@ class Sandbox:
             branch, warn, state = sandbox_sessions.check_protection(a.repo)
             if warn:
                 log(f"warning: {warn}")
-            if (state == "unprotected" and not a.no_protect_prompt
-                    and sys.stdin.isatty()):
-                state, checks = self.offer_protection(branch)
+            if (state in ("unprotected", "protected")
+                    and not a.no_protect_prompt and sys.stdin.isatty()):
+                state, checks = self.offer_protection(branch, state)
         except (GitHubError, OSError, ValueError) as e:
             log(f"warning: couldn't check or apply branch protection: {e}")
         self.protection_note = protection_note(a.repo, branch, state, checks)
 
-    def offer_protection(self, branch):
-        """Ask, then apply. Returns (state, required_checks)."""
+    def offer_protection(self, branch, state="unprotected"):
+        """Ask, then apply. Returns (state, required_checks).
+
+        Rulesets the repo defines itself (rulesets/*.json on its default
+        branch) win over the launcher's generic one and are offered even when
+        the branch is already protected (they may add e.g. a required check).
+        """
         a = self.args
+        repo_rs, problems = sandbox_protect.fetch_repo_rulesets(a.repo, branch)
+        for p in problems:
+            log(f"warning: ignoring {p}")
+        existing = sandbox_protect.existing_ruleset_names(a.repo)
+        if repo_rs:
+            return self.offer_repo_rulesets(
+                branch, state, sandbox_protect.pending(repo_rs, existing))
+        if state != "unprotected":
+            return state, []
         rs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "rulesets", "protect-main.json")
         ruleset = sandbox_protect.load_ruleset(rs_path)
-        if ruleset["name"] in sandbox_protect.existing_ruleset_names(a.repo):
+        if ruleset["name"] in existing:
             log(f"ruleset {ruleset['name']!r} already exists but doesn't "
                 "require PRs on the default branch; fix it in Settings -> Rules")
             return "unprotected", []
@@ -801,18 +837,44 @@ class Sandbox:
                " (no required status checks)"))
         return "applied", checks
 
+    def offer_repo_rulesets(self, branch, state, todo):
+        """Offer each not-yet-applied repo-defined ruleset, one yes/no each.
+        Returns (state, required_checks of the ones applied)."""
+        a = self.args
+        checks = set()
+        for rs in todo:
+            if not ask_ruleset(a.repo, rs["name"],
+                               sandbox_protect.describe_rules(rs, branch)):
+                continue
+            sandbox_protect.apply_ruleset(a.repo, rs)
+            checks.update(sandbox_protect.required_checks(rs))
+            log(f"applied ruleset {rs['name']!r} to {a.repo}")
+            if state == "unprotected" and any(
+                    r["type"] == "pull_request" for r in rs["rules"]):
+                state = "applied"
+        return state, sorted(checks)
+
     def land(self):
         """Open PRs for this session's pushed branches (host-side, with the
         user's gh login). Never raises: teardown must still run."""
         a = self.args
-        if not a.repo or a.read_only or a.no_pr or self.key_id is None:
+        if not a.repo or a.read_only or self.key_id is None:
             return
-        try:
-            report_landing(sandbox_land.land(
-                a.repo, self.session_id, setup_paths(self.deps)), self.session_id)
-        except Exception as e:
-            log(f"warning: couldn't open PRs for {self.session_id}: {e}; push "
-                f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session_id)}")
+        if not a.no_pr:
+            try:
+                report_landing(sandbox_land.land(
+                    a.repo, self.session_id, setup_paths(self.deps)),
+                    self.session_id)
+            except Exception as e:
+                log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
+                    "push state is on GitHub under "
+                    f"{sandbox_sessions.branch_prefix(self.session_id)}")
+        if not a.no_actions:
+            try:
+                report_actions(sandbox_actions.run(a.repo, self.session_id))
+            except Exception as e:
+                log(f"warning: couldn't run follow-up actions for "
+                    f"{self.session_id}: {e}")
 
     def teardown(self):
         if self._torn_down:
@@ -869,6 +931,9 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-actions", action="store_true",
+                   help="don't act on `Sandbox-Action:` trailers in the "
+                        "session's commit messages (e.g. file follow-up issues)")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "
@@ -1016,6 +1081,8 @@ def main(argv=None):
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
             report_landing(sandbox_land.land(args.repo))
+            if not args.no_actions:
+                report_actions(sandbox_actions.run(args.repo))
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1

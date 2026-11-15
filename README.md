@@ -58,6 +58,7 @@ On every launch the program:
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
+| `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
 | `sandbox_land.py` | host-side: open PRs for a session's branches, hold privileged ones |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
@@ -85,6 +86,15 @@ Any number of sandboxes can run on one repo at once. What keeps them apart:
   `./run.sh REPO --land-all` opens PRs for every unmerged `sbx/*` branch
   (recovery after a crashed launcher; it also grabs live sessions' work).
   Text from the session is sanitised (no live `@mentions`, labelled untrusted).
+- **Follow-up actions.** A commit message can end with
+  `Sandbox-Action: {"v": 1, "type": "issue", "id": "<slug>-<YYYYMMDD>-<session>-<4 random>", "title": "..."}`
+  trailers (plus `Sandbox-Session: <session>` on every commit, and a
+  `todo/<id>.md` brief in the same commit; `sandbox_check.py` verifies all
+  three and is meant to run in CI on PRs). After the PRs, the launcher files an issue per unaddressed item
+  and comments on the commit with the link (that comment is also the
+  idempotency record, so re-running never duplicates). Messages that don't
+  match the spec are ignored. New action types are new `(type, version)`
+  handlers; see `sandbox_actions.py`. `--no-actions` skips this.
 - **Exit summary.** The launcher prints a block listing every branch with its
   PR number, target, commit count and URL (or why none was opened):
   ```
@@ -136,7 +146,27 @@ that **passed on the default branch's latest commit** (names are repo-specific,
 so they aren't in the file; a name that never reports would block every
 merge, hence opt-in). It won't create a duplicate if a ruleset of that name
 exists, and a failure (no admin, plan without rulesets) only warns.
-`--no-protect-prompt` silences the offer; the warning still prints. Each
+`--no-protect-prompt` silences the offer; the warning still prints.
+
+**A repo can define its own rulesets**, in the same place: `rulesets/*.json` on
+its *default branch* (reviewed and merged, never a session's branch). If it
+has any, the launcher offers those *instead of* the generic one above, one
+yes/no each, listing the effects first, and it does so even when the branch is
+already protected (a repo-defined ruleset may just add a rule: GitHub layers
+rulesets). Because that file is untrusted text that edits repo settings, it
+must pass a strict allowlist (`sandbox_protect.validate_repo_ruleset`):
+default branch only, no bypass actors, enforcement `active`/`evaluate`, only
+the rule types `deletion`, `non_fast_forward`, `required_linear_history`,
+`pull_request`, `required_status_checks` and `required_signatures`. Invalid
+files are skipped with a warning. This repo ships
+`rulesets/require-commit-metadata.json` (requires the `commit-metadata` check,
+see `.github/workflows/commit-metadata.yml`); apply it to a repo that already
+has `protect-default-branch` with
+`gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/require-commit-metadata.json`
+or just launch against it and answer yes. A test keeps every required check
+name equal to a real CI job name.
+
+Each
 session's CLAUDE.md states this repo's protection status and which checks are
 required, and tells the session to name the check names to require whenever it
 adds, renames or removes a CI job (renaming a required job strands open PRs).
