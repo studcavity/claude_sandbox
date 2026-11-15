@@ -20,6 +20,9 @@ What it does:
      and destroys the container.
 
 GitHub auth: set GITHUB_TOKEN / GH_TOKEN, or be logged in with `gh`.
+  - Keys inherit the token's scopes when pushing: without `workflow`
+    (gh auth refresh -s workflow) the sandbox can't push .github/workflows/
+    changes. The launcher warns at startup when that's the case.
   - Account key mode needs the `admin:public_key` scope
     (gh auth refresh -s admin:public_key).
   - Deploy key mode needs admin rights on the repo
@@ -53,7 +56,8 @@ import uuid
 
 import sandbox_deps
 from sandbox_containers import HOME, UID, USER, Container
-from sandbox_github import GitHubError, gh_api, github_token, validate_repo
+from sandbox_github import (GitHubError, gh_api, github_token, token_scopes,
+                            validate_repo, workflow_push_warning)
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
 from sandbox_util import log, sigint_to_child
 
@@ -190,6 +194,16 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         deps=deps_note,
         deps_file=sandbox_deps.DEPS_FILE,
     )
+
+def check_workflow_scope(token):
+    """Warn (never fail) if the sandbox won't be able to push workflow files."""
+    try:
+        msg = workflow_push_warning(token_scopes(token))
+    except (GitHubError, OSError) as e:
+        msg = workflow_push_warning(None) + f" ({e})"
+    if msg:
+        log(f"warning: {msg}")
+
 
 # --------------------------------------------------------------------------- #
 # sandbox
@@ -487,6 +501,8 @@ def main(argv=None):
     box = Sandbox(args)
     if not args.setup_token:
         box.token  # fail fast, before building or launching anything
+        if not args.read_only:
+            check_workflow_scope(box.token)
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)

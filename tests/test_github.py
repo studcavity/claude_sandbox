@@ -47,6 +47,8 @@ def test_github_token_missing_exits(monkeypatch):
 
 
 class _Resp(io.BytesIO):
+    headers = {}
+
     def __enter__(self):
         return self
 
@@ -86,3 +88,30 @@ def test_gh_api_http_error_carries_code(monkeypatch):
     with pytest.raises(g.GitHubError) as e:
         g.gh_api("GET", "/missing", "t")
     assert e.value.code == 404 and "Not Found" in str(e.value)
+
+
+class _Headers(_Resp):
+    def __init__(self, headers):
+        super().__init__(b"{}")
+        self.headers = headers
+
+
+@pytest.mark.parametrize("header, expect", [
+    ("repo, workflow, admin:public_key", {"repo", "workflow", "admin:public_key"}),
+    ("", set()),
+    (None, None),
+])
+def test_token_scopes(monkeypatch, header, expect):
+    headers = {} if header is None else {"X-OAuth-Scopes": header}
+    monkeypatch.setattr(g.urllib.request, "urlopen",
+                        lambda req, timeout: _Headers(headers))
+    assert g.token_scopes("t") == expect
+
+
+def test_workflow_push_warning():
+    assert g.workflow_push_warning({"repo", "workflow"}) is None
+    missing = g.workflow_push_warning({"repo"})
+    assert "lacks the `workflow` scope" in missing
+    assert "gh auth refresh -s workflow" in missing
+    unknown = g.workflow_push_warning(None)
+    assert "couldn't verify" in unknown and "gh auth refresh" in unknown

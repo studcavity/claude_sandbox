@@ -15,6 +15,9 @@ repo-scoped GitHub deploy key. The key and container are destroyed on exit.
 ```
 - `gh` on host
 - authenticated to an account w/ `gh auth login`
+- optional: `gh auth refresh -s workflow` so the sandbox can push changes to
+  `.github/workflows/` (the launcher warns at startup when it can't; this lets
+  sandboxed sessions edit CI, which can read the repo's Actions secrets)
 
 ## usage
 Edit `github_user` and `git_email` at the top of `run.sh`, then:

@@ -164,3 +164,23 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
     box.key_id, box.container_up = 7, True
     box.teardown()
     assert deleted == [True]
+
+
+@pytest.mark.parametrize("scopes, warned", [
+    ({"repo", "workflow"}, False),
+    ({"repo"}, True),
+    (None, True),
+])
+def test_check_workflow_scope_warns_only_on_failure(monkeypatch, capsys,
+                                                    scopes, warned):
+    monkeypatch.setattr(cs, "token_scopes", lambda t: scopes)
+    cs.check_workflow_scope("t")
+    assert ("warning:" in capsys.readouterr().err) == warned
+
+
+def test_check_workflow_scope_never_raises(monkeypatch, capsys):
+    def down(t):
+        raise cs.GitHubError("GitHub GET / -> 503", 503)
+    monkeypatch.setattr(cs, "token_scopes", down)
+    cs.check_workflow_scope("t")
+    assert "couldn't verify" in capsys.readouterr().err
