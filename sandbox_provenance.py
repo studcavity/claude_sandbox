@@ -1,6 +1,7 @@
 """sandbox_provenance.py - prove a PR's commits were made inside its session.
 
     python sandbox_provenance.py OWNER/REPO --pr N     # re-check and re-post
+    python sandbox_provenance.py OWNER/REPO --pr N --override REASON
 
 At launch the container makes an ed25519 *signing* key and git signs every
 commit with it. The launcher keeps the PUBLIC half on the host (never in the
@@ -11,6 +12,13 @@ or from one of the user's own SSH signing keys registered on GitHub (so the
 user's own rebases and fixups pass), and posts the result as the commit
 status `sandbox/provenance` on the PR's head commit. A ruleset can require
 it (rulesets/require-sandbox-provenance.json).
+
+--override REASON is the audited break-glass path (the same shape as
+`sandbox_check.py --override`): it posts `success` for that one head commit
+with an `OVERRIDDEN by <login>: <reason>` description and comments on the PR,
+without checking signatures. Use it for commits the check can't vouch for
+though you do, e.g. a rebase made with GitHub's web button (signed by GitHub,
+not by the session or your SSH signing key).
 
 A status belongs to one commit. Anything pushed later (by a sibling
 session's deploy key, or anyone else with push access) leaves the new head
@@ -41,6 +49,7 @@ import urllib.parse
 
 import sandbox_check
 import sandbox_names
+import sandbox_untrusted
 
 CONTEXT = "sandbox/provenance"
 DESC_MAX = 140
@@ -295,6 +304,42 @@ def post_pr(repo, number, api=None, client=None, root=None, fetch=None):
     return verdict
 
 
+def override_comment(login, reason, sha):
+    """PR comment that makes an override auditable."""
+    who = login if sandbox_check.LOGIN_RE.match(login or "") else "unknown"
+    return "\n".join([
+        f"**`{CONTEXT}` overridden** by `{who}` for commit `{sha[:7]}`.", "",
+        "Reason: " + sandbox_untrusted.one_line(reason, 500), "",
+        "Signatures were not checked. This applies to this commit only: a new "
+        "commit needs a new check (or a new override)."])
+
+
+def override_pr(repo, number, reason, client=None):
+    """Break glass: post `success` on this PR's head with the reason, and
+    comment on the PR -> Verdict. Same-repo sandbox-branch PRs only; nothing is
+    posted if the reason is unusable or the head moved."""
+    if client is None:
+        import sandbox_ghclient
+        client = sandbox_ghclient.GhClient.from_environment()
+    if not _REPO_RE.match(repo or ""):
+        raise ProvenanceError(f"bad repository name {repo!r}")
+    pr = client.pr(repo, number)
+    if (pr.head_repo or "").lower() != repo.lower():
+        raise ProvenanceError(f"PR #{number} comes from {pr.head_repo or 'a fork'}")
+    if not sandbox_check.branch_session(pr.head_ref):
+        raise ProvenanceError(f"PR #{number} isn't from a sandbox branch")
+    login = client.login()
+    try:
+        desc = sandbox_check.override_description(login, reason)
+    except sandbox_check.CheckError as e:
+        raise ProvenanceError(str(e)) from None
+    if client.pr(repo, number).head_sha != pr.head_sha:
+        raise ProvenanceError(f"PR #{number} head moved; nothing posted. Re-run.")
+    client.post_status(repo, pr.head_sha, "success", CONTEXT, desc, pr.url)
+    client.comment(repo, number, override_comment(login, reason, pr.head_sha))
+    return Verdict("success", desc, [], pr.head_sha)
+
+
 def post_session(repo, landed, api=None, client=None, root=None, poster=None):
     """Post `sandbox/provenance` for each PR a landing opened or found ->
     [Outcome]. One PR failing never affects the others."""
@@ -324,9 +369,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("repo", metavar="OWNER/REPO")
     ap.add_argument("--pr", type=int, required=True, metavar="N")
+    ap.add_argument("--override", metavar="REASON",
+                    help="break glass: post success for this PR's head commit "
+                    "only, with the reason, and comment on the PR")
     a = ap.parse_args(argv)
     try:
-        v = post_pr(a.repo, a.pr)
+        v = (override_pr(a.repo, a.pr, a.override) if a.override
+             else post_pr(a.repo, a.pr))
     except (ProvenanceError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

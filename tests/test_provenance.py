@@ -245,6 +245,9 @@ class Client:
     def post_status(self, repo, sha, state, context, description, target=None):
         self.posted.append((sha, state, context, description))
 
+    def comment(self, repo, number, body):
+        self.comments = getattr(self, "comments", []) + [(number, body)]
+
 
 def fake_api(base, user_keys=()):
     def api(method, path, body=None, raw=False):
@@ -357,3 +360,36 @@ def test_post_session_reports_each_pr_and_survives_failures():
                    sp.Outcome(2, "failed", "head moved")]
     text = sp.format_outcomes(out)
     assert "#1: success" in text and "--pr 2" in text and "--pr 1" not in text
+
+
+def test_override_posts_success_for_the_head_and_comments():
+    client = Client("a" * 40)
+    v = sp.override_pr("o/r", 3, "rebased with the GitHub button; reviewed", client)
+    assert v.state == "success"
+    assert client.posted == [("a" * 40, "success", "sandbox/provenance",
+                              "OVERRIDDEN by ada: rebased with the GitHub "
+                              "button; reviewed")]
+    ((n, body),) = client.comments
+    assert n == 3 and "sandbox/provenance" in body and "aaaaaaa" in body
+
+
+@pytest.mark.parametrize("kw,reason,match", [
+    ({}, "short", "real reason"),
+    ({}, "token " + "ghp_" + "x" * 40, "credential"),
+    ({"head_ref": "feature/x"}, "a perfectly good reason", "sandbox branch"),
+    ({"repo": "evil/fork"}, "a perfectly good reason", "evil/fork"),
+    ({"moves": True}, "a perfectly good reason", "moved"),
+])
+def test_override_refuses_and_posts_nothing(kw, reason, match):
+    client = Client("a" * 40, **kw)
+    with pytest.raises(sp.ProvenanceError, match=match):
+        sp.override_pr("o/r", 3, reason, client)
+    assert client.posted == [] and not getattr(client, "comments", [])
+
+
+def test_main_override_routes_to_override_pr(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(sp, "override_pr", lambda *a: seen.append(a) or
+                        sp.Verdict("success", "d", [], "a" * 40))
+    assert sp.main(["o/r", "--pr", "3", "--override", "a good reason"]) == 0
+    assert seen == [("o/r", 3, "a good reason")]
