@@ -30,6 +30,12 @@ def test_no_instance_attribute_shadows_a_method(make_args):
         assert callable(getattr(box, name))
 
 
+# A well-formed ed25519 public key: every exec "prints" it, so it serves as
+# both the deploy key and the session's signing key.
+PUB = "ssh-ed25519 " + __import__("base64").b64encode(
+    b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + b"\x07" * 32).decode()
+
+
 class FakeContainer:
     instances = []
 
@@ -44,7 +50,7 @@ class FakeContainer:
     def _ok(self, what, *a, **k):
         self.calls.append((what, a))
         return types.SimpleNamespace(
-            stdout="ssh-ed25519 AAAA\nsudo=yes\ntools=git\nbranch=\nusb=\n",
+            stdout=PUB + "\nsudo=yes\ntools=git\nbranch=\nusb=\n",
             returncode=0)
 
     def __getattr__(self, what):  # launch, root, put_file, user, delete, ...
@@ -153,6 +159,46 @@ def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
     monkeypatch.setattr(cs.Sandbox, "land", land)
     assert cs.main(argv(world)) == 0
     assert seen == [True, True]
+
+
+def test_the_sessions_signing_key_is_recorded_and_its_prs_get_provenance(world, monkeypatch):
+    """The public signing key is kept on the host at launch; after teardown
+    (the private half is gone) every PR the landing opened is checked."""
+    import sandbox_provenance
+    posted = []
+
+    def post_session(repo, landed, **kw):
+        box = FakeContainer.instances[-1]
+        posted.append((repo, [l.outcome for l in landed],
+                       ("delete", ()) in box.calls))
+        return [sandbox_provenance.Outcome(7, "success", "1 commit signed")]
+    monkeypatch.setattr(sandbox_provenance, "post_session", post_session)
+    assert cs.main(argv(world)) == 0
+    assert sandbox_provenance.load_key("o/r", "quirky-hopper") == PUB
+    assert posted == [("o/r", ["opened"], True)]   # after the container is gone
+    user_scripts = " ".join(str(c) for what, c in FakeContainer.instances[-1].calls
+                            if what == "user")
+    assert "commit.gpgsign true" in user_scripts
+
+
+def test_no_provenance_flag_skips_the_status(world, monkeypatch):
+    import sandbox_provenance
+    called = []
+    monkeypatch.setattr(sandbox_provenance, "post_session",
+                        lambda *a, **k: called.append(1) or [])
+    assert cs.main(argv(world, "--no-provenance")) == 0
+    assert called == []
+
+
+def test_a_new_session_never_reuses_a_name_with_a_recorded_key(make_args, monkeypatch):
+    """Its key would otherwise vouch for the old session's branches."""
+    import sandbox_provenance
+    sandbox_provenance.save_key("o/r", "quirky-hopper", PUB)
+    seen = []
+    monkeypatch.setattr(cs.sandbox_sessions, "pick_name",
+                        lambda taken: seen.append(set(taken)) or "fresh-name")
+    assert cs.Sandbox(make_args(repo="o/r", name=None)).name == "fresh-name"
+    assert "quirky-hopper" in seen[0]
 
 
 def test_landing_still_runs_when_teardown_fails(world, monkeypatch):

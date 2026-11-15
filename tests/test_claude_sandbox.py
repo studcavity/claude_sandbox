@@ -1030,6 +1030,7 @@ def test_provision_key_is_two_execs_and_keeps_its_order(make_args, monkeypatch):
     assert "ssh-keygen" in execs[0][1] and execs[0][1].rstrip().endswith("id_ed25519.pub")
     assert execs[1][2] == "github.com ssh-ed25519 KEY\n"                # known_hosts via stdin
     assert "git config --global user.name Ada" in execs[1][1]
+    assert "commit.gpgsign true" in execs[1][1]                         # signing key, same exec
     assert api == [("GET", "/meta"), ("POST", "/repos/o/r/keys")]      # key still added after meta
     assert box.key_id == 7
 

@@ -363,10 +363,13 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
         rs = sp.validate_repo_ruleset(sp.load_ruleset(path))
         required.update(sp.required_checks(rs))
     import sandbox_check
+    import sandbox_provenance
     assert "commit-metadata" in required
-    # sandbox/check is a commit STATUS the checker posts, not a CI job
-    assert sandbox_check.STATUS_CONTEXT in required
-    assert required - {sandbox_check.STATUS_CONTEXT} <= jobs
+    # sandbox/check and sandbox/provenance are commit STATUSES the launcher
+    # posts, not CI jobs
+    statuses = {sandbox_check.STATUS_CONTEXT, sandbox_provenance.CONTEXT}
+    assert statuses <= required
+    assert required - statuses <= jobs
 
 
 # --- rulesets/optional: opt-in, applied by hand ---------------------------- #

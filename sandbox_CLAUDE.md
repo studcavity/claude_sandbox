@@ -403,6 +403,14 @@ session `$session`. If no repo was cloned, ignore this section.
   default branch is meant to be protected so changes arrive only by pull
   request; if a push to it is ever accepted, tell the user, because the
   protection is missing. Don't look for ways around a rejection.
+- **Every commit you make is signed** with a key made for this session (git
+  is configured with `commit.gpgsign`); the launcher keeps only its public
+  half. After you exit it posts `sandbox/provenance` on each of your PRs,
+  green only if every commit was signed by this session (or by the user).
+  Don't turn signing off (`--no-gpg-sign`, changing `gpg.*` or
+  `user.signingkey`), and don't push commits made elsewhere under their
+  original signatures; rebasing, amending and cherry-picking here re-sign
+  them, which is fine.
 - You cannot open or merge PRs. When the session ends, the launcher opens a PR
   for each of your pushed branches that has commits. It **holds back** (no PR)
   any branch that changes `.github/`, `.githooks/`, `CODEOWNERS`, `$deps_file`,

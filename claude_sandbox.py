@@ -78,6 +78,7 @@ import sandbox_actions
 import sandbox_check
 import sandbox_land
 import sandbox_protect
+import sandbox_provenance
 import sandbox_sessions
 import sandbox_timing
 import sandbox_update
@@ -545,6 +546,13 @@ def report_statuses(outcomes):
         print("\n" + text, file=sys.stderr)
 
 
+def report_provenance(outcomes):
+    """Print the exit summary of `sandbox/provenance` statuses (to stderr)."""
+    text = sandbox_provenance.format_outcomes(outcomes)
+    if text:
+        print("\n" + text, file=sys.stderr)
+
+
 def report_actions(outcomes):
     """Print the exit summary of follow-up actions (to stderr)."""
     text = sandbox_actions.format_outcomes(outcomes)
@@ -606,8 +614,11 @@ class Sandbox:
         self.args = args
         self.cli = args.cli
         # The container name doubles as the session id (key title, branches).
+        # Never reuse a name whose signing key is recorded for this repo: the
+        # new key would vouch for the old session's branches.
         self.name = args.name or sandbox_sessions.pick_name(
-            Container.list_names(self.cli))
+            Container.list_names(self.cli)
+            | sandbox_provenance.recorded_sessions(args.repo))
         self.session_id = sandbox_sessions.validate_session(self.name)
         self.protection_note = ""
         self.box = Container(self.cli, self.name)
@@ -828,9 +839,32 @@ class Sandbox:
                           {"title": title, "key": pubkey})
         self.key_id = resp["id"]
 
-        # known_hosts (from stdin) and every git setting, in one exec.
-        self.box.user("cat >> ~/.ssh/known_hosts && " + git_config_script(
-            self.args.git_name, self.args.git_email), input=known)
+        # known_hosts (from stdin), every git setting and, where there are
+        # commits to sign, the session's signing key: one exec.
+        signing = bool(self.args.repo and not self.args.read_only)
+        r = self.box.user(
+            "cat >> ~/.ssh/known_hosts && " + git_config_script(
+                self.args.git_name, self.args.git_email)
+            + (" && " + sandbox_provenance.container_script() if signing else ""),
+            input=known, capture=signing)
+        if signing:
+            self.record_signing_key(r.stdout)
+
+    def record_signing_key(self, out):
+        """Record the public half of the per-session commit-signing key (made
+        in the container; the private half never leaves it) on the host, so
+        the launcher can later prove which commits this session made. Never
+        blocks the launch: without a recorded key its PRs fail the
+        provenance check (closed)."""
+        try:
+            if sandbox_provenance.save_key(self.args.repo, self.session_id,
+                                           (out.strip().splitlines() or [""])[0]):
+                log(f"warning: replaced the recorded signing key of an earlier "
+                    f"session named {self.session_id}; its unmerged PRs will "
+                    "fail the provenance check")
+        except (OSError, ValueError) as e:
+            log(f"warning: couldn't record the session's signing key ({e}); "
+                f"its PRs will fail {sandbox_provenance.CONTEXT}")
 
     def install_claude(self):
         if self.box.user("command -v claude >/dev/null", check=False).returncode == 0:
@@ -1080,6 +1114,13 @@ class Sandbox:
             except Exception as e:
                 log(f"warning: couldn't post {sandbox_check.STATUS_CONTEXT} "
                     f"for {self.session_id}: {e}")
+        if landed and not a.no_provenance:
+            try:
+                report_provenance(sandbox_provenance.post_session(
+                    a.repo, landed))
+            except Exception as e:
+                log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
+                    f"for {self.session_id}: {e}")
         if not a.no_actions:
             try:
                 report_actions(sandbox_actions.run(
@@ -1156,6 +1197,10 @@ def build_parser():
                    help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
                         "status on the session's PRs (it is only posted where "
                         "the repo's ruleset requires it)")
+    p.add_argument("--no-provenance", action="store_true",
+                   help=f"don't post the `{sandbox_provenance.CONTEXT}` commit "
+                        "status (every commit signed by the session's own key "
+                        "or yours) on the session's PRs")
     p.add_argument("--max-actions", type=int, metavar="N",
                    default=sandbox_actions.MAX_ACTIONS,
                    help="most Sandbox-Action items to carry out per run "
@@ -1350,6 +1395,9 @@ def _launch(args):
             report_landing(landed)
             if landed and not args.no_check_status:
                 report_statuses(sandbox_check.post_session_statuses(
+                    args.repo, landed))
+            if landed and not args.no_provenance:
+                report_provenance(sandbox_provenance.post_session(
                     args.repo, landed))
             if not args.no_actions:
                 report_actions(sandbox_actions.run(
