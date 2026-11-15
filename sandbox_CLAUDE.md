@@ -71,128 +71,38 @@ $disk
 ## Dependencies (`$deps_file`)
 $deps
 
-A repo can declare the tooling it needs in `$deps_file` at the root of its
-default branch. The launcher on the **host** reads it, validates it, downloads
-everything and checks checksums, then installs it into the container *before*
-your session starts. You can't re-run that from inside, so changes take effect
-the next time the user launches a sandbox. The launcher bakes the result into
-a cached per-repo image, so the first launch after a change is slower (it
-rebuilds) and later ones are fast. A script without `sha256` disables that cache.
+A repo declares the tooling it needs in `$deps_file` at the root of its default
+branch. The **host** validates it, downloads and checksums everything and
+installs it into a cached image before your session starts, so you can't re-run
+that: edits take effect the next time the user launches a sandbox. If you need
+a tool that isn't installed: with `sudo`, install it now **and** add it to
+`$deps_file`; otherwise add it, commit, push, and tell the user to relaunch.
 
-If you need a tool that isn't installed:
-- If `sudo` works, install it now so you can keep going, **and** add it to
-  `$deps_file` so future sandboxes have it.
-- If you can't install it (no `sudo`, or a download you can't do), add it to
-  `$deps_file`, commit and push, and tell the user to relaunch the sandbox.
+**Before creating or editing `$deps_file` or a `setup:` script, read
+`~/.claude/ref/deps.md`** (schema, rules, and the `last_generated` / `platform`
+metadata you must refresh). That file runs as root in every future sandbox for
+this repo: add only what the task needs, use official upstream URLs, and call
+out each change in the commit message and to the user.
 
-Format (all sections optional; unknown keys make the whole file invalid and
-abort the launch):
-
-```yaml
-image: images:ubuntu/24.04 # optional: this repo's base OS (default: images:ubuntu/26.04)
-apt:                       # Debian/Ubuntu package names, optional =version
-  - build-essential
-  - libssl-dev=3.0.13-0ubuntu3
-scripts:                   # remote install script, run as root with bash
-  - name: arduino-cli      # [A-Za-z0-9._+-], used for the temp file name
-    url: https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh
-    sha256: <64 hex>       # optional but strongly recommended
-    args: []               # optional, argv for the script
-    env: {BINDIR: /usr/local/bin}   # optional; installers need a system dir
-last_generated: "2026-11-15T10:30:00Z"   # optional metadata, see below
-platform: |                # optional metadata, see below
-  Ubuntu 24.04.5 LTS (noble), x86_64
-binaries:                  # installed to /usr/local/bin/<name>, mode 0755
-  - name: shellcheck
-    url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
-    sha256: <64 hex>       # required
-    archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
-setup:                     # repo scripts run in the container every launch (see below)
-  - name: toolchain        # [A-Za-z0-9._+-]
-    path: tools/setup.sh   # relative to the repo root; no leading /, no ..
-    args: []               # optional, argv for the script
-    env: {}                # optional, same restrictions as scripts' env
-    timeout: 1800          # optional seconds, 1-3600 (default 1800)
-```
-
-Rules:
-- `image:` picks the OS the sandbox boots from, for repos that need a specific
-  Ubuntu release. Only `images:ubuntu/<release>` or `ubuntu:<release>` are
-  accepted (e.g. `images:ubuntu/24.04`); anything else makes the file invalid.
-  The host's `--image` flag overrides it, and `--no-deps` ignores it. Changing
-  it means a one-time base image build on the next launch (cached per image),
-  and package names and versions follow that release. Check this sandbox's OS
-  with `cat /etc/os-release` before assuming one.
-- URLs must be `https://` (redirects too) with no credentials. Order of
-  installation: apt, binaries, scripts.
-- `sha256` is of the downloaded file itself (the archive, if `archive_path`
-  is used). Prefer a checksum published by the project; if you had to compute
-  it from your own download (`sha256sum`), say so to the user, because that
-  only proves the file hasn't changed since you looked at it.
-- A script without `sha256` runs whatever the URL serves at launch time.
-- Whenever you create or edit this file, also set `last_generated` (UTC
-  ISO 8601 in quotes, from `date -u +%Y-%m-%dT%H:%M:%SZ`) and `platform` (the
-  real output of `lsb_release -a`, or `cat /etc/os-release` if that is
-  missing, plus `uname -m`, pasted as a `|` block). Run the commands; never
-  guess or copy old values. They record when and on what OS the toolchain
-  was resolved (pinned versions, checksums, download URLs) so it can be
-  reproduced later. They are never executed and don't affect the image cache.
-- This file runs as root in every future sandbox for this repo, so treat edits
-  as security-sensitive: add only what the user asked for or the task needs,
-  use official upstream URLs, keep entries minimal, and call out each change
-  in the commit message and to the user.
-
-### Per-launch setup scripts (`setup:`)
-`apt`, `binaries` and `scripts` are baked into a cached image, as root, before
-the repo exists. Anything that needs the checkout or the user's home (a venv in
-the repo, a per-user toolchain, `~/.local/bin`) goes in `setup:` instead: the
-launcher runs each listed script **inside the container**, as `$user`, with the
-clone as the working directory, at the start of **every** launch, as
-`timeout <N> bash -l ./<path> <args>` (so no shell parses the entry).
-- It runs after the clone and before Claude's credentials are copied in, so the
-  script never sees them. The repo's own deploy key and any approved USB devices
-  are present. It gets no stdin, so it can't prompt.
-- It is not baked and not part of the image cache key, so editing `setup:` or
-  the script never triggers an image rebuild. Write scripts to be **idempotent
-  and quick when already done**, because they re-run every launch; put
-  anything heavy and system-wide in `apt`/`binaries` where it is cached.
-- A failing script does not abort the launch. The result is listed under
-  "Setup results this launch" above; if one says FAILED, re-run it, read the
-  error and tell the user.
-- `--no-deps` skips the whole file, `setup:` included.
-- A repo script runs automatically with the deploy key present, so treat adding
-  or changing one like editing `$deps_file`: security-sensitive, minimal, and
-  called out in the commit message and to the user. Pin and verify anything it
-  downloads (see how to check a `sha256`, above).
-
-**Gate hazardous scripts so they refuse to run outside the sandbox.** Setup
-scripts live in the repo, and a human (or another tool) may well run them on a
-real machine. Inside this container almost nothing is at risk; on a host the
-same script can damage the user's system or leak into their dotfiles. Whenever
-you write or edit a script that could be hazardous outside this container,
-put this guard at the very top, before any side effect:
+**Gate hazardous scripts so they refuse to run outside the sandbox.** A script
+in the repo may be run on a real machine, where it can damage the system or
+leak into dotfiles. Put this guard at the very top, before any side effect, of
+any script that uses `sudo` or root, installs or removes packages, writes
+outside the repo (`~`, `/etc`, `/usr`, rc files, `~/.ssh`), does `rm -rf` or
+other bulk deletes, changes global git/pip/npm config, runs unverified
+downloads, writes to hardware, kills processes or touches credentials (when in
+doubt, add it):
 
 ```bash
 # Refuse to run anywhere but inside a claude_sandbox container.
 [ -f /etc/claude-sandbox ] || { echo "refusing: not inside a claude_sandbox container" >&2; exit 1; }
 ```
 
-The launcher creates `/etc/claude-sandbox` in every sandbox at boot. Treat a
-script as hazardous (guard it) if it does any of: `sudo` or any use of root;
-installing or removing packages; writing outside the repo directory, especially
-`~`, `/etc`, `/usr`, `/opt`, shell rc files, `~/.ssh`, `~/.gitconfig`, udev
-rules or services; `rm -rf` or any other bulk delete; changing global git,
-pip or npm config; running `curl | sh` or other unverified downloads; flashing,
-erasing or writing to hardware or devices; killing processes; touching
-credentials. If a script only reads, or only writes under its own repo
-directory (and cleans up after itself), it needs no guard; when in doubt, add
-it. Also: never run these scripts yourself on the host (you can't from here),
-never weaken or remove an existing guard to make a script "work" elsewhere,
-and if the user wants a script to also run on their machine, say what it would
-change there and let them decide and add a narrower, explicit opt-in (for
-example a `--i-know-this-modifies-my-system` argument) rather than dropping
-the guard. Mention the guard in the script's header comment so a reader knows
-why it exists.
+The launcher creates `/etc/claude-sandbox` at boot. Mention the guard in the
+script's header comment, never run such scripts on the host, and never weaken
+or remove an existing guard to make a script "work" elsewhere: if the user
+wants one to run on their machine, say what it would change there and let them
+add a narrower, explicit opt-in instead.
 
 ## Commit messages carry point-in-time state
 A commit message is the durable place for what is true *now* but doesn't

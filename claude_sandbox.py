@@ -129,6 +129,10 @@ SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
 # The checker, copied into the sandbox so a session can lint its own commits
 # before it exits (plan 4d). Stdlib-only modules; the list is tested against
 # the checker's real import graph.
+# Reference text the session reads on demand instead of carrying it in every
+# prompt: rendered from DEPS_REF_TEMPLATE (next to this script) to DEPS_REF_PATH.
+DEPS_REF_TEMPLATE = "sandbox_ref_deps.md"
+DEPS_REF_PATH = "~/.claude/ref/deps.md"
 SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
 SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
 SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
@@ -346,6 +350,12 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         usb=sandbox_host.usb_section(usb_devices, cli, container,
                                      facts["usb"]) or "No USB devices were requested.",
     )
+
+def render_deps_ref(template):
+    """Fill the deps-file reference (placeholders: $deps_file, $user)."""
+    return string.Template(template).substitute(
+        deps_file=sandbox_deps.DEPS_FILE, user=USER)
+
 
 def protection_note(repo, branch, state, checks=()):
     """Repo-specific text for the sandbox CLAUDE.md about default-branch
@@ -923,8 +933,12 @@ class Sandbox:
                               protection_note=self.protection_note,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
-        self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
+        self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
                       input=md)
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, DEPS_REF_TEMPLATE)) as f:
+            ref = render_deps_ref(f.read())
+        self.box.user(f"cat > {DEPS_REF_PATH}", input=ref)
 
     def repo_trusted(self):
         """Whether Claude Code may skip its trust dialog for the clone: only
