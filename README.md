@@ -166,7 +166,13 @@ see `.github/workflows/commit-metadata.yml`); apply it to a repo that already
 has `protect-default-branch` with
 `gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/require-commit-metadata.json`
 or just launch against it and answer yes. A test keeps every required check
-name equal to a real CI job name.
+name equal to a real CI job name, except `sandbox/check`, which is a commit
+*status* posted by `sandbox_check.py --post-status OWNER/REPO --pr N` (no
+workflow needed). `rulesets/require-sandbox-check.json` requires it.
+**Don't apply that ruleset yet**: nothing posts the status automatically until
+the launcher does it at session exit (plan 5d), so every PR would sit blocked
+until someone ran the command by hand. The break-glass levels (re-run,
+`--override "reason"`, suspend the ruleset) are in `docs/plans/README.md`.
 
 Each
 session's CLAUDE.md states this repo's protection status and which checks are
