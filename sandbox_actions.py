@@ -51,8 +51,19 @@ Types today
 
 Convention: an `issue` action's full description lives in the same commit at
 `todo/<id>.md`, written so a fresh agent with no context could pick the item
-up (CI checks the file exists). It may later become the issue body; today the
-launcher doesn't read it.
+up (CI checks the file exists). When filing, the launcher reads that file AT
+THAT COMMIT (so a later deletion doesn't matter), sanitises and bounds it
+(MAX_BRIEF), refuses to file if it looks like it holds a credential, appends it
+to the issue body with a permalink, and says so if it is missing.
+
+Issues are created with the labels `sandbox`, `follow-up` and
+`session:<session>` (created on first use; best effort). The issue is also the
+idempotency ledger: its body ends with `<!-- claude-sandbox:action sha=.. id=..
+-->`, and before filing the launcher looks for an existing `sandbox`-labelled
+issue with that marker on its LAST line, so a crash between creating the issue
+and commenting on the commit can't duplicate it. HTML comments in session text
+are defanged so a session can't forge a marker. The commit comment remains a
+second ledger and is healed when the issue already exists.
 
 Trust: everything here is text written by an AI session. It is bounded
 (MAX_*), stripped of control characters and live @-mentions, and labelled
@@ -78,6 +89,13 @@ MAX_LINE = 8000       # a trailer line longer than this is ignored
 MAX_TITLE = 120
 MAX_BODY = 4000
 MARKER = "claude-sandbox:action"
+MAX_BRIEF = 6000          # chars of todo/<id>.md embedded in an issue
+MAX_BRIEF_BYTES = 40000   # bytes read from it before decoding
+MAX_LEDGER_PAGES = 5      # x100 issues scanned for an existing marker
+LABELS = {  # name -> (colour, description); created on first use
+    "sandbox": ("5319e7", "Filed by claude_sandbox from a session's commit"),
+    "follow-up": ("fbca04", "A follow-up a sandboxed session asked for"),
+}
 
 # sha: full commit sha; key: (type, v); data: the whole decoded object.
 Action = collections.namedtuple("Action", "sha id type v data")
@@ -244,7 +262,87 @@ class PolicyRejected(Rejected):
     names the kind of problem, never the offending text."""
 
 
-Context = collections.namedtuple("Context", "repo session branches api")
+# `cache` is per-run scratch (labels ensured, issues already filed); execute()
+# supplies it, so callers can keep building Context(repo, session, branches, api).
+Context = collections.namedtuple("Context", "repo session branches api cache",
+                                 defaults=(None,))
+
+
+class Reused(str):
+    """A handler's detail when the item already existed (e.g. its issue was
+    found by marker), so it is reported as "exists", not "done"."""
+
+
+_LEDGER_RE = re.compile(r"<!-- " + MARKER + r" sha=([0-9a-f]{7,40}) id=("
+                        r"[A-Za-z0-9._-]{1,%d}) -->\s*$" % ID_MAX)
+_ID_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+?-\d{8}-(.+)-[a-z0-9]{4}$")
+
+
+def _defang(text):
+    """No HTML comments in session text: the marker below is how we recognise
+    our own issues, so session text must not be able to forge one."""
+    return text.replace("<!--", "<!- -")
+
+
+def known_issues(ctx):
+    """{(sha, id): url} of issues this tool already filed in the repo, found by
+    the marker on the LAST line of the body (the issue is the ledger, so a crash
+    between creating it and commenting on the commit can't duplicate it)."""
+    if "issues" in ctx.cache:
+        return ctx.cache["issues"]
+    found = {}
+    for page in range(1, MAX_LEDGER_PAGES + 1):
+        items = ctx.api("GET", f"/repos/{ctx.repo}/issues?labels=sandbox"
+                        f"&state=all&per_page=100&page={page}") or []
+        for it in items:
+            if "pull_request" in it:
+                continue
+            m = _LEDGER_RE.search(it.get("body") or "")
+            if m:
+                found.setdefault((m.group(1), m.group(2)), it["html_url"])
+        if len(items) < 100:
+            break
+    ctx.cache["issues"] = found
+    return found
+
+
+def session_of(ctx, a):
+    s = ctx.session if ctx.session != "all" else None
+    if not s:
+        m = _ID_SESSION_RE.match(a.id)
+        s = m.group(1) if m else None
+    return s if s and sandbox_names.SESSION_RE.match(s) else None
+
+
+def ensure_labels(ctx, names):
+    """Create missing labels once per run. Best effort: a repo that refuses
+    (no push access) still gets the issue, and the commit comment remains a
+    second ledger."""
+    done = ctx.cache.setdefault("labels", set())
+    for name in names:
+        if name in done:
+            continue
+        color, desc = LABELS.get(name, ("ededed", "claude_sandbox session"))
+        try:
+            ctx.api("POST", f"/repos/{ctx.repo}/labels",
+                    {"name": name, "color": color, "description": desc})
+        except RuntimeError:
+            pass  # already exists (422) or not allowed: either way, carry on
+        done.add(name)
+
+
+def fetch_brief(ctx, a):
+    """The commit's todo/<id>.md as text (read at that commit, so a later
+    deletion doesn't matter), or None if it isn't there."""
+    path = urllib.parse.quote(todo_path(a.id))
+    try:
+        raw = ctx.api("GET", f"/repos/{ctx.repo}/contents/{path}?ref={a.sha}",
+                      raw=True)
+    except RuntimeError as e:
+        if getattr(e, "code", None) == 404:
+            return None
+        raise
+    return raw[:MAX_BRIEF_BYTES].decode("utf-8", errors="replace") if raw else None
 
 
 def _issue(ctx, a):
@@ -257,15 +355,36 @@ def _issue(ctx, a):
     if hits:
         raise PolicyRejected("not filed: the text appears to contain "
                              + ", ".join(hits))
+    existing = known_issues(ctx).get((a.sha, a.id))
+    if existing:
+        return Reused(existing)
+    brief = fetch_brief(ctx, a)
+    hits = sandbox_untrusted.find_secrets(brief or "")
+    if hits:
+        raise PolicyRejected(f"not filed: {todo_path(a.id)} appears to contain "
+                             + ", ".join(hits))
+    if brief is None:
+        brief_text = (f"\n\n_No `{todo_path(a.id)}` brief was found at that "
+                      "commit._")
+    else:
+        brief_text = (f"\n\n### Brief (`{todo_path(a.id)}` at `{a.sha[:7]}`)\n\n"
+                      f"{_defang(clean_block(brief, MAX_BRIEF))}\n\n"
+                      f"[Full file at that commit](https://github.com/{ctx.repo}"
+                      f"/blob/{a.sha}/{todo_path(a.id)})")
+    session = session_of(ctx, a)
+    labels = ["sandbox", "follow-up"] + ([f"session:{session}"] if session else [])
+    ensure_labels(ctx, labels)
     text = (
-        f"Follow-up requested by commit {a.sha} (session `{ctx.session}`), "
+        f"Follow-up requested by commit {a.sha} (session `{session or ctx.session}`), "
         f"item `{a.id}`.\n\n"
-        f"{clean_block(body, MAX_BODY)}\n\n---\n"
+        f"{_defang(clean_block(body, MAX_BODY))}{brief_text}\n\n---\n"
         "Filed by claude_sandbox from a `Sandbox-Action` trailer. The text "
         "above was written by an AI session and is untrusted.\n"
         f"<!-- {MARKER} sha={a.sha} id={a.id} -->")
     issue = ctx.api("POST", f"/repos/{ctx.repo}/issues",
-                    {"title": clean_line(title, MAX_TITLE), "body": text})
+                    {"title": clean_line(title, MAX_TITLE), "body": text,
+                     "labels": labels})
+    ctx.cache["issues"][(a.sha, a.id)] = issue["html_url"]
     return issue["html_url"]
 
 
@@ -330,6 +449,8 @@ def mark_done(api, repo, a, detail):
 
 def execute(ctx, actions):
     """Plan and carry out -> [Outcome]. One failure never stops the rest."""
+    if ctx.cache is None:
+        ctx = ctx._replace(cache={})
     to_run, skipped = plan(actions)
     out = [Outcome(a.sha, a.id, a.type, "superseded", "") for a in skipped]
     done = {}
@@ -342,7 +463,9 @@ def execute(ctx, actions):
                 continue
             detail = HANDLERS[(a.type, a.v)](ctx, a)
             mark_done(ctx.api, ctx.repo, a, detail)
-            out.append(Outcome(a.sha, a.id, a.type, "done", detail))
+            out.append(Outcome(a.sha, a.id, a.type,
+                               "exists" if isinstance(detail, Reused) else "done",
+                               detail))
         except PolicyRejected as e:
             out.append(Outcome(a.sha, a.id, a.type, "rejected", str(e)))
         except Rejected:
