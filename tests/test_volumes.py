@@ -109,3 +109,12 @@ def test_delete_retries_while_instance_is_going_away(monkeypatch):
     v.pool, v.created = "default", ["vol"]
     v.delete()
     assert v.created == []
+
+
+def test_delete_says_when_a_volume_is_gone(monkeypatch, capsys):
+    monkeypatch.setattr(sv, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, "", ""))
+    v = sv.Volumes("incus", Box(), [], "1GiB")
+    v.pool, v.created = "default", ["vol"]
+    v.delete()
+    assert "deleted volume vol" in capsys.readouterr().err

@@ -211,6 +211,20 @@ def test_landing_still_runs_when_teardown_fails(world, monkeypatch):
     assert ("POST", "/repos/o/r/pulls") in methods
 
 
+def test_launcher_waits_for_volume_delete_even_if_landing_is_interrupted(
+        world, monkeypatch):
+    """Volume deletion runs beside landing; Ctrl-C during landing must still
+    wait for it rather than exit with the cleanup half done."""
+    waited = []
+    monkeypatch.setattr(cs.Sandbox, "wait_volumes",
+                        lambda self: waited.append(True))
+    monkeypatch.setattr(cs.Sandbox, "land",
+                        lambda self: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        cs.main(argv(world))
+    assert waited == [True]
+
+
 def test_no_pr_flag_skips_landing_but_still_cleans_up(world):
     assert cs.main(argv(world, "--no-pr")) == 0
     methods = [(m, p) for m, p, _ in world.gh.calls]

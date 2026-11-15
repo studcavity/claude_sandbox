@@ -126,6 +126,7 @@ class Volumes:
                 r = run([self.cli, "storage", "volume", "delete", self.pool,
                          name], check=False, capture=True)
                 if r.returncode == 0:
+                    log(f"deleted volume {name}")
                     break
                 time.sleep(1)
             else:

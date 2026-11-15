@@ -59,6 +59,7 @@ import os
 import re
 import shlex
 import string
+import threading
 import subprocess
 import signal
 import sys
@@ -642,6 +643,7 @@ class Sandbox:
         self.key_id = None
         self.container_up = False
         self._torn_down = False
+        self._volumes_thread = None   # see teardown() / wait_volumes()
         self.deps = None
         self.deps_baked = False
         self.image = None
@@ -1184,7 +1186,29 @@ class Sandbox:
         if self.container_up:
             self.box.delete()
             log(f"destroyed container {self.name}")
-        self.volumes.delete()  # only once the instance no longer uses them
+        # Volumes can only go once the instance no longer uses them, and
+        # incus removes it asynchronously, so this can retry for a while.
+        # Landing needs none of it: run it beside landing, and make
+        # wait_volumes() (called last, in a finally) the point where it is
+        # known to have finished.
+        if self.volumes.created:
+            self._volumes_thread = threading.Thread(
+                target=self._delete_volumes, name="volume-delete")
+            self._volumes_thread.start()
+
+    def _delete_volumes(self):
+        try:
+            self.volumes.delete()
+        except Exception as e:  # a thread's exception would otherwise vanish
+            log(f"WARNING: volume cleanup failed ({e}); "
+                "the next launch will sweep leaked volumes")
+
+    def wait_volumes(self):
+        """Block until the background volume delete has finished. Always call
+        this before the launcher exits, so cleanup is never left half done."""
+        t, self._volumes_thread = self._volumes_thread, None
+        if t is not None:
+            t.join()
 
 
 # --------------------------------------------------------------------------- #
@@ -1517,9 +1541,14 @@ def _launch(args):
             with sandbox_timing.stage("teardown"):
                 box.teardown()
         finally:
-            with sandbox_timing.stage("land: PRs, provenance"):
-                box.land()
-            box.report_host_warnings()
+            try:
+                with sandbox_timing.stage("land: PRs, provenance"):
+                    box.land()
+                box.report_host_warnings()
+            finally:
+                # Volume deletion runs beside landing; finish it before exit.
+                with sandbox_timing.stage("volumes: wait for delete"):
+                    box.wait_volumes()
     return 0
 
 
