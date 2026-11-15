@@ -51,12 +51,8 @@ POSITIVE = {
                      "ghs_" + "Q" * 36],
     "GitHub fine-grained token": ["github_pat_" + "11AB" * 6 + "_x"],
     "Anthropic key": ["sk-ant-api03-" + "Zz9-_" * 6, "sk-ant-oat01-" + "abcdefghijklmnopqrstu"],
-    "AWS access key id": ["AKIA" + "IOSFODNN7EXAMPLE", "ASIA" + "IOSFODNN7EXAMPLE"],
-    "Slack token": ["xoxb-" + "1234567890-abcdefghij"],
     "private key": ["-----BEGIN RSA " + "PRIVATE KEY-----", "-----BEGIN " + "PRIVATE KEY-----",
                     "-----BEGIN OPENSSH " + "PRIVATE KEY-----"],
-    "credential assignment": ["api_key = " + "8f3kQ9zL2mX7vB1nR5tY0wA4cE6", 'token: "' + "Zx9Qm2Lp8Rt4Vb7Nc1Ke5Ws3Dh" + '"',
-                              "MY_SECRET=" + "aB3dE5gH7jK9mN1pQ3sT5vX7zC9"],
 }
 
 
@@ -68,8 +64,6 @@ def test_detects_each_kind(label, text):
 @pytest.mark.parametrize("text", [
     "", "plain prose about tokens and secrets", "ghp_short", "ghp_" + "a" * 10,
     "sk-ant", "AKIA123", "token: abc", "password: hunter2", "secret = changeme",
-    "api_key = aaaaaaaaaaaaaaaaaaaaaaaaaaaa",           # low entropy
-    "token: " + "a1" * 12,                                # low entropy, 24 chars
     "see commit 0123456789abcdef0123456789abcdef01234567",  # a sha, no keyword
     "BEGIN PRIVATE KEY without dashes", "mask the token before logging",
     "path /usr/local/lib/python3/site-packages/x.py",
@@ -79,14 +73,34 @@ def test_near_misses_are_not_flagged(text):
 
 
 def test_findings_never_contain_the_secret():
-    labels = su.find_secrets(f"oops {GH} and " + "AKIA" + "IOSFODNN7EXAMPLE")
-    assert labels == ["AWS access key id", "GitHub token"]
-    assert all(GH not in l and "AKIA" not in l for l in labels)
+    key = "sk-ant-" + "api03-" + "Zz9-_" * 6
+    labels = su.find_secrets(f"oops {GH} and {key}")
+    assert labels == ["Anthropic key", "GitHub token"]
+    assert all(GH not in l and key not in l for l in labels)
 
 
-def test_entropy_orders_obvious_cases():
-    assert su.entropy("") == 0 and su.entropy("aaaa") == 0
-    assert su.entropy("aB3dE5gH7jK9mN1p" + "Q3sT5vX7zC9") > su.MIN_ENTROPY > su.entropy("a1" * 12)
+@pytest.mark.parametrize("text", [
+    "AKIA" + "IOSFODNN7EXAMPLE", "ASIA" + "IOSFODNN7EXAMPLE",       # AWS
+    "xoxb-" + "1234567890-abcdefghij",                              # Slack
+    "api_key = " + "8f3kQ9zL2mX7vB1nR5tY0wA4cE6",                   # generic
+    'token: "' + "Zx9Qm2Lp8Rt4Vb7Nc1Ke5Ws3Dh" + '"',
+    "MY_SECRET=" + "aB3dE5gH7jK9mN1pQ3sT5vX7zC9",
+])
+def test_rules_for_credentials_the_sandbox_never_holds_are_gone(text):
+    """AWS and Slack keys, and entropy-gated `name = value` assignments, were
+    the false-positive source; GitHub's own scanning covers them."""
+    assert su.find_secrets(text) == []
+    assert not hasattr(su, "entropy") and not hasattr(su, "ASSIGNMENT")
+
+
+def test_every_secret_the_sandbox_holds_is_covered():
+    """The launcher puts exactly three secrets in a container: the Claude
+    credential (an OAuth token or API key, both sk-ant-) and two OpenSSH
+    private keys (deploy key, signing key)."""
+    for text in ("sk-ant-" + "oat01-" + "abcdefghijklmnopqrstu",
+                 "sk-ant-" + "api03-" + "Zz9-_" * 6,
+                 "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nb3BlbnNzaC1rZXk="):
+        assert su.find_secrets(text), text
 
 
 # --- wired into issue filing ---------------------------------------------- #

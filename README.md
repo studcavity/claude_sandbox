@@ -216,6 +216,26 @@ renames or removes a CI job (renaming a required job strands open PRs). Also:
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
 
+### Secrets: what is scanned, and GitHub push protection
+A session can only leak what it can see, and the launcher puts exactly three
+secrets in a container: the Claude credential (`sk-ant-...`), the deploy key
+and the session signing key (OpenSSH private keys). `sandbox_untrusted` scans
+for those, plus GitHub token formats, in commit messages and added lines (CI),
+PR text, and `todo/` issue text; it reports the kind, never the value. It does
+not scan for credentials the sandbox never holds (AWS, Slack, generic
+`password = ...`), and there is no allow marker: a test fixture is assembled
+at runtime (`"ghp_" + "x" * 40`).
+
+The launcher does **not rely on** GitHub push protection, but it is the better
+first line where you have it, because it stops a known credential before it is
+in history. Turn it on with
+`gh api -X PATCH repos/OWNER/REPO -f 'security_and_analysis[secret_scanning][status]=enabled' -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'`
+(or Settings -> Code security). Not verified: whether it is available for
+private repos on your plan (as of writing it is free for public repos and a
+paid GitHub Secret Protection feature for private ones), or whether it applies
+to pushes made with a deploy key; test with a throwaway credential before
+relying on it.
+
 ### Provenance: which commits really came from the session
 A deploy key can push to any branch, so a sibling session (or anyone with push
 access) can add commits to a session's branch, even after its PR is open. The
