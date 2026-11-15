@@ -275,6 +275,7 @@ class LocalBackend(Backend):
     """A git repository on the host. Nothing the session writes is ever
     run, or read by git as a repository, on the host: only the bundle FILE it
     produces, through fetch_argv."""
+    kind = "local"
 
     def __init__(self, args, environ=None, home=HOME):
         super().__init__(args)

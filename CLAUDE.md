@@ -24,7 +24,9 @@ module table; module docstrings say what each file is for.
   method crashed every launch once).
 - `sandbox_CLAUDE.md` is a `string.Template` rendered into the sandbox's
   `~/.claude/CLAUDE.md` (write `$$` for a literal dollar sign) and loaded into
-  every session, so keep it small: a test caps its size. Detail needed only
+  every session, so keep it small: a test caps its size (per backend: text
+  that differs goes in `<!-- if github -->` / `<!-- if local -->` ...
+  `<!-- end -->` blocks, see `select_variant`). Detail needed only
   sometimes goes in an on-demand reference like `sandbox_ref_deps.md`.
   If a change makes anything it says stale, fix it in the same branch.
 - GitHub: use `sandbox_ghclient.py` (PyGithub, typed results) for new code;

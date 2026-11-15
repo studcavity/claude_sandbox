@@ -377,9 +377,35 @@ def parse_probe(out):
 
 
 
+VARIANT_RE = re.compile(r"^<!-- if ([a-z]+) -->$")
+VARIANT_END = "<!-- end -->"
+
+
+def select_variant(template, kind):
+    """Keep the `<!-- if KIND -->` ... `<!-- end -->` blocks for this
+    backend's kind and drop the others (markers on lines of their own; no
+    nesting). Text outside any block is shared. ValueError if unbalanced."""
+    out, keep, inside = [], True, None
+    for n, line in enumerate(template.splitlines(keepends=True), 1):
+        m = VARIANT_RE.match(line.strip())
+        if m:
+            if inside:
+                raise ValueError(f"line {n}: nested `<!-- if -->`")
+            inside, keep = m.group(1), m.group(1) == kind
+        elif line.strip() == VARIANT_END:
+            if not inside:
+                raise ValueError(f"line {n}: `<!-- end -->` without `<!-- if -->`")
+            inside, keep = None, True
+        elif keep:
+            out.append(line)
+    if inside:
+        raise ValueError(f"unclosed `<!-- if {inside} -->`")
+    return "".join(out)
+
+
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None, access=None):
+                     disk_note="", session=None, access=None, kind="github"):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
@@ -389,7 +415,7 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
     parse_probe().
     """
     branch = facts["branch"]
-    return string.Template(template).substitute(
+    return string.Template(select_variant(template, kind)).substitute(
         container=container,
         session=session or container,
         repo=repo or "(no repo)",
@@ -834,6 +860,7 @@ class Sandbox:
                               read_only=self.args.read_only,
                               access=self.backend.access_lines(
                                   workdir, parse_probe(probe)["branch"]),
+                              kind=self.backend.kind,
                               deps_note=self.deps_note,
                               session=self.session_id,
                               usb_devices=self.usb_devices, cli=self.cli,

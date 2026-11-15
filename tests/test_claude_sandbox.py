@@ -1360,3 +1360,57 @@ def test_ask_resume_defaults_to_yes(monkeypatch, answer, expect):
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr("builtins.input", lambda *a: answer)
     assert cs.ask_resume(["x"]) is expect
+
+
+# --------------------------------------------------------------------------- #
+# backend variants of the template (spec 08)
+# --------------------------------------------------------------------------- #
+def test_select_variant_keeps_one_kind_and_the_shared_text():
+    t = ("a\n<!-- if github -->\ng\n<!-- end -->\n"
+         "<!-- if local -->\nl\n<!-- end -->\nz\n")
+    assert cs.select_variant(t, "github") == "a\ng\nz\n"
+    assert cs.select_variant(t, "local") == "a\nl\nz\n"
+    assert cs.select_variant("plain\n", "local") == "plain\n"   # custom templates
+
+
+@pytest.mark.parametrize("bad", ["<!-- if a -->\n", "<!-- end -->\n",
+                                 "<!-- if a -->\n<!-- if b -->\n<!-- end -->\n"])
+def test_select_variant_refuses_unbalanced_markers(bad):
+    with pytest.raises(ValueError):
+        cs.select_variant(bad, "a")
+
+
+def test_template_variants_name_only_real_backends(repo_root):
+    import re
+    import sandbox_backend_local
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    kinds = set(re.findall(r"^<!-- if ([a-z]+) -->$", t, re.M))
+    assert kinds == {bg.GitHubBackend.kind, sandbox_backend_local.LocalBackend.kind}
+
+
+def _render_kind(repo_root, kind):
+    return cs.render_claude_md(
+        open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read(),
+        cs.parse_probe("sudo=yes\ntools=git\nbranch=sbx/quirky-hopper/work"),
+        "quirky-hopper", "/home/ubuntu/r", "o/r", False, "- deps",
+        session="quirky-hopper", disk_note="- disk", kind=kind,
+        access=["- ACCESS LINES"])
+
+
+@pytest.mark.parametrize("kind", ["github", "local"])
+def test_each_variant_renders_cleanly_within_budget(repo_root, kind):
+    md = _render_kind(repo_root, kind)
+    assert "<!--" not in md and "$" not in md.replace("$$", "")
+    assert len(md) <= CLAUDE_MD_BUDGET_CHARS
+    assert "sbx/quirky-hopper/" in md and "- ACCESS LINES" in md
+
+
+def test_the_local_variant_promises_nothing_github_does(repo_root):
+    md = _render_kind(repo_root, "local")
+    for gone in ("pushed to GitHub", "deploy key", "opens a PR",
+                 "force-with-lease", "PR description", "api.github.com"):
+        assert gone not in md, gone
+    for there in ("committed", "Only branches under `sbx/quirky-hopper/` come back",
+                  "Nothing from this sandbox may run in a trusted or privileged "
+                  "execution context", "signed"):
+        assert there in " ".join(md.split()), there

@@ -227,6 +227,8 @@ def land_all(args):
 
 # --------------------------------------------------------------------------- #
 class GitHubBackend(Backend):
+    kind = "github"
+
     def __init__(self, args):
         super().__init__(args)
         self.key_id = None

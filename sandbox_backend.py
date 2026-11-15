@@ -33,6 +33,8 @@ class Backend(abc.ABC):
         self.host_warnings: list = []
 
     # -- identity --------------------------------------------------------------
+    kind = ""   # selects the `<!-- if KIND -->` blocks of the CLAUDE.md template
+
     @property
     @abc.abstractmethod
     def label(self) -> str:
