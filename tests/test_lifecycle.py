@@ -96,7 +96,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(cs.Sandbox, "login", "studcavity", raising=False)
     monkeypatch.setattr(cs, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(cs.sandbox_pool, "check", lambda *a: None)
-    monkeypatch.setattr(cs, "ensure_base_image", lambda *a: "img")
+    monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     monkeypatch.setattr(cs.subprocess, "run",
@@ -146,3 +146,130 @@ def test_crash_after_launch_still_lands_and_tears_down(world, monkeypatch):
     methods = [(m, p) for m, p, _ in world.gh.calls]
     assert ("DELETE", "/repos/o/r/keys/5") in methods
     assert ("delete", ()) in FakeContainer.instances[-1].calls
+
+
+def test_statuses_are_posted_for_the_sessions_prs_when_the_repo_requires_them(world, monkeypatch):
+    import sandbox_check
+    posted = []
+    monkeypatch.setattr(sandbox_check, "gate_required", lambda api, repo: True)
+    monkeypatch.setattr(sandbox_check, "post_status_run",
+                        lambda repo, pr, result, **k: (posted.append((repo, pr)),
+                                                       result.update(state="success", description="ok"))[1])
+    assert cs.main(argv(world)) == 0
+    assert posted == [("o/r", 7)]          # the PR the fake GitHub "opened"
+
+
+def test_no_check_status_flag_skips_posting(world, monkeypatch):
+    import sandbox_check
+    monkeypatch.setattr(sandbox_check, "gate_required", lambda api, repo: True)
+    monkeypatch.setattr(sandbox_check, "post_status_run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("posted")))
+    assert cs.main(argv(world, "--no-check-status")) == 0
+
+
+def test_a_status_failure_never_breaks_landing_or_teardown(world, monkeypatch):
+    import sandbox_check
+    monkeypatch.setattr(sandbox_check, "gate_required",
+                        lambda api, repo: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert cs.main(argv(world)) == 0
+    assert ("DELETE", "/repos/o/r/keys/5") in [(m, p) for m, p, _ in world.gh.calls]
+
+
+# --- --timings (plan 1a) ------------------------------------------------------- #
+def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
+    assert cs.main(argv(world, "--timings")) == 0
+    err = capsys.readouterr().err
+    for stage in ("github login + scopes", "container launch + boot", "clone",
+                  "session (interactive)", "land: PRs, statuses, actions", "teardown"):
+        assert stage in err
+    assert "the session prompt appeared after" in err
+
+
+def test_timings_are_off_by_default_and_leave_no_global_behind(world, capsys):
+    import sandbox_timing
+    assert cs.main(argv(world)) == 0
+    assert "timings" not in capsys.readouterr().err
+    assert sandbox_timing.ACTIVE is None
+    cs.main(argv(world, "--timings"))
+    assert sandbox_timing.ACTIVE is None            # uninstalled even after a run
+
+
+def test_timings_json_is_written_and_implies_the_report(world, capsys):
+    import json
+    path = world.tmp / "t.json"
+    assert cs.main(argv(world, "--timings-json", str(path))) == 0
+    data = json.loads(path.read_text())
+    assert data["marks"]["prompt"] >= 0
+    assert "teardown" in [s["name"] for s in data["stages"]]
+    assert "timings" in capsys.readouterr().err
+
+
+def test_the_report_survives_a_crash(world, monkeypatch, capsys):
+    def boom(self, workdir):
+        raise RuntimeError("session blew up")
+    monkeypatch.setattr(cs.Sandbox, "session", boom)
+    assert cs.main(argv(world, "--timings")) == 1
+    assert "teardown" in capsys.readouterr().err
+
+
+def test_an_unwritable_json_path_is_a_warning_not_a_failure(world, capsys):
+    assert cs.main(argv(world, "--timings-json", "/nonexistent-dir/t.json")) == 0
+    assert "couldn't write" in capsys.readouterr().err
+
+
+# --- prefetch wiring (plan 1b) -------------------------------------------------- #
+def test_launch_starts_the_prefetch_and_always_clears_it(world, monkeypatch):
+    import sandbox_github
+    seen = []
+    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
+    cleared = []
+    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    assert cs.main(argv(world)) == 0
+    assert seen and ("login",) in seen[0] and cleared == [1]
+
+
+def test_no_prefetch_flag_starts_nothing_but_still_clears(world, monkeypatch):
+    import sandbox_github
+    seen, cleared = [], []
+    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
+    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    assert cs.main(argv(world, "--no-prefetch")) == 0
+    assert seen == [[]] and cleared == [1]
+
+
+# --- stale-while-revalidate wiring (plan 1c) ------------------------------------ #
+def test_a_stale_image_launches_now_and_spawns_the_refresh_after_the_launch(world, monkeypatch):
+    order = []
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, on_stale=None, **k: (on_stale("base", "x"), "img")[1])
+    monkeypatch.setattr(cs, "spawn_refresh", lambda args: order.append("refresh"))
+    orig = FakeContainer._ok
+
+    def spy(self, what, *a, **k):
+        if what == "launch":
+            order.append("launch")
+        return orig(self, what, *a, **k)
+    monkeypatch.setattr(FakeContainer, "_ok", spy)
+    assert cs.main(argv(world)) == 0
+    assert order == ["launch", "refresh"]       # never competes with the launch it follows
+
+
+def test_nothing_is_spawned_when_the_image_is_fresh(world, monkeypatch):
+    monkeypatch.setattr(cs, "spawn_refresh", lambda args: pytest.fail("spawned"))
+    assert cs.main(argv(world)) == 0
+
+
+def test_hard_max_age_zero_turns_the_feature_off(world, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, **k: seen.update(k) or "img")
+    assert cs.main(argv(world, "--hard-max-age", "0")) == 0
+    assert seen["hard_max_age_days"] is None
+
+
+def test_the_default_hard_cap_is_thirty_days(world, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda *a, **k: seen.update(k) or "img")
+    cs.main(argv(world))
+    assert seen["hard_max_age_days"] == 30.0 and callable(seen["on_stale"])

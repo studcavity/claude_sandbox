@@ -1,5 +1,6 @@
 """Tests for sandbox_check against a real throwaway git repository (local
 only: no network, no GitHub)."""
+import os
 import subprocess
 
 import pytest
@@ -76,3 +77,25 @@ def test_branch_session_parsing():
 def test_option_like_revisions_are_refused():
     with pytest.raises(ValueError):
         sc.check_range("--output=/tmp/x", "HEAD")
+
+
+def test_checker_imports_without_third_party_dependencies():
+    """CI (and, planned, the sandbox itself) must be able to run the checker
+    without the launcher's dependencies: `invoke` arrives via sandbox_github."""
+    import subprocess
+    import sys
+    code = ("import sys; sys.modules['invoke'] = None; sys.path.insert(0, %r); "
+            "import sandbox_check, sandbox_actions; print('ok')"
+            % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    r = subprocess.run([sys.executable, "-I", "-c", code],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
+
+
+def test_session_and_branch_rules_have_one_definition():
+    import sandbox_actions
+    import sandbox_names
+    import sandbox_sessions
+    assert sandbox_sessions.SESSION_RE is sandbox_names.SESSION_RE
+    assert sandbox_actions.SESSION_RE is sandbox_names.SESSION_RE
+    assert sandbox_sessions.BRANCH_ROOT == sandbox_names.BRANCH_ROOT == "sbx"

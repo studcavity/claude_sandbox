@@ -73,11 +73,14 @@ import sandbox_host
 import sandbox_pool
 import sandbox_volumes
 import sandbox_actions
+import sandbox_check
 import sandbox_land
 import sandbox_protect
 import sandbox_sessions
+import sandbox_timing
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
+import sandbox_github
 from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
                             token_scopes, validate_repo, workflow_push_warning)
 from sandbox_images import apply_deps, ensure_base_image, ensure_deps_image
@@ -118,6 +121,79 @@ SECRETS_FILE = f"{HOME}/.sandbox_secrets"  # inside the container
 SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
                  "make", "gdb", "strace", "lsof", "htop", "dig", "nc", "tmux",
                  "curl", "wget")
+
+# The checker, copied into the sandbox so a session can lint its own commits
+# before it exits (plan 4d). Stdlib-only modules; the list is tested against
+# the checker's real import graph.
+SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
+SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
+SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
+                        "sandbox_names", "sandbox_templates", "sandbox_untrusted")
+SESSION_TOOL_WRAPPER = """#!/bin/sh
+# Installed by claude_sandbox. Lints this session's own commits (everything
+# since the remote's default branch) with the same rules CI and the launcher
+# use. With arguments it is just sandbox_check.py.
+set -eu
+tool="${HOME}/.local/share/claude-sandbox/sandbox_check.py"
+if [ "$#" -gt 0 ]; then exec python3 "$tool" "$@"; fi
+base=$(git rev-parse --verify -q origin/HEAD || git rev-parse --verify -q origin/main \
+       || git rev-parse --verify -q origin/master) || {
+  echo "sandbox-check: can't find origin's default branch" >&2; exit 2; }
+exec python3 "$tool" "$base" HEAD --branch "$(git rev-parse --abbrev-ref HEAD)"
+"""
+
+
+def marker_script(name, path=None):
+    """Shell that writes the sandbox marker file (repo scripts test for it to
+    refuse to run anywhere else). `name` is quoted; the path is ours."""
+    path = path or SANDBOX_MARKER
+    return (f"printf '%s\\n' {shlex.quote(name)} > {shlex.quote(path)} && "
+            f"chmod 0644 {shlex.quote(path)}")
+
+
+def git_config_script(git_name=None, git_email=None):
+    """The `git config --global` calls a session needs, as one shell script:
+    https->ssh rewrite (the deploy key is ssh), optional identity, and the
+    linear-history settings. Values are quoted."""
+    cmds = ['git config --global url."git@github.com:".insteadOf "https://github.com/"']
+    if git_name:
+        cmds.append("git config --global user.name " + shlex.quote(git_name))
+    if git_email:
+        cmds.append("git config --global user.email " + shlex.quote(git_email))
+    cmds += ["git config --global pull.rebase true",       # linear history:
+             "git config --global rebase.autoStash true",  # rebase on pull,
+             "git config --global merge.ff only",          # no merge commits,
+             "git config --global push.autoSetupRemote true"]
+    return " && ".join(cmds)
+
+
+def session_tool_archive(files):
+    """The session tools as ONE gzipped tar (paths relative to `/`), so they
+    arrive in a single exec instead of one per file. Deterministic (fixed
+    mtime and owner), names are constants of ours, nothing user-controlled."""
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.USTAR_FORMAT,
+                      compresslevel=6) as tar:
+        for path, data, mode in files:
+            info = tarfile.TarInfo(path.lstrip("/"))
+            info.size, info.mode, info.mtime = len(data), int(mode, 8), 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = "root"
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def session_tool_files(src_dir):
+    """[(path in the container, bytes, mode)] for the in-sandbox checker."""
+    files = []
+    for name in SESSION_TOOL_MODULES:
+        with open(os.path.join(src_dir, name + ".py"), "rb") as f:
+            files.append((f"{SESSION_TOOL_DIR}/{name}.py", f.read(), "0644"))
+    files.append((SESSION_TOOL_BIN, SESSION_TOOL_WRAPPER.encode(), "0755"))
+    return files
+
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash"
@@ -376,6 +452,96 @@ def report_landing(results, session=None):
         results, session, color=sys.stderr.isatty()), file=sys.stderr)
 
 
+def prefetch_plan(args):
+    """The independent GitHub reads a launch makes, to start together (see
+    sandbox_github.start_prefetch). Mirrors what the launch will actually ask
+    for, so nothing is fetched that a flag turns off."""
+    if not args.repo or args.setup_token or args.land_all or args.no_prefetch:
+        return []
+    repo = args.repo
+    specs: list = [("login",)]
+    if not args.no_deps:
+        specs.append(("api", f"/repos/{repo}/contents/{sandbox_deps.DEPS_FILE}", True))
+    if not args.no_usb:
+        specs.append(("api", f"/repos/{repo}/contents/{sandbox_host.HOST_FILE}", True))
+    if not args.read_only:
+        specs += [("scopes",), ("api", f"/repos/{repo}", False),
+                  ("api", f"/repos/{repo}/keys?per_page=100", False)]
+    return specs
+
+
+def refresh_argv(args, python, script):
+    """argv of the detached process that refreshes stale cached images: the
+    same image-relevant options, so it works out the same aliases."""
+    cmd = [python, script, "--refresh-images", "--cli", args.cli,
+           "--max-age", str(args.max_age),
+           "--hard-max-age", str(args.hard_max_age)]
+    if args.repo:
+        cmd += ["--repo", args.repo]
+    if args.image:
+        cmd += ["--image", args.image]
+    if args.disk_size:
+        cmd += ["--disk-size", str(args.disk_size)]
+    if args.no_deps:
+        cmd.append("--no-deps")
+    return cmd
+
+
+def refresh_log_path():
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    return os.path.join(base, "claude_sandbox", "image-refresh.log")
+
+
+def spawn_refresh(args):
+    """Start the refresher detached (its own session, output to a log) so the
+    launcher neither waits for it nor is held open by it."""
+    path = refresh_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "a") as logf:
+            subprocess.Popen(
+                refresh_argv(args, sys.executable, os.path.abspath(__file__)),
+                stdin=subprocess.DEVNULL, stdout=logf, stderr=subprocess.STDOUT,
+                start_new_session=True)
+    except OSError as e:
+        log(f"warning: couldn't start the background image refresh: {e}")
+        return
+    log(f"refreshing stale cached images in the background (log: {path})")
+
+
+def refresh_images(args):
+    """Rebuild whatever cached image is stale for this repo's settings, then
+    exit. Safe to run twice at once: each rebuild re-checks under the lock."""
+    box = Sandbox(args)
+    try:
+        box.load_deps()
+        source = box.choose_image()
+        image = ensure_base_image(args.cli, source, args.max_age, False,
+                                  args.disk_size, hard_max_age_days=args.hard_max_age,
+                                  refresh=True)
+        if box.deps:
+            ensure_deps_image(args.cli, image, box.deps, args.max_age, False,
+                              args.disk_size, hard_max_age_days=args.hard_max_age,
+                              refresh=True)
+    except (GitHubError, subprocess.CalledProcessError, RuntimeError, OSError) as e:
+        log(f"error: image refresh failed: {e}")
+        return 1
+    log("image refresh done")
+    return 0
+
+
+def action_limits(args):
+    """The caps for Sandbox-Action filing, from --max-actions / --max-issues."""
+    return {"actions": args.max_actions, "issues": args.max_issues}
+
+
+def report_statuses(outcomes):
+    """Print the exit summary of `sandbox/check` statuses (to stderr)."""
+    text = sandbox_check.format_status_outcomes(outcomes)
+    if text:
+        print("\n" + text, file=sys.stderr)
+
+
 def report_actions(outcomes):
     """Print the exit summary of follow-up actions (to stderr)."""
     text = sandbox_actions.format_outcomes(outcomes)
@@ -462,19 +628,22 @@ class Sandbox:
     # -- lifecycle ------------------------------------------------------------
     def launch(self, image):
         log(f"launching ephemeral container {self.name} ({image})")
-        self.box.launch(image, ephemeral=True, config=launch_config(self.args),
-                        root_size=self.args.disk_size)
+        with sandbox_timing.stage("incus launch"):
+            self.box.launch(image, ephemeral=True, config=launch_config(self.args),
+                            root_size=self.args.disk_size)
         self.container_up = True
-        self.box.wait_network()
-        self.box.self_check()  # fail fast, before any real work
-        # Lets repo scripts refuse to run anywhere but inside a sandbox.
-        self.box.put_file(SANDBOX_MARKER, self.name.encode() + b"\n", "0644")
-
-        # No-ops when launched from the cached image.
-        self.box.root("command -v git >/dev/null && command -v curl >/dev/null || "
-                      "(apt-get update -qq && "
-                      "apt-get install -y -qq git curl openssh-client)",
-                      capture=True)
+        with sandbox_timing.stage("wait for network"):
+            self.box.wait_network()
+        with sandbox_timing.stage("self-check + marker + package probe"):
+            self.box.self_check()  # fail fast, before any real work
+            # The marker lets repo scripts refuse to run anywhere but inside a
+            # sandbox; the package probe is a no-op from the cached image.
+            # One exec for both.
+            self.box.root(marker_script(self.name) + "; "
+                          "command -v git >/dev/null && command -v curl >/dev/null || "
+                          "(apt-get update -qq && "
+                          "apt-get install -y -qq git curl openssh-client)",
+                          capture=True)
 
         if self.args.tmux:
             self.box.root("command -v tmux >/dev/null || "
@@ -631,17 +800,17 @@ class Sandbox:
 
     def provision_key(self):
         log("generating SSH key inside the container")
-        self.box.user(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                      f"ssh-keygen -q -t ed25519 -N '' "
-                      f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519")
-        pubkey = self.box.user("cat ~/.ssh/id_ed25519.pub",
-                               capture=True).stdout.strip()
+        # One exec makes the key and prints its public half.
+        pubkey = self.box.user(
+            f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            f"ssh-keygen -q -t ed25519 -N '' "
+            f"-C {shlex.quote(self.name)} -f ~/.ssh/id_ed25519 && "
+            "cat ~/.ssh/id_ed25519.pub", capture=True).stdout.strip()
 
         # Pin GitHub host keys from the API (over the host's TLS) instead of
         # trusting ssh-keyscan on first use.
         meta = gh_api("GET", "/meta")
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
-        self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
         title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
                                            self.session_id)
@@ -656,19 +825,9 @@ class Sandbox:
                           {"title": title, "key": pubkey})
         self.key_id = resp["id"]
 
-        self.box.user('git config --global url."git@github.com:".insteadOf '
-                      '"https://github.com/"')
-        if self.args.git_name:
-            self.box.user("git config --global user.name "
-                          + shlex.quote(self.args.git_name))
-        if self.args.git_email:
-            self.box.user("git config --global user.email "
-                          + shlex.quote(self.args.git_email))
-        # Linear history: rebase on pull, refuse non-fast-forward merges.
-        self.box.user("git config --global pull.rebase true && "
-                      "git config --global rebase.autoStash true && "
-                      "git config --global merge.ff only && "
-                      "git config --global push.autoSetupRemote true")
+        # known_hosts (from stdin) and every git setting, in one exec.
+        self.box.user("cat >> ~/.ssh/known_hosts && " + git_config_script(
+            self.args.git_name, self.args.git_email), input=known)
 
     def install_claude(self):
         if self.box.user("command -v claude >/dev/null", check=False).returncode == 0:
@@ -690,6 +849,19 @@ class Sandbox:
                           + shlex.quote(sandbox_sessions.work_branch(
                               self.session_id)))
         return repo_dir
+
+    def install_session_tools(self):
+        """Put the checker in the sandbox so the session can lint its own
+        commits (`sandbox-check`). Only where there are commits to lint."""
+        if not self.args.repo or self.args.read_only:
+            return
+        # The directories are made as the session user (so they stay theirs);
+        # the files then arrive as root in one tar stream: 2 execs, not 9.
+        self.box.user("mkdir -p " + shlex.quote(SESSION_TOOL_DIR) + " "
+                      + shlex.quote(os.path.dirname(SESSION_TOOL_BIN)))
+        self.box.root_argv(["tar", "-xzf", "-", "-C", "/"],
+                           input=session_tool_archive(session_tool_files(
+                               os.path.dirname(os.path.abspath(__file__)))))
 
     def write_claude_md(self, workdir):
         """Render the --claude-md template into ~/.claude/ in the container."""
@@ -745,6 +917,7 @@ class Sandbox:
         cmd[cmd.index("--cwd") + 1] = workdir
 
         log("starting session (exit Claude Code to tear everything down)")
+        sandbox_timing.mark("prompt")
         with sigint_to_child():
             subprocess.run(cmd)
 
@@ -860,18 +1033,27 @@ class Sandbox:
         a = self.args
         if not a.repo or a.read_only or self.key_id is None:
             return
+        landed = []
         if not a.no_pr:
             try:
-                report_landing(sandbox_land.land(
-                    a.repo, self.session_id, setup_paths(self.deps)),
-                    self.session_id)
+                landed = sandbox_land.land(
+                    a.repo, self.session_id, setup_paths(self.deps))
+                report_landing(landed, self.session_id)
             except Exception as e:
                 log(f"warning: couldn't open PRs for {self.session_id}: {e}; "
                     "push state is on GitHub under "
                     f"{sandbox_sessions.branch_prefix(self.session_id)}")
+        if landed and not a.no_check_status:
+            try:
+                report_statuses(sandbox_check.post_session_statuses(
+                    a.repo, landed))
+            except Exception as e:
+                log(f"warning: couldn't post {sandbox_check.STATUS_CONTEXT} "
+                    f"for {self.session_id}: {e}")
         if not a.no_actions:
             try:
-                report_actions(sandbox_actions.run(a.repo, self.session_id))
+                report_actions(sandbox_actions.run(
+                    a.repo, self.session_id, limits=action_limits(a)))
             except Exception as e:
                 log(f"warning: couldn't run follow-up actions for "
                     f"{self.session_id}: {e}")
@@ -931,6 +1113,27 @@ def build_parser():
     p.add_argument("--no-pr", action="store_true",
                    help="don't open PRs for the session's branches when it "
                         "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--no-prefetch", action="store_true",
+                   help="make the launch's GitHub reads one at a time instead "
+                        "of starting the independent ones together")
+    p.add_argument("--timings", action="store_true",
+                   help="print where the launch spent its time (stages, and "
+                        "how many gh / incus calls ran) when it ends")
+    p.add_argument("--timings-json", metavar="PATH",
+                   help="also write the timings as JSON (implies --timings), "
+                        "to compare runs")
+    p.add_argument("--no-check-status", action="store_true",
+                   help=f"don't post the `{sandbox_check.STATUS_CONTEXT}` commit "
+                        "status on the session's PRs (it is only posted where "
+                        "the repo's ruleset requires it)")
+    p.add_argument("--max-actions", type=int, metavar="N",
+                   default=sandbox_actions.MAX_ACTIONS,
+                   help="most Sandbox-Action items to carry out per run "
+                        "(default %(default)s)")
+    p.add_argument("--max-issues", type=int, metavar="N",
+                   default=sandbox_actions.MAX_ISSUES_PER_SESSION,
+                   help="most issues one session may have in a repo, counting "
+                        "ones already filed (default %(default)s)")
     p.add_argument("--no-actions", action="store_true",
                    help="don't act on `Sandbox-Action:` trailers in the "
                         "session's commit messages (e.g. file follow-up issues)")
@@ -975,8 +1178,17 @@ def build_parser():
                    help="rebuild the cached base and deps images even if "
                         "they are fresh")
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
-                   help="rebuild the cached image when older than this "
-                        "(default: 7)")
+                   help="a cached image older than this is stale: it is still "
+                        "used (see --hard-max-age) and refreshed in the "
+                        "background (default: 7)")
+    p.add_argument("--hard-max-age", type=float, default=30, metavar="DAYS",
+                   help="a cached image older than this is rebuilt before "
+                        "launching; between --max-age and this it is used as "
+                        "is while a background process refreshes it "
+                        "(default: 30; 0 = always rebuild at --max-age)")
+    p.add_argument("--refresh-images", action="store_true",
+                   help="internal: rebuild stale cached images and exit (the "
+                        "launcher runs this detached after launching on one)")
     p.add_argument("--model", metavar="MODEL",
                    default=os.environ.get("CLAUDE_SANDBOX_MODEL")
                    or DEFAULT_MODEL,
@@ -1047,7 +1259,8 @@ def normalize_args(args):
         args.repo = resolve_repo(args.repository, args.github_user)
     if args.account_key and args.repo:
         raise ValueError("--account-key and a repository are mutually exclusive")
-    if not (args.repo or args.account_key or args.setup_token):
+    if not (args.repo or args.account_key or args.setup_token
+            or args.refresh_images):
         raise ValueError("a repository is required (or --account-key to use "
                          "an account-wide key, or --setup-token)")
     if args.land_all and not args.repo:
@@ -1068,10 +1281,33 @@ def main(argv=None):
     if not os.path.isfile(args.claude_md):
         p.error(f"--claude-md: no such file: {args.claude_md}")
 
+    timings = None
+    if args.timings or args.timings_json:
+        timings = sandbox_timing.Timings()
+        sandbox_timing.install(timings)
+    try:
+        return _launch(args)
+    finally:
+        sandbox_github.clear_prefetch()
+        if timings is not None:
+            sandbox_timing.install(None)
+            print("\n" + timings.report(), file=sys.stderr)
+            if args.timings_json:
+                try:
+                    sandbox_timing.write_json(timings, args.timings_json)
+                    log(f"timings written to {args.timings_json}")
+                except OSError as e:
+                    log(f"warning: couldn't write {args.timings_json}: {e}")
+
+
+def _launch(args):
+    if args.refresh_images:
+        return refresh_images(args)
     if not args.no_update_check:
-        sandbox_update.check_for_updates(
-            os.path.dirname(os.path.abspath(__file__)), sys.argv,
-            interactive=sys.stdin.isatty(), ask=input)
+        with sandbox_timing.stage("update check (git fetch)"):
+            sandbox_update.check_for_updates(
+                os.path.dirname(os.path.abspath(__file__)), sys.argv,
+                interactive=sys.stdin.isatty(), ask=input)
 
     if args.land_all:
         try:
@@ -1080,73 +1316,98 @@ def main(argv=None):
                 if bad:
                     print(f"error: {bad}", file=sys.stderr)
                     return 1
-            report_landing(sandbox_land.land(args.repo))
+            landed = sandbox_land.land(args.repo)
+            report_landing(landed)
+            if landed and not args.no_check_status:
+                report_statuses(sandbox_check.post_session_statuses(
+                    args.repo, landed))
             if not args.no_actions:
-                report_actions(sandbox_actions.run(args.repo))
+                report_actions(sandbox_actions.run(
+                    args.repo, limits=action_limits(args)))
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
         return 0
 
     box = Sandbox(args)
+    sandbox_github.start_prefetch(prefetch_plan(args))
     if not args.setup_token:
-        try:
-            login = box.login  # fail fast, before building or launching anything
-        except GitHubError as e:
-            print(f"error: {e}", file=sys.stderr)
-            return 1
-        if not args.no_user_check:
-            bad = check_expected_user(login, args.github_user)
-            if bad:
-                print(f"error: {bad}", file=sys.stderr)
+        with sandbox_timing.stage("github login + scopes"):
+            try:
+                login = box.login  # fail fast, before building or launching anything
+            except GitHubError as e:
+                print(f"error: {e}", file=sys.stderr)
                 return 1
-        if not args.read_only:
-            check_workflow_scope()
+            if not args.no_user_check:
+                bad = check_expected_user(login, args.github_user)
+                if bad:
+                    print(f"error: {bad}", file=sys.stderr)
+                    return 1
+            if not args.read_only:
+                check_workflow_scope()
 
     def on_signal(signum, _frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
 
-    pool_err = sandbox_pool.check(args.cli, args.grow_pool)
+    with sandbox_timing.stage("incus pool check"):
+        pool_err = sandbox_pool.check(args.cli, args.grow_pool)
     if pool_err:
         print(f"error: {pool_err}", file=sys.stderr)
         return 1
 
     try:
         if not args.setup_token:
-            box.resolve_usb()  # prompt now, not after a long image build
-            box.load_deps()  # before the image: it may pick the base OS
-        if not args.setup_token:
-            box.preflight_github()
+            with sandbox_timing.stage("usb requests + deps file (github)"):
+                box.resolve_usb()  # prompt now, not after a long image build
+                box.load_deps()  # before the image: it may pick the base OS
+            with sandbox_timing.stage("preflight (protection, stale keys)"):
+                box.preflight_github()
         source = box.choose_image()
         image = source
-        if not args.no_cache:
-            image = ensure_base_image(args.cli, source,
-                                      args.max_age, args.rebuild,
-                                      args.disk_size)
-        if box.deps and not args.no_cache:
-            baked = ensure_deps_image(args.cli, image, box.deps,
-                                      args.max_age, args.rebuild,
-                                      args.disk_size)
-            if baked:
-                image, box.deps_baked = baked, True
-                box.deps_note += ("\n(Preinstalled in a cached image; edits "
-                                  "to the file apply on the next launch.)")
-        box.launch(image)
+        stale: list = []
+        swr = dict(hard_max_age_days=args.hard_max_age or None,
+                   on_stale=lambda kind, alias: stale.append((kind, alias)))
+        with sandbox_timing.stage("images (cache lookup / build)"):
+            if not args.no_cache:
+                image = ensure_base_image(args.cli, source,
+                                          args.max_age, args.rebuild,
+                                          args.disk_size, **swr)
+            if box.deps and not args.no_cache:
+                baked = ensure_deps_image(args.cli, image, box.deps,
+                                          args.max_age, args.rebuild,
+                                          args.disk_size, **swr)
+                if baked:
+                    image, box.deps_baked = baked, True
+                    box.deps_note += ("\n(Preinstalled in a cached image; edits "
+                                      "to the file apply on the next launch.)")
+        with sandbox_timing.stage("container launch + boot"):
+            box.launch(image)
+        if stale and not args.setup_token:   # after the launch: never competes with it
+            spawn_refresh(args)
         if args.setup_token:
             box.install_claude()
             return box.setup_token()
-        box.attach_volumes()  # before the clone, so it lands on its own volume
-        box.install_deps()  # before any credential is in the container
-        box.setup_nesting()
-        box.attach_usb()
-        box.provision_key()
-        box.install_claude()
-        workdir = box.clone()
-        box.run_setup(workdir)  # before Claude credentials reach the container
-        box.write_claude_md(workdir)
-        box.session(workdir)
+        with sandbox_timing.stage("volumes"):
+            box.attach_volumes()  # before the clone, so it lands on its own volume
+        with sandbox_timing.stage("install deps"):
+            box.install_deps()  # before any credential is in the container
+            box.setup_nesting()
+            box.attach_usb()
+        with sandbox_timing.stage("ssh key + deploy key + git config"):
+            box.provision_key()
+        with sandbox_timing.stage("claude install check"):
+            box.install_claude()
+        with sandbox_timing.stage("clone"):
+            workdir = box.clone()
+        with sandbox_timing.stage("repo setup scripts"):
+            box.run_setup(workdir)  # before Claude credentials reach the container
+        with sandbox_timing.stage("session tools + CLAUDE.md"):
+            box.install_session_tools()
+            box.write_claude_md(workdir)
+        with sandbox_timing.stage("session (interactive)"):
+            box.session(workdir)
     except KeyboardInterrupt:
         log("interrupted")
     except (subprocess.CalledProcessError, RuntimeError) as e:
@@ -1157,8 +1418,10 @@ def main(argv=None):
                   else err, file=sys.stderr)
         return 1
     finally:
-        box.land()  # host-side, uses the user's gh; before the key is revoked
-        box.teardown()
+        with sandbox_timing.stage("land: PRs, statuses, actions"):
+            box.land()  # host-side, uses the user's gh; before the key is revoked
+        with sandbox_timing.stage("teardown"):
+            box.teardown()
     return 0
 
 

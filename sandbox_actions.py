@@ -51,8 +51,19 @@ Types today
 
 Convention: an `issue` action's full description lives in the same commit at
 `todo/<id>.md`, written so a fresh agent with no context could pick the item
-up (CI checks the file exists). It may later become the issue body; today the
-launcher doesn't read it.
+up (CI checks the file exists). When filing, the launcher reads that file AT
+THAT COMMIT (so a later deletion doesn't matter), sanitises and bounds it
+(MAX_BRIEF), refuses to file if it looks like it holds a credential, appends it
+to the issue body with a permalink, and says so if it is missing.
+
+Issues are created with the labels `sandbox`, `follow-up` and
+`session:<session>` (created on first use; best effort). The issue is also the
+idempotency ledger: its body ends with `<!-- claude-sandbox:action sha=.. id=..
+-->`, and before filing the launcher looks for an existing `sandbox`-labelled
+issue with that marker on its LAST line, so a crash between creating the issue
+and commenting on the commit can't duplicate it. HTML comments in session text
+are defanged so a session can't forge a marker. The commit comment remains a
+second ledger and is healed when the issue already exists.
 
 Trust: everything here is text written by an AI session. It is bounded
 (MAX_*), stripped of control characters and live @-mentions, and labelled
@@ -64,17 +75,26 @@ import json
 import re
 import urllib.parse
 
+import sandbox_labels
+import sandbox_names
+import sandbox_templates
+import sandbox_untrusted
+
 TRAILER = "Sandbox-Action"
 SESSION_TRAILER = "Sandbox-Session"
 ID_MAX = 100          # was 40; ids now carry date + session + random suffix
 ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,%d}$" % ID_MAX)
 REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,%d})$" % ID_MAX)
-SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")  # = sandbox_sessions
-MAX_ACTIONS = 25      # executed per run, across all commits
+SESSION_RE = sandbox_names.SESSION_RE
+MAX_ACTIONS = 25      # executed per run, across all commits (--max-actions)
+MAX_ISSUES_PER_SESSION = 10   # issues one session may have, existing + new (--max-issues)
 MAX_LINE = 8000       # a trailer line longer than this is ignored
 MAX_TITLE = 120
 MAX_BODY = 4000
 MARKER = "claude-sandbox:action"
+MAX_BRIEF = 6000          # chars of todo/<id>.md embedded in an issue
+MAX_BRIEF_BYTES = 40000   # bytes read from it before decoding
+MAX_LEDGER_PAGES = 5      # x100 issues scanned for an existing marker
 
 # sha: full commit sha; key: (type, v); data: the whole decoded object.
 Action = collections.namedtuple("Action", "sha id type v data")
@@ -220,10 +240,7 @@ def parse_commits(commits):
 def clean_block(text, limit):
     """Untrusted multi-line text made safe to paste into GitHub: no control
     characters (newlines kept), no live @-mentions, bounded."""
-    t = "".join(c if c.isprintable() or c == "\n" else " "
-                for c in text.replace("\r", ""))
-    t = t.replace("@", "@​").strip()
-    return t if len(t) <= limit else t[:limit - 1] + "…"
+    return sandbox_untrusted.block(text, limit)
 
 
 def clean_line(text, limit):
@@ -234,10 +251,99 @@ def clean_line(text, limit):
 # A handler validates its own payload and raises Rejected (a no-op) when it
 # doesn't conform. ctx is a Context; all I/O goes through ctx.api.
 class Rejected(ValueError):
-    pass
+    """The payload doesn't conform: a silent no-op, by the spec."""
 
 
-Context = collections.namedtuple("Context", "repo session branches api")
+class PolicyRejected(Rejected):
+    """The payload conforms but we refuse to publish it (e.g. it appears to
+    contain a credential). Unlike a malformed payload this is reported in the
+    exit summary, so the user knows an item was held back and why. The reason
+    names the kind of problem, never the offending text."""
+
+
+# `cache` is per-run scratch (labels ensured, issues already filed); execute()
+# supplies it, so callers can keep building Context(repo, session, branches, api).
+Context = collections.namedtuple("Context", "repo session branches api cache limits",
+                                 defaults=(None, None))
+
+
+def limit(ctx, name):
+    """A configured cap (`actions` per run, `issues` per session)."""
+    default = {"actions": MAX_ACTIONS, "issues": MAX_ISSUES_PER_SESSION}[name]
+    return int((ctx.limits or {}).get(name, default))
+
+
+class Reused(str):
+    """A handler's detail when the item already existed (e.g. its issue was
+    found by marker), so it is reported as "exists", not "done"."""
+
+
+_LEDGER_RE = re.compile(r"<!-- " + MARKER + r" sha=([0-9a-f]{7,40}) id=("
+                        r"[A-Za-z0-9._-]{1,%d}) -->\s*$" % ID_MAX)
+_ID_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]+?-\d{8}-(.+)-[a-z0-9]{4}$")
+
+
+def _defang(text):
+    """No HTML comments in session text: the marker below is how we recognise
+    our own issues, so session text must not be able to forge one."""
+    return text.replace("<!--", "<!- -")
+
+
+def known_issues(ctx):
+    """{(sha, id): url} of issues this tool already filed in the repo, found by
+    the marker on the LAST line of the body (the issue is the ledger, so a crash
+    between creating it and commenting on the commit can't duplicate it)."""
+    if "issues" in ctx.cache:
+        return ctx.cache["issues"]
+    found: dict = {}
+    counts: dict = {}
+    for page in range(1, MAX_LEDGER_PAGES + 1):
+        items = ctx.api("GET", f"/repos/{ctx.repo}/issues?labels=sandbox"
+                        f"&state=all&per_page=100&page={page}") or []
+        for it in items:
+            if "pull_request" in it:
+                continue
+            m = _LEDGER_RE.search(it.get("body") or "")
+            if m:
+                if (m.group(1), m.group(2)) not in found:
+                    found[(m.group(1), m.group(2))] = it["html_url"]
+                    for lab in it.get("labels") or []:
+                        name = lab.get("name", "") if isinstance(lab, dict) else lab
+                        if name.startswith("session:"):
+                            counts[name[8:]] = counts.get(name[8:], 0) + 1
+        if len(items) < 100:
+            break
+    ctx.cache["issues"] = found
+    ctx.cache["counts"] = counts
+    return found
+
+
+def session_of(ctx, a):
+    s = ctx.session if ctx.session != "all" else None
+    if not s:
+        m = _ID_SESSION_RE.match(a.id)
+        s = m.group(1) if m else None
+    return s if s and sandbox_names.SESSION_RE.match(s) else None
+
+
+def ensure_labels(ctx, names):
+    """Create missing labels once per run (best effort: see sandbox_labels)."""
+    sandbox_labels.ensure(ctx.api, ctx.repo, names,
+                          ctx.cache.setdefault("labels", set()))
+
+
+def fetch_brief(ctx, a):
+    """The commit's todo/<id>.md as text (read at that commit, so a later
+    deletion doesn't matter), or None if it isn't there."""
+    path = urllib.parse.quote(todo_path(a.id))
+    try:
+        raw = ctx.api("GET", f"/repos/{ctx.repo}/contents/{path}?ref={a.sha}",
+                      raw=True)
+    except RuntimeError as e:
+        if getattr(e, "code", None) == 404:
+            return None
+        raise
+    return raw[:MAX_BRIEF_BYTES].decode("utf-8", errors="replace") if raw else None
 
 
 def _issue(ctx, a):
@@ -246,15 +352,46 @@ def _issue(ctx, a):
         raise Rejected("issue needs a title")
     if not isinstance(body, str):
         raise Rejected("issue body must be a string")
-    text = (
-        f"Follow-up requested by commit {a.sha} (session `{ctx.session}`), "
-        f"item `{a.id}`.\n\n"
-        f"{clean_block(body, MAX_BODY)}\n\n---\n"
-        "Filed by claude_sandbox from a `Sandbox-Action` trailer. The text "
-        "above was written by an AI session and is untrusted.\n"
-        f"<!-- {MARKER} sha={a.sha} id={a.id} -->")
+    hits = sandbox_untrusted.find_secrets(f"{title}\n{body}")
+    if hits:
+        raise PolicyRejected("not filed: the text appears to contain "
+                             + ", ".join(hits))
+    existing = known_issues(ctx).get((a.sha, a.id))
+    if existing:
+        return Reused(existing)
+    session = session_of(ctx, a)
+    cap = limit(ctx, "issues")
+    have = ctx.cache["counts"].get(session, 0) if session else 0
+    if session and have >= cap:
+        raise PolicyRejected(
+            f"not filed: session {session} already has {have} issues here "
+            f"(cap {cap}; the launcher's --max-issues raises it)")
+    brief = fetch_brief(ctx, a)
+    hits = sandbox_untrusted.find_secrets(brief or "")
+    if hits:
+        raise PolicyRejected(f"not filed: {todo_path(a.id)} appears to contain "
+                             + ", ".join(hits))
+    if brief is None:
+        brief_text = (f"\n\n_No `{todo_path(a.id)}` brief was found at that "
+                      "commit._")
+    else:
+        brief_text = (f"\n\n### Brief (`{todo_path(a.id)}` at `{a.sha[:7]}`)\n\n"
+                      f"{_defang(clean_block(brief, MAX_BRIEF))}\n\n"
+                      f"[Full file at that commit](https://github.com/{ctx.repo}"
+                      f"/blob/{a.sha}/{todo_path(a.id)})")
+    labels = [sandbox_labels.SANDBOX, sandbox_labels.FOLLOW_UP] + (
+        [sandbox_labels.session_label(session)] if session else [])
+    ensure_labels(ctx, labels)
+    text = (sandbox_templates.render(
+        "issue.md", commit=a.sha, session=session or ctx.session, item=a.id,
+        body=_defang(clean_block(body, MAX_BODY)), brief=brief_text)
+        + f"\n<!-- {MARKER} sha={a.sha} id={a.id} -->")
     issue = ctx.api("POST", f"/repos/{ctx.repo}/issues",
-                    {"title": clean_line(title, MAX_TITLE), "body": text})
+                    {"title": clean_line(title, MAX_TITLE), "body": text,
+                     "labels": labels})
+    ctx.cache["issues"][(a.sha, a.id)] = issue["html_url"]
+    if session:
+        ctx.cache["counts"][session] = have + 1
     return issue["html_url"]
 
 
@@ -283,10 +420,10 @@ def _resolved_refs(actions):
     return out
 
 
-def plan(actions):
+def plan(actions, cap=None):
     """-> (to_run, superseded): executable, understood, unaddressed actions
-    (capped at MAX_ACTIONS) and those skipped because a later commit
-    resolved them."""
+    (capped at `cap`, default MAX_ACTIONS) and those skipped because a later
+    commit resolved them."""
     resolved = _resolved_refs(actions)
     run: list = []
     skipped: list = []
@@ -294,7 +431,7 @@ def plan(actions):
         if (a.type, a.v) not in HANDLERS:
             continue
         (skipped if (a.sha, a.id) in resolved else run).append(a)
-    return run[:MAX_ACTIONS], skipped
+    return run[:MAX_ACTIONS if cap is None else cap], skipped
 
 
 # --- idempotency ledger: a marker comment on the commit -------------------- #
@@ -319,7 +456,9 @@ def mark_done(api, repo, a, detail):
 
 def execute(ctx, actions):
     """Plan and carry out -> [Outcome]. One failure never stops the rest."""
-    to_run, skipped = plan(actions)
+    if ctx.cache is None:
+        ctx = ctx._replace(cache={})
+    to_run, skipped = plan(actions, limit(ctx, "actions"))
     out = [Outcome(a.sha, a.id, a.type, "superseded", "") for a in skipped]
     done = {}
     for a in to_run:
@@ -331,7 +470,11 @@ def execute(ctx, actions):
                 continue
             detail = HANDLERS[(a.type, a.v)](ctx, a)
             mark_done(ctx.api, ctx.repo, a, detail)
-            out.append(Outcome(a.sha, a.id, a.type, "done", detail))
+            out.append(Outcome(a.sha, a.id, a.type,
+                               "exists" if isinstance(detail, Reused) else "done",
+                               detail))
+        except PolicyRejected as e:
+            out.append(Outcome(a.sha, a.id, a.type, "rejected", str(e)))
         except Rejected:
             continue  # nonconforming payload: a no-op by spec
         except Exception as e:
@@ -357,7 +500,7 @@ def session_commits(api, repo, default, branches):
     return out
 
 
-def run(repo, session=None, api=None):
+def run(repo, session=None, api=None, limits=None):
     """Find and execute the actions in a session's (or every session's, if
     None) unmerged commits -> [Outcome]."""
     import sandbox_github
@@ -366,7 +509,8 @@ def run(repo, session=None, api=None):
     default = api("GET", f"/repos/{repo}")["default_branch"]
     branches = sandbox_land.session_branches(repo, session, api)
     actions = parse_commits(session_commits(api, repo, default, branches))
-    return execute(Context(repo, session or "all", branches, api), actions)
+    return execute(Context(repo, session or "all", branches, api, None, limits),
+                   actions)
 
 
 def format_outcomes(outcomes):
@@ -374,7 +518,8 @@ def format_outcomes(outcomes):
     if not outcomes:
         return ""
     label = {"done": "filed", "exists": "already done",
-             "superseded": "resolved by a later commit", "failed": "FAILED"}
+             "superseded": "resolved by a later commit", "failed": "FAILED",
+             "rejected": "REJECTED (policy)"}
     lines = ["follow-up actions"]
     for o in outcomes:
         lines.append(f"  {label[o.status]:<26} {o.type} {o.sha[:7]}:{o.id}"

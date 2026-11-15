@@ -17,6 +17,20 @@ MIN_FREE = 4 * GiB   # below this a build or session will very likely fail
 WARN_FREE = 12 * GiB
 
 
+def _info(info_text):
+    """The pool's facts as a dict. Real `incus storage info` nests everything
+    under `info:` (captured 2026-11-15, see tests); a flat mapping is accepted
+    too. Anything else is {}."""
+    try:
+        data = yaml.safe_load(info_text) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    inner = data.get("info")
+    return inner if isinstance(inner, dict) else data
+
+
 def parse_space(info_text):
     """(used, total) bytes from `storage info --bytes` output, else None.
 
@@ -24,10 +38,28 @@ def parse_space(info_text):
     keys; then there is nothing to check.
     """
     try:
-        info = yaml.safe_load(info_text) or {}
+        info = _info(info_text)
         return int(info["space used"]), int(info["total space"])
-    except (KeyError, TypeError, ValueError, AttributeError, yaml.YAMLError):
+    except (KeyError, TypeError, ValueError, AttributeError):
         return None
+
+
+def parse_driver(info_text):
+    """The storage driver name (`dir`, `zfs`, `btrfs`, ...), or None."""
+    driver = _info(info_text).get("driver")
+    return driver if isinstance(driver, str) else None
+
+
+def driver_advice(pool, driver):
+    """One advisory line when the pool's driver makes every launch a full copy
+    of the image, else None. `dir` has no copy-on-write: each ephemeral launch
+    copies the whole image rootfs (the baked Claude binary alone is ~370 MB)."""
+    if driver != "dir":
+        return None
+    return (f"storage pool {pool!r} uses the `dir` driver, which copies the "
+            "whole image for every launch (no copy-on-write); a zfs or btrfs "
+            "pool makes launches near-instant. Advice only, nothing changed: "
+            "see `incus storage create --help`")
 
 
 def assess(space, min_free=MIN_FREE, warn_free=WARN_FREE):
@@ -62,6 +94,9 @@ def check(cli, grow_to=None):
     except (subprocess.CalledProcessError, OSError) as e:
         log(f"warning: couldn't check the storage pool ({e})")
         return None
+    advice = driver_advice(pool, parse_driver(info))
+    if advice:
+        log(f"note: {advice}")
     space = parse_space(info)
     state = assess(space)
     if state == "ok":

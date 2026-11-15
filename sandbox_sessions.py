@@ -23,10 +23,9 @@ from typing import Optional
 import urllib.parse
 
 from sandbox_github import GitHubError, gh_api
+# Defined in sandbox_names (stdlib-only, shared with sandbox_check); re-exported.
+from sandbox_names import BRANCH_ROOT, SESSION_RE  # noqa: F401
 
-# Same alphabet as an incus instance name; <=40 so branch names stay short.
-SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")
-BRANCH_ROOT = "sbx"
 KEY_RE = re.compile(r"^ephemeral ([A-Za-z0-9.-]{1,63}):([A-Za-z0-9-]{1,40})$")
 
 

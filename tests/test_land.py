@@ -40,6 +40,7 @@ class Api:
     def __init__(self, compares, pulls=(), branches=("sbx/s/work",)):
         self.compares, self.pulls, self.posted = compares, list(pulls), []
         self.branches = list(branches)
+        self.label_calls, self.fail_labels = [], False
 
     def __call__(self, method, path, body=None, raw=False):
         if path == "/repos/o/r":
@@ -51,9 +52,15 @@ class Api:
             return self.compares.get((base, head), cmp_())
         if "/pulls?" in path:
             return self.pulls
+        if method == "POST" and path.endswith("/labels"):
+            if self.fail_labels:
+                raise RuntimeError("403")
+            self.label_calls.append((path, body))
+            return {}
         if method == "POST":
             self.posted.append(body)
-            return {"html_url": f"https://github.com/o/r/pull/{len(self.posted)}"}
+            n = len(self.posted)
+            return {"html_url": f"https://github.com/o/r/pull/{n}", "number": n}
         raise AssertionError(path)
 
 
@@ -168,3 +175,46 @@ def test_format_landing_summary():
 def test_format_landing_with_nothing_pushed():
     assert "no session branches were pushed" in sl.format_landing([])
     assert "bottom-up" not in sl.format_landing([])
+
+
+# -- labels (plan 4b) ---------------------------------------------------------- #
+def test_opened_prs_are_labelled_sandbox_and_with_their_session(monkeypatch):
+    api = Api({})
+    monkeypatch.setattr(sl, "gh_api", api)
+    sl.land("o/r", "s")
+    created = [b["name"] for p, b in api.label_calls if p == "/repos/o/r/labels"]
+    assert created == ["sandbox", "session:s"]
+    (path, body), = [c for c in api.label_calls if "/issues/" in c[0]]
+    assert path == "/repos/o/r/issues/1/labels"
+    assert body == {"labels": ["sandbox", "session:s"]}
+
+
+def test_a_refused_label_never_breaks_landing(monkeypatch):
+    api = Api({})
+    api.fail_labels = True
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s")
+    assert r.outcome == "opened" and len(api.posted) == 1
+
+
+@pytest.mark.parametrize("compare,pulls", [
+    (cmp_(ahead=0), []), (cmp_(files=[".github/workflows/x.yml"]), []),
+    (cmp_(), [{"html_url": "u", "base": {"ref": "main"}}]),
+])
+def test_only_prs_we_open_are_labelled(monkeypatch, compare, pulls):
+    api = Api(main_cmp(compare), pulls)
+    monkeypatch.setattr(sl, "gh_api", api)
+    sl.land("o/r", "s")
+    assert api.label_calls == []
+
+
+def test_pr_number_falls_back_to_the_url_and_unlabelable_prs_are_skipped(monkeypatch):
+    api = Api({})
+    monkeypatch.setattr(sl, "gh_api", api)
+    sl.label_pr("o/r", {"html_url": "https://github.com/o/r/pull/42"}, "s")
+    assert any(p == "/repos/o/r/issues/42/labels" for p, _ in api.label_calls)
+    api.label_calls.clear()
+    sl.label_pr("o/r", {"html_url": "nonsense"}, "s")
+    assert api.label_calls == []
+    sl.label_pr("o/r", {"number": 5}, "bad session!")      # only the generic label
+    assert api.label_calls[-1][1] == {"labels": ["sandbox"]}

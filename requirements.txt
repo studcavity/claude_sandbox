@@ -1,2 +1,3 @@
 PyYAML>=6
 invoke>=2
+PyGithub>=2.1

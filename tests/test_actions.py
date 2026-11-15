@@ -119,9 +119,15 @@ def test_clean_block_neutralises_mentions_and_control_chars():
 
 
 class Api:
-    def __init__(self, comments=None, fail_issue=()):
+    """A small model of the GitHub calls sandbox_actions makes. Created issues
+    are remembered and served back by the listing, so the issue-as-ledger path
+    is exercised for real; `todos` maps id -> brief text for the contents API."""
+    def __init__(self, comments=None, fail_issue=(), issues=None, todos=None):
         self.comments = comments or {}
         self.fail_issue = set(fail_issue)
+        self.issues = list(issues or [])
+        self.todos = dict(todos or {})
+        self.labels_created = []
         self.calls, self.n = [], 0
 
     def __call__(self, method, path, body=None, raw=False):
@@ -129,11 +135,26 @@ class Api:
         if method == "GET" and path.endswith("/comments?per_page=100"):
             sha = path.split("/commits/")[1].split("/")[0]
             return [{"body": b} for b in self.comments.get(sha, [])]
+        if method == "GET" and path.startswith("/repos/o/r/issues?"):
+            page = int(path.rsplit("page=", 1)[1])
+            return self.issues[(page - 1) * 100:page * 100]
+        if method == "GET" and "/contents/todo/" in path:
+            from sandbox_github import GitHubError
+            name = path.split("/contents/todo/")[1].split(".md?")[0]
+            if name not in self.todos:
+                raise GitHubError("not found", 404)
+            return self.todos[name].encode()
+        if method == "POST" and path == "/repos/o/r/labels":
+            self.labels_created.append(body["name"])
+            return {}
         if path == "/repos/o/r/issues":
             if body["title"] in self.fail_issue:
                 raise RuntimeError("boom")
             self.n += 1
-            return {"html_url": f"https://github.com/o/r/issues/{self.n}"}
+            url = f"https://github.com/o/r/issues/{self.n}"
+            self.issues.append({"html_url": url, "body": body["body"],
+                                "labels": [{"name": l} for l in body["labels"]]})
+            return {"html_url": url}
         if method == "POST" and path.endswith("/comments"):
             return {}
         raise AssertionError(path)

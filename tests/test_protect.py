@@ -362,5 +362,8 @@ def test_this_repos_own_rulesets_are_valid_and_their_checks_exist(repo_root):
     for path in glob.glob(os.path.join(repo_root, "rulesets", "*.json")):
         rs = sp.validate_repo_ruleset(sp.load_ruleset(path))
         required.update(sp.required_checks(rs))
+    import sandbox_check
     assert "commit-metadata" in required
-    assert required <= jobs
+    # sandbox/check is a commit STATUS the checker posts, not a CI job
+    assert sandbox_check.STATUS_CONTEXT in required
+    assert required - {sandbox_check.STATUS_CONTEXT} <= jobs

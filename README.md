@@ -52,14 +52,22 @@ On every launch the program:
 | `sandbox_update.py` | offer to `git pull` when this checkout is behind |
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |
 | `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
-| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation |
+| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
+| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments, labels); auth is still your `gh` login |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `sandbox_pool.py` | free-space check (and opt-in growth) of the incus storage pool |
 | `sandbox_sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
 | `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
-| `sandbox_land.py` | host-side: open PRs for a session's branches, hold privileged ones |
+| `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
+| `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--post-status` (the `sandbox/check` merge gate, `--override` to break glass), `--file-issues` (post-merge filer) |
+| `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
+| `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
+| `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
+| `sandbox_templates.py` | validated `templates/pr.md` and `templates/issue.md` |
+| `sandbox_names.py` | stdlib-only: session-name and branch-root rules shared with the checker |
+| `sandbox_timing.py` | `--timings`: stages and call counts |
 | `sandbox_util.py` | logging, subprocess and signal helpers |
 | `sandbox_CLAUDE.md` | template for `~/.claude/CLAUDE.md` inside the sandbox |
 
@@ -166,7 +174,13 @@ see `.github/workflows/commit-metadata.yml`); apply it to a repo that already
 has `protect-default-branch` with
 `gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/require-commit-metadata.json`
 or just launch against it and answer yes. A test keeps every required check
-name equal to a real CI job name.
+name equal to a real CI job name, except `sandbox/check`, which is a commit
+*status* posted by `sandbox_check.py --post-status OWNER/REPO --pr N` (no
+workflow needed). `rulesets/require-sandbox-check.json` requires it.
+**Don't apply that ruleset yet**: nothing posts the status automatically until
+the launcher does it at session exit (plan 5d), so every PR would sit blocked
+until someone ran the command by hand. The break-glass levels (re-run,
+`--override "reason"`, suspend the ruleset) are in `docs/plans/README.md`.
 
 Each
 session's CLAUDE.md states this repo's protection status and which checks are
