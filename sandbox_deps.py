@@ -42,6 +42,10 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 # Variables that change how bash/the loader behave rather than configure a tool.
 # Repo-relative script path: no leading '/' or '-', no '..' or '.' segments.
+# Base image a repo may ask for: Ubuntu only (the base recipe is apt-based and
+# tested on Ubuntu), from the two official Ubuntu sources. No other remotes, so
+# a repo can't point the host at a private or local image.
+IMAGE_RE = re.compile(r"^(images:ubuntu/|ubuntu:)[a-z0-9][a-z0-9.-]{0,31}$")
 SETUP_PATH_RE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*(/[A-Za-z0-9_+][A-Za-z0-9._+-]*)*$")
 SETUP_TIMEOUT_DEFAULT, SETUP_TIMEOUT_MAX, MAX_SETUP = 1800, 3600, 8
 ENV_DENY = re.compile(r"^(LD_.*|PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS4|"
@@ -136,8 +140,8 @@ def parse(raw):
     if doc is None:
         doc = {}
     _check_keys(doc, DEPS_FILE, (),
-                ("apt", "scripts", "binaries", "setup", "last_generated",
-                 "platform"))
+                ("image", "apt", "scripts", "binaries", "setup",
+                 "last_generated", "platform"))
 
     last_generated = doc.get("last_generated")
     if isinstance(last_generated, (datetime.datetime, datetime.date)):
@@ -154,6 +158,13 @@ def parse(raw):
                    for c in platform)):
         raise DepsError(f"platform: expected text of at most {MAX_PLATFORM} "
                         "characters with no control characters")
+
+    image = doc.get("image")
+    if image is not None and (not isinstance(image, str)
+                              or not IMAGE_RE.match(image)):
+        raise DepsError(f"image: expected images:ubuntu/<release> or "
+                        f"ubuntu:<release> (e.g. images:ubuntu/24.04), "
+                        f"got {image!r}")
 
     apt = []
     for i, pkg in enumerate(_section(doc, "apt")):
@@ -203,8 +214,8 @@ def parse(raw):
         raise DepsError(f"setup: at most {MAX_SETUP} entries")
     if len({s["name"] for s in setup}) != len(setup):
         raise DepsError("setup: duplicate names")
-    return {"apt": apt, "scripts": scripts, "binaries": binaries,
-            "setup": setup,
+    return {"image": image, "apt": apt, "scripts": scripts,
+            "binaries": binaries, "setup": setup,
             "last_generated": last_generated, "platform": platform}
 
 
@@ -213,8 +224,8 @@ def cache_key(deps):
     baked into a cached image.
 
     Only the install sections feed the key (comments, ordering of keys, the
-    metadata fields and `setup`, which runs per launch and is never baked,
-    don't). Scripts without a sha256 are whatever the URL
+    metadata fields, `setup` (runs per launch, never baked) and `image` don't;
+    the image is already part of the deps image's alias via the base image). Scripts without a sha256 are whatever the URL
     serves at build time, and a cached image would freeze that with no way to
     notice, so such deps are never cached.
     """
@@ -231,6 +242,8 @@ def cache_key(deps):
 def summary(deps):
     """One line per non-empty section, for logs and the sandbox CLAUDE.md."""
     out = []
+    if deps.get("image"):
+        out.append(f"image: `{deps['image']}` (the base OS image to launch)")
     if deps["apt"]:
         out.append("apt: " + ", ".join(f"`{p}`" for p in deps["apt"]))
     if deps["scripts"]:

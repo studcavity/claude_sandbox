@@ -45,6 +45,7 @@ Format (all sections optional; unknown keys make the whole file invalid and
 abort the launch):
 
 ```yaml
+image: images:ubuntu/24.04 # optional: this repo's base OS (default: images:ubuntu/26.04)
 apt:                       # Debian/Ubuntu package names, optional =version
   - build-essential
   - libssl-dev=3.0.13-0ubuntu3
@@ -71,6 +72,13 @@ setup:                     # repo scripts run in the container every launch (see
 ```
 
 Rules:
+- `image:` picks the OS the sandbox boots from, for repos that need a specific
+  Ubuntu release. Only `images:ubuntu/<release>` or `ubuntu:<release>` are
+  accepted (e.g. `images:ubuntu/24.04`); anything else makes the file invalid.
+  The host's `--image` flag overrides it, and `--no-deps` ignores it. Changing
+  it means a one-time base image build on the next launch (cached per image),
+  and package names and versions follow that release. Check this sandbox's OS
+  with `cat /etc/os-release` before assuming one.
 - URLs must be `https://` (redirects too) with no credentials. Order of
   installation: apt, binaries, scripts.
 - `sha256` is of the downloaded file itself (the archive, if `archive_path`

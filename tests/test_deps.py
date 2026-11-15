@@ -6,6 +6,7 @@ import tarfile
 import zipfile
 
 import pytest
+import yaml
 
 import sandbox_deps as d
 from sandbox_deps import DepsError
@@ -234,3 +235,32 @@ def test_summary_mentions_setup():
     parsed = d.parse("setup:\n  - {name: a, path: tools/setup.sh}\n")
     assert any("tools/setup.sh" in l and "every launch" in l
                for l in d.summary(parsed))
+
+
+# --------------------------------------------------------------------------- #
+# image: per-repo base OS override
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("image", ["images:ubuntu/24.04", "images:ubuntu/26.04",
+                                   "ubuntu:24.04", "images:ubuntu/resolute"])
+def test_image_accepts_official_ubuntu(image):
+    assert d.parse(f"image: {image}\n")["image"] == image
+    assert d.parse("apt: [git]")["image"] is None
+
+
+@pytest.mark.parametrize("image", [
+    "images:debian/13", "images:alpine/edge", "local:claude-sandbox-abc",
+    "myprivate:ubuntu/24.04", "images:ubuntu/../x", "images:ubuntu/", "ubuntu:",
+    "24.04", "images:ubuntu/24.04 --vm", "-c", "images:ubuntu/24.04\n--vm",
+    "images:UBUNTU/24.04", "", 24.04, ["images:ubuntu/24.04"],
+])
+def test_image_rejects_anything_else(image):
+    with pytest.raises(DepsError):
+        d.parse(yaml.safe_dump({"image": image}))  # real newlines, ints, lists
+
+
+def test_image_does_not_change_the_cache_key_but_is_in_the_summary():
+    a = d.parse("apt: [git]")
+    b = d.parse("image: images:ubuntu/24.04\napt: [git]")
+    assert d.cache_key(a) == d.cache_key(b) is not None
+    assert any("images:ubuntu/24.04" in l for l in d.summary(b))
+    assert d.cache_key(d.parse("image: images:ubuntu/24.04")) is None  # nothing to bake

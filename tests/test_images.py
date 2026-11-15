@@ -79,15 +79,29 @@ def test_ensure_base_image_reuses_fresh(monkeypatch, builds, now):
     assert builds == []
 
 
-def test_ensure_base_image_rebuilds_and_drops_stale(monkeypatch, builds,
-                                                    cli_calls):
+def test_ensure_base_image_rebuilds_and_keeps_other_sources_bases(
+        monkeypatch, builds, cli_calls):
+    """Another repo's base (a different --image / Ubuntu release) survives."""
     alias = im.base_alias("src")
     old = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
     monkeypatch.setattr(im, "cached_images", lambda cli, prefix=None: {
-        alias: old, "claude-sandbox-stale": old})
+        alias: old, "claude-sandbox-other-release": old})
     assert im.ensure_base_image("incus", "src", 7, rebuild=False) == alias
     assert builds == [("src", alias, True)]
-    assert cli_calls == [["incus", "image", "delete", "claude-sandbox-stale"]]
+    assert cli_calls == []
+
+
+def test_ensure_base_image_bounds_old_bases(monkeypatch, builds, cli_calls):
+    alias = im.base_alias("src")
+    base = datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc)
+    stale = {f"claude-sandbox-s{i}": base + datetime.timedelta(days=i)
+             for i in range(im.MAX_BASE_IMAGES + 1)}
+    monkeypatch.setattr(im, "cached_images", lambda cli, prefix=None: dict(stale))
+    im.ensure_base_image("incus", "src", 7, rebuild=False)
+    # room for MAX_BASE_IMAGES including the new one: the 2 oldest go
+    assert cli_calls == [["incus", "image", "delete", "claude-sandbox-s0"],
+                         ["incus", "image", "delete", "claude-sandbox-s1"]]
+    assert builds == [("src", alias, False)]
 
 
 def test_ensure_deps_image_skips_unpinned_scripts(builds):
@@ -141,3 +155,21 @@ def test_apply_deps_cleans_scratch_on_failure(monkeypatch, fake_box):
     with pytest.raises(sandbox_deps.DepsError):
         im.apply_deps(fake_box, deps)
     assert fake_box.calls[-1][1][:2] == ["rm", "-rf"]
+
+
+def test_base_packages_exist_on_ubuntu_26_04():
+    """`dnsutils` was dropped from 26.04; bind9-dnsutils works on 24.04 and
+    26.04 (checked against both archives' package indexes)."""
+    assert "bind9-dnsutils" in im.BASE_PACKAGES
+    assert "dnsutils" not in im.BASE_PACKAGES
+
+
+def test_base_image_prune_keeps_other_sources_recent_bases(now):
+    """Repos on different Ubuntu releases must not delete each other's base."""
+    imgs = {f"claude-sandbox-{i}": now - datetime.timedelta(days=i)
+            for i in range(1, 4)}
+    imgs["claude-sandbox-new"] = now
+    assert im.images_to_prune(imgs, im.MAX_BASE_IMAGES, "claude-sandbox-new") == []
+    imgs["claude-sandbox-old"] = now - datetime.timedelta(days=30)
+    assert im.images_to_prune(imgs, im.MAX_BASE_IMAGES,
+                              "claude-sandbox-new") == ["claude-sandbox-old"]

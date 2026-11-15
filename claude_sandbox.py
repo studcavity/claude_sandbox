@@ -91,7 +91,7 @@ TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
 # environment variable noted in --help.
 DEFAULT_GITHUB_USER = "studcavity"
 DEFAULT_GIT_EMAIL = "353176155+studcavity@users.noreply.github.com"
-DEFAULT_IMAGE = "images:ubuntu/24.04"
+DEFAULT_IMAGE = "images:ubuntu/26.04"  # Ubuntu 26.04 LTS
 DEFAULT_CLI = "incus"
 
 DEFAULT_TOKEN_FILE = os.path.join(
@@ -175,6 +175,16 @@ def setup_argv(s):
     session's PATH applies. Nothing is interpolated into a shell string."""
     return ["timeout", "--kill-after=10", str(s["timeout"]),
             "bash", "-l", "./" + s["path"], *s["args"]]
+
+
+def choose_image(flag, repo_image):
+    """(image, origin) for the base OS: --image beats the repo's `image:` in
+    claude_sandbox_deps.yaml, which beats the default."""
+    if flag:
+        return flag, "--image"
+    if repo_image:
+        return repo_image, sandbox_deps.DEPS_FILE
+    return DEFAULT_IMAGE, "default"
 
 
 def parse_probe(out):
@@ -314,6 +324,7 @@ class Sandbox:
         self._torn_down = False
         self.deps = None
         self.deps_baked = False
+        self.image = None
         self.usb_devices = []
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{sandbox_deps.DEPS_FILE}`.")
@@ -382,6 +393,18 @@ class Sandbox:
             log(f"deps: {l}")
         self.deps = deps if lines else None
         return self.deps
+
+    def choose_image(self):
+        """Pick the base image once the deps file (if any) has been read, and
+        tell the session where it came from when that wasn't the default."""
+        wanted = (self.deps or {}).get("image")
+        self.image, origin = choose_image(self.args.image, wanted)
+        log(f"base image: {self.image} ({origin})")
+        if wanted and origin == "--image" and wanted != self.image:
+            self.deps_note += (f"\n`image: {wanted}` in the file was "
+                               f"overridden by the launcher flag "
+                               f"`--image {self.image}`.")
+        return self.image
 
     def resolve_usb(self):
         """Decide which USB devices to attach (host only, before any build).
@@ -639,8 +662,10 @@ def build_parser():
                         "upstream (and offer to git pull)")
     p.add_argument("--read-only", action="store_true",
                    help="make the deploy key read-only (no push)")
-    p.add_argument("--image", default=DEFAULT_IMAGE,
-                   help=f"image to launch (default: {DEFAULT_IMAGE})")
+    p.add_argument("--image", default=None, metavar="IMAGE",
+                   help="base OS image to launch. Overrides the repo's `image:` "
+                        f"in {sandbox_deps.DEPS_FILE}, which overrides the "
+                        f"default ({DEFAULT_IMAGE}, Ubuntu 26.04 LTS)")
     p.add_argument("--cli", default=DEFAULT_CLI, choices=["incus", "lxc"],
                    help=f"container CLI (default: {DEFAULT_CLI})")
     p.add_argument("--name", help="container name (default: random)")
@@ -767,13 +792,15 @@ def main(argv=None):
     signal.signal(signal.SIGHUP, on_signal)
 
     try:
-        image = args.image
-        if not args.no_cache:
-            image = ensure_base_image(args.cli, args.image,
-                                      args.max_age, args.rebuild)
         if not args.setup_token:
             box.resolve_usb()  # prompt now, not after a long image build
-        if not args.setup_token and box.load_deps() and not args.no_cache:
+            box.load_deps()  # before the image: it may pick the base OS
+        source = box.choose_image()
+        image = source
+        if not args.no_cache:
+            image = ensure_base_image(args.cli, source,
+                                      args.max_age, args.rebuild)
+        if box.deps and not args.no_cache:
             baked = ensure_deps_image(args.cli, image, box.deps,
                                       args.max_age, args.rebuild)
             if baked:

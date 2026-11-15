@@ -17,6 +17,9 @@ IMAGE_PREFIX = "claude-sandbox-"
 # IMAGE_PREFIX: base-image cleanup deletes every other image under its prefix.
 DEPS_IMAGE_PREFIX = "claude-sandboxdeps-"
 MAX_DEPS_IMAGES = 8  # keep the newest N; older ones are deleted
+# Base images, one per source image (repos may pick different Ubuntu releases):
+# keep the newest N so alternating repos don't rebuild each other's base.
+MAX_BASE_IMAGES = 4
 BASE_APT_CLEAN = "apt-get clean && rm -rf /var/lib/apt/lists/*"
 LOCK_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
@@ -33,7 +36,9 @@ BASE_PACKAGES = (
     "unzip", "zip", "xz-utils",
     # process / system debugging
     "procps", "psmisc", "lsof", "strace", "gdb", "htop",
-    "iproute2", "dnsutils", "netcat-openbsd",
+    # bind9-dnsutils (provides dig) exists on 24.04 and 26.04; the older
+    # `dnsutils` wrapper package is gone from 26.04.
+    "iproute2", "bind9-dnsutils", "netcat-openbsd",
 )
 BASE_ROOT_SETUP = ("export DEBIAN_FRONTEND=noninteractive && "
                    "apt-get update -qq && "
@@ -155,8 +160,10 @@ def ensure_base_image(cli, source, max_age_days, rebuild):
     log(f"building base image {alias} from {source} (one-time)")
     build_image(cli, source, alias, IMAGE_PREFIX, provision,
                 replace=alias in images)
-    # Drop images from older recipes / other source images.
-    delete_images(cli, [a for a in images if a != alias])
+    # Older recipes pile up; bound them, but keep other sources' recent bases.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    delete_images(cli, images_to_prune({**images, alias: now},
+                                       MAX_BASE_IMAGES, alias), "base image")
     return alias
 
 

@@ -28,7 +28,8 @@ repo-scoped GitHub deploy key. The key and container are destroyed on exit.
 the program. `<repository>` is a bare name (looked up under `--github-user`) or
 `owner/name`. Defaults: `--github-user studcavity` (`$CLAUDE_SANDBOX_GITHUB_USER`),
 `--git-email` the maintainer's noreply address (`$CLAUDE_SANDBOX_GIT_EMAIL`),
-`--git-name` the github user, `--cli incus`, `--image images:ubuntu/24.04`.
+`--git-name` the github user, `--cli incus`, and `--image images:ubuntu/26.04`
+(Ubuntu 26.04 LTS; a repo can choose another release, see "base OS" below).
 Running without a repository is refused unless you pass `--account-key`
 (an account-wide key can push to every repo you can).
 
@@ -140,7 +141,8 @@ on every boot. The image is rebuilt automatically when:
   packages reasonably fresh — Claude Code also self-updates in the session),
 - you pass `--rebuild`.
 
-Old images are deleted after a rebuild. `--no-cache` skips the cache entirely.
+The newest 4 base images are kept (one per OS image in use) and older ones are
+deleted after a rebuild. `--no-cache` skips the cache entirely.
 Launching from a local image is fastest on a ZFS or btrfs storage pool, where
 it's a copy-on-write clone instead of an unpack.
 
@@ -192,6 +194,22 @@ packages go stale), when the base image was rebuilt after it, or with
 has no credentials, from host-verified downloads. If any script lacks a
 `sha256`, that repo is not cached (the script would be frozen at build time)
 and everything installs per launch as before. `--no-cache` disables it.
+
+### base OS (`image:`)
+Sandboxes boot from Ubuntu 26.04 LTS (`images:ubuntu/26.04`) by default. A repo
+that needs another release says so in its deps file:
+```yaml
+image: images:ubuntu/24.04
+```
+Only `images:ubuntu/<release>` and `ubuntu:<release>` (a number or codename)
+are accepted; anything else, including other distros, other remotes and local
+images, makes the file invalid and aborts the launch, so a repo can't point the
+host at an image it didn't choose. Precedence: `--image` (the host user may
+choose anything) over the repo's `image:` over the default. `--no-deps` ignores
+the repo's `image:`. The file is read before the base image is built, each
+image gets its own cached base and deps image (the first launch on a new
+release builds once), and the session is told when `--image` overrode the file.
+`image:` is not part of the install cache key.
 
 ### per-launch `setup:` scripts
 Things that need the checkout or the user's home (a venv in the repo, a

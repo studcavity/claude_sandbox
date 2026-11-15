@@ -17,7 +17,8 @@ def test_parser_defaults(monkeypatch):
     args = cs.build_parser().parse_args([])
     assert args.model == cs.DEFAULT_MODEL
     assert args.cli == "incus" and args.max_age == 7
-    assert args.image == "images:ubuntu/24.04"
+    assert args.image is None  # unset: repo's image: or the default applies
+    assert cs.DEFAULT_IMAGE == "images:ubuntu/26.04"
     assert args.github_user == "studcavity"
     assert args.git_email == cs.DEFAULT_GIT_EMAIL
     assert args.repository is None and not args.account_key
@@ -563,3 +564,61 @@ def test_update_check_happens_before_any_github_or_container_work(
 def test_template_has_no_docker_references(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     assert "docker" not in t.lower() and "podman" not in t.lower()
+
+
+# --------------------------------------------------------------------------- #
+# base image: default Ubuntu 26.04, per-repo `image:` override, --image wins
+# --------------------------------------------------------------------------- #
+def test_choose_image_precedence():
+    assert cs.choose_image(None, None) == ("images:ubuntu/26.04", "default")
+    assert cs.choose_image(None, "images:ubuntu/24.04") == (
+        "images:ubuntu/24.04", cs.sandbox_deps.DEPS_FILE)
+    assert cs.choose_image("images:debian/13", "images:ubuntu/24.04") == (
+        "images:debian/13", "--image")  # the host user may pick anything
+
+
+def test_sandbox_uses_the_repos_image_and_says_so(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    box.deps = {"image": "images:ubuntu/24.04"}
+    assert box.choose_image() == "images:ubuntu/24.04"
+    assert "overridden" not in box.deps_note
+
+
+def test_flag_overrides_the_repos_image_and_the_session_is_told(make_args,
+                                                                monkeypatch):
+    box = _sandbox(make_args, monkeypatch, repo="me/p", image="ubuntu:26.04")
+    box.deps = {"image": "images:ubuntu/24.04"}
+    assert box.choose_image() == "ubuntu:26.04"
+    assert "overridden by the launcher flag" in box.deps_note
+
+
+def test_default_image_without_deps_or_flag(make_args, monkeypatch):
+    box = _sandbox(make_args, monkeypatch)
+    assert box.choose_image() == cs.DEFAULT_IMAGE
+
+
+def test_deps_are_read_before_the_base_image_is_built():
+    """The repo's image: must be known before ensure_base_image runs."""
+    import inspect
+    src = inspect.getsource(cs.main)
+    assert (src.index("box.load_deps()") < src.index("box.choose_image()")
+            < src.index("ensure_base_image("))
+
+
+def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cs, "ensure_base_image",
+                        lambda cli, source, *a: seen.setdefault("source", source))
+    parsed = cs.sandbox_deps.parse("image: images:ubuntu/24.04")
+    monkeypatch.setattr(cs.Sandbox, "load_deps",
+                        lambda self: setattr(self, "deps", parsed))
+    cs.main(["proj"])
+    assert seen["source"] == "images:ubuntu/24.04"
+    seen.clear()
+    cs.main(["proj", "--image", "images:ubuntu/26.04"])
+    assert seen["source"] == "images:ubuntu/26.04"
+
+
+def test_template_documents_image_key(repo_root):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    assert "\nimage: images:ubuntu/24.04" in t and "--image" in t

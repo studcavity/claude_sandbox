@@ -52,7 +52,7 @@ def make_args(tmp_path):
     def _make(**kw):
         base = dict(repo=None, repository=None, account_key=False,
                     github_user="studcavity", no_user_check=False,
-                    no_update_check=True, read_only=False, image="ubuntu:24.04",
+                    no_update_check=True, read_only=False, image=None,
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
                     rebuild=False, nesting=False, max_age=7, model="default", no_deps=False,
