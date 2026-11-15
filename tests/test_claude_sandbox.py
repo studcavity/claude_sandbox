@@ -513,6 +513,8 @@ def main_env(monkeypatch):
                         lambda self, image: seen.__setitem__("launched", True)
                         or (_ for _ in ()).throw(RuntimeError("stop here")))
     monkeypatch.setattr(cs.Sandbox, "teardown", lambda self: None)
+    monkeypatch.setattr(cs.Sandbox, "preflight_github", lambda self: None)
+    monkeypatch.setattr(cs.Sandbox, "land", lambda self: None)
     return seen
 
 

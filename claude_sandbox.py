@@ -61,7 +61,6 @@ import string
 import subprocess
 import signal
 import sys
-import uuid
 
 if __name__ == "__main__":
     # Standard library only, before the third-party imports below: ensures a
@@ -73,6 +72,8 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
+import sandbox_land
+import sandbox_sessions
 import sandbox_update
 from sandbox_containers import HOME, UID, USER, Container
 from sandbox_github import (GitHubError, gh_api, github_login, resolve_repo,
@@ -231,17 +232,20 @@ def access_lines(workdir, repo, branch, read_only):
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note=""):
+                     disk_note="", session=None):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $disk); write $$ for a literal dollar sign. `facts` comes from
+    $deps_file, $host_file, $usb, $disk, $session, $prefix); write $$ for a
+    literal dollar sign. `facts` comes from
     parse_probe().
     """
     branch = facts["branch"]
     return string.Template(template).substitute(
         container=container,
+        session=session or container,
+        prefix=sandbox_sessions.branch_prefix(session or container),
         access="\n".join(access_lines(workdir, repo, branch, read_only)),
         user=USER, uid=UID, home=HOME,
         sudo=("Passwordless `sudo` works, so installing apt packages is "
@@ -288,6 +292,23 @@ def check_expected_user(login, expected):
             "(--github-user); refusing to continue. Switch accounts with "
             "`gh auth switch`, or pass --github-user / --no-user-check if "
             "that is intended.")
+
+
+def setup_paths(deps):
+    """Repo-relative `setup:` script paths from parsed deps (they run with
+    extra privilege in future sandboxes, so a PR touching them is held)."""
+    return [s["path"] for s in (deps or {}).get("setup") or []]
+
+
+def report_landing(results):
+    if not results:
+        log("no session branches were pushed; nothing to open a PR for")
+    for branch, outcome, detail in results:
+        what = {"opened": "opened PR", "exists": "PR already open",
+                "empty": "nothing new, no PR", "held":
+                "HELD, no PR (touches privileged files; review the branch "
+                "by hand)"}[outcome]
+        log(f"{branch}: {what}" + (f" {detail}" if detail else ""))
 
 
 def check_workflow_scope():
@@ -343,7 +364,10 @@ class Sandbox:
     def __init__(self, args):
         self.args = args
         self.cli = args.cli
-        self.name = args.name or f"claude-{uuid.uuid4().hex[:8]}"
+        # The container name doubles as the session id (key title, branches).
+        self.name = args.name or sandbox_sessions.pick_name(
+            Container.list_names(self.cli))
+        self.session = sandbox_sessions.validate_session(self.name)
         self.box = Container(self.cli, self.name)
         self.key_id = None
         self.container_up = False
@@ -546,7 +570,8 @@ class Sandbox:
         known = "".join(f"github.com {k}\n" for k in meta["ssh_keys"])
         self.box.user("cat >> ~/.ssh/known_hosts", input=known)
 
-        title = f"ephemeral {self.name}"
+        title = sandbox_sessions.key_title(sandbox_sessions.host_id(),
+                                           self.session)
         if self.args.repo:
             log(f"adding deploy key to {self.args.repo}")
             resp = gh_api("POST", f"/repos/{self.args.repo}/keys",
@@ -585,6 +610,12 @@ class Sandbox:
         log(f"cloning {self.args.repo}")
         self.box.user(f"git clone git@github.com:{self.args.repo}.git "
                       f"{shlex.quote(repo_dir)}")
+        if not self.args.read_only:
+            # Never work on the default branch: concurrent sessions each get
+            # their own branch under sbx/<session>/ and land through PRs.
+            self.box.user(f"git -C {shlex.quote(repo_dir)} checkout -q -b "
+                          + shlex.quote(sandbox_sessions.work_branch(
+                              self.session)))
         return repo_dir
 
     def write_claude_md(self, workdir):
@@ -606,6 +637,7 @@ class Sandbox:
                               repo=self.args.repo,
                               read_only=self.args.read_only,
                               deps_note=self.deps_note,
+                              session=self.session,
                               usb_devices=self.usb_devices, cli=self.cli,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
@@ -661,6 +693,39 @@ class Sandbox:
         log(f"saved token to {self.args.token_file} (mode 600)")
         return 0
 
+    def preflight_github(self):
+        """Advice and housekeeping before launch; never blocks the launch."""
+        a = self.args
+        if not a.repo or a.read_only:
+            return
+        try:
+            branch, warn = sandbox_sessions.check_protection(a.repo)
+            if warn:
+                log(f"warning: {warn}")
+        except GitHubError as e:
+            log(f"warning: couldn't check branch protection: {e}")
+        try:
+            live = Container.list_names(self.cli)
+            gone = sandbox_sessions.reap_stale_keys(
+                a.repo, sandbox_sessions.host_id(), live | {self.name})
+            for key_id in gone:
+                log(f"removed stale deploy key {key_id} (its container is gone)")
+        except (GitHubError, subprocess.CalledProcessError, OSError) as e:
+            log(f"warning: couldn't reap stale deploy keys: {e}")
+
+    def land(self):
+        """Open PRs for this session's pushed branches (host-side, with the
+        user's gh login). Never raises: teardown must still run."""
+        a = self.args
+        if not a.repo or a.read_only or a.no_pr or self.key_id is None:
+            return
+        try:
+            report_landing(sandbox_land.land(
+                a.repo, self.session, setup_paths(self.deps)))
+        except Exception as e:
+            log(f"warning: couldn't open PRs for {self.session}: {e}; push "
+                f"state is on GitHub under {sandbox_sessions.branch_prefix(self.session)}")
+
     def teardown(self):
         if self._torn_down:
             return
@@ -713,13 +778,22 @@ def build_parser():
                         "upstream (and offer to git pull)")
     p.add_argument("--read-only", action="store_true",
                    help="make the deploy key read-only (no push)")
+    p.add_argument("--no-pr", action="store_true",
+                   help="don't open PRs for the session's branches when it "
+                        "ends (they stay on GitHub under sbx/<session>/)")
+    p.add_argument("--land-all", action="store_true",
+                   help="open PRs for every session's unmerged sbx/* branch "
+                        "in the repo, then exit (recovery after a crashed "
+                        "launcher; also picks up live sessions' work)")
     p.add_argument("--image", default=None, metavar="IMAGE",
                    help="base OS image to launch. Overrides the repo's `image:` "
                         f"in {sandbox_deps.DEPS_FILE}, which overrides the "
                         f"default ({DEFAULT_IMAGE}, Ubuntu 26.04 LTS)")
     p.add_argument("--cli", default=DEFAULT_CLI, choices=["incus", "lxc"],
                    help=f"container CLI (default: {DEFAULT_CLI})")
-    p.add_argument("--name", help="container name (default: random)")
+    p.add_argument("--name", help="session id and container name: letters, "
+                   "digits, hyphens (default: Docker-style random, e.g. "
+                   "quirky-hopper)")
     p.add_argument("--git-name", metavar="NAME",
                    help="git user.name inside the sandbox "
                         "(default: --github-user)")
@@ -819,6 +893,10 @@ def normalize_args(args):
     if not (args.repo or args.account_key or args.setup_token):
         raise ValueError("a repository is required (or --account-key to use "
                          "an account-wide key, or --setup-token)")
+    if args.land_all and not args.repo:
+        raise ValueError("--land-all needs a repository")
+    if args.name:
+        sandbox_sessions.validate_session(args.name)
     args.git_name = args.git_name or args.github_user
     return args
 
@@ -837,6 +915,19 @@ def main(argv=None):
         sandbox_update.check_for_updates(
             os.path.dirname(os.path.abspath(__file__)), sys.argv,
             interactive=sys.stdin.isatty(), ask=input)
+
+    if args.land_all:
+        try:
+            if not args.no_user_check:
+                bad = check_expected_user(github_login(), args.github_user)
+                if bad:
+                    print(f"error: {bad}", file=sys.stderr)
+                    return 1
+            report_landing(sandbox_land.land(args.repo))
+        except GitHubError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        return 0
 
     box = Sandbox(args)
     if not args.setup_token:
@@ -867,6 +958,8 @@ def main(argv=None):
         if not args.setup_token:
             box.resolve_usb()  # prompt now, not after a long image build
             box.load_deps()  # before the image: it may pick the base OS
+        if not args.setup_token:
+            box.preflight_github()
         source = box.choose_image()
         image = source
         if not args.no_cache:
@@ -905,6 +998,7 @@ def main(argv=None):
                   else err, file=sys.stderr)
         return 1
     finally:
+        box.land()  # host-side, uses the user's gh; before the key is revoked
         box.teardown()
     return 0
 

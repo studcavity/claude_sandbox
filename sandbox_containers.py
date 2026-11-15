@@ -15,6 +15,13 @@ class Container:
     def __init__(self, cli, name):
         self.cli, self.name = cli, name
 
+    @staticmethod
+    def list_names(cli):
+        """Names of every container (any state) known to the runtime."""
+        out = run([cli, "list", "--format", "csv", "-c", "n"],
+                  capture=True).stdout
+        return {l.strip() for l in out.splitlines() if l.strip()}
+
     def launch(self, image, ephemeral, config=None, root_size=None):
         """root_size (e.g. "30GiB") caps the root disk with a storage quota."""
         cfg = [a for k, v in (config or {}).items()

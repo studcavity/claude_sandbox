@@ -1,4 +1,5 @@
 """sandbox_images.py - cached base/deps images and applying repo deps."""
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -145,8 +146,25 @@ def delete_images(cli, aliases, what="image"):
         log(f"removed stale {what} {stale}")
 
 
+@contextlib.contextmanager
+def build_lock(alias):
+    """Exclusive host-wide lock for building `alias`, so concurrent launches
+    build it once; the rest wait, then find the finished image."""
+    os.makedirs(LOCK_DIR, mode=0o700, exist_ok=True)
+    with open(os.path.join(LOCK_DIR, alias + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def ensure_base_image(cli, source, max_age_days, rebuild, root_size=None):
     alias = base_alias(source)
+    with build_lock(alias):
+        return _ensure_base_image(cli, source, alias, max_age_days, rebuild,
+                                  root_size)
+
+
+def _ensure_base_image(cli, source, alias, max_age_days, rebuild,
+                       root_size=None):
     images = cached_images(cli)
     created = images.get(alias)
 
@@ -229,11 +247,7 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
         return None
     alias = deps_alias(base, key)
 
-    os.makedirs(LOCK_DIR, mode=0o700, exist_ok=True)
-    with open(os.path.join(LOCK_DIR, alias + ".lock"), "a") as lock:
-        # Serialize concurrent launches so only one builds; the rest wait,
-        # then find the finished image.
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with build_lock(alias):
         created = cached_images(cli, DEPS_IMAGE_PREFIX).get(alias)
         base_created = cached_images(cli).get(base)
         if not rebuild and is_fresh(created, max_age_days, base_created):

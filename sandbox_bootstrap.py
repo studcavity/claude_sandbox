@@ -1,6 +1,7 @@
 """sandbox_bootstrap.py - make sure the launcher runs in a venv that has
 requirements.txt installed. Standard library only: it runs before anything
 else is imported, so run.sh can stay a one-line shim."""
+import fcntl
 import hashlib
 import os
 import subprocess
@@ -8,6 +9,7 @@ import sys
 
 VENV = "venv"
 STAMP = ".requirements.sha256"
+LOCK = ".venv.lock"  # beside venv/: concurrent launches must not both build it
 
 
 def requirements_digest(path):
@@ -45,14 +47,19 @@ def ensure_venv(script_dir, argv=None, python=None, prefix=None, base_prefix=Non
     req = os.path.join(script_dir, "requirements.txt")
     digest = requirements_digest(req)
     try:
-        if not os.path.exists(venv_py):
-            print(f"[sandbox] creating {venv_dir}", file=sys.stderr)
-            run([python, "-m", "venv", venv_dir], check=True)
-        if not stamp_is_current(venv_dir, digest):
-            print("[sandbox] installing requirements", file=sys.stderr)
-            run([venv_py, "-m", "pip", "install", "-q", "-r", req], check=True)
-            with open(os.path.join(venv_dir, STAMP), "w") as f:
-                f.write(digest + "\n")
+        # Two sessions started together would otherwise create/pip-install
+        # into the same venv at once. The second waits, then finds it ready.
+        with open(os.path.join(script_dir, LOCK), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not os.path.exists(venv_py):
+                print(f"[sandbox] creating {venv_dir}", file=sys.stderr)
+                run([python, "-m", "venv", venv_dir], check=True)
+            if not stamp_is_current(venv_dir, digest):
+                print("[sandbox] installing requirements", file=sys.stderr)
+                run([venv_py, "-m", "pip", "install", "-q", "-r", req],
+                    check=True)
+                with open(os.path.join(venv_dir, STAMP), "w") as f:
+                    f.write(digest + "\n")
     except (subprocess.CalledProcessError, OSError) as e:
         raise SystemExit(f"could not set up {venv_dir}: {e}\n"
                          "(on Debian/Ubuntu: apt install python3-venv)") from None

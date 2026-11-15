@@ -7,6 +7,14 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+@pytest.fixture(autouse=True)
+def no_real_container_runtime(monkeypatch):
+    """Tests never ask a real incus/lxc what containers exist."""
+    import sandbox_containers
+    monkeypatch.setattr(sandbox_containers.Container, "list_names",
+                        staticmethod(lambda cli: set()))
+
+
 @pytest.fixture
 def repo_root():
     return REPO_ROOT
