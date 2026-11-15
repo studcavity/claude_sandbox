@@ -14,9 +14,22 @@ Two jobs:
 The secret scan is a tripwire for accidents (a token pasted into a commit
 message, a log line in a brief), not a defence against an adversary who can
 encode a secret. It reports WHAT KIND of secret matched and never the match
-itself, so the finding can be logged without leaking it a second time.
+itself, so the finding can be logged without leaking it a second time. There
+is no way to mark a match as allowed: a fixture is assembled at runtime
+(`"ghp_" + "x" * 40`) so nothing token-shaped is in the source.
+
+Where it runs, and why each place needs it:
+  * `sandbox_check` on commit messages and on every line a commit adds: the
+    one scan on the way in, before anything is merged;
+  * `sandbox_land.safe_line` on PR titles and bodies: the text is copied from
+    commits, but a PR body is mailed to everyone watching the repo, which a
+    pushed commit is not;
+  * `sandbox_issues` on a `todo/` file before it is published as an issue (a
+    repo without the checker workflow never scanned it);
+  * `sandbox_provenance.override_description` on the reason a person types,
+    which becomes a public status description.
+GitHub push protection (README) is the preferred first line where it exists.
 """
-import math
 import re
 
 ZWSP = "​"
@@ -69,36 +82,29 @@ def one_line(text, limit, backticks_to_quotes=False):
 
 
 # --- secret scan ----------------------------------------------------------- #
-# (label, pattern). Prefix-anchored token formats are precise; the generic
-# `name = value` rule below is entropy-gated to keep false positives down.
+# (label, pattern): prefix-anchored token formats, each aimed at a credential
+# the sandbox or its user actually holds. A session can only leak what it can
+# see, and the launcher puts exactly three secrets in a container: the Claude
+# credential (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY, both `sk-ant-`),
+# the deploy key and the session signing key (OpenSSH private keys). The
+# GitHub formats are for the user's own `gh` credentials, which sit one
+# careless paste away from a session's reach and are what GitHub's own push
+# protection looks for. Credentials the sandbox never holds (AWS, Slack, ...)
+# and generic `password = <high-entropy>` assignments are NOT scanned: they
+# were the false-positive source, and GitHub's secret scanning covers them.
 TOKEN_PATTERNS = (
+    # the Claude credential the launcher passes in
+    ("Anthropic key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
+    # the deploy key and the session signing key (any PEM/OpenSSH private key)
+    ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+    # the user's GitHub credentials (classic, OAuth, app, and fine-grained)
     ("GitHub token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
     ("GitHub fine-grained token",
      re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b")),
-    ("Anthropic key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
-    ("AWS access key id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
-    ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
 )
-# `token: abc...`, `API_KEY="abc..."`, `password = abc...` (value >= 24 chars).
-ASSIGNMENT = re.compile(
-    r"(?i)\b(?:[a-z0-9_-]*(?:token|secret|passwd|password|api[_-]?key))\b"
-    r"\s*[:=]\s*[\"']?([A-Za-z0-9_\-+/=.]{24,})")
-MIN_ENTROPY = 3.5  # bits per character; English words and paths sit below
-
-
-def entropy(s):
-    if not s:
-        return 0.0
-    counts = {c: s.count(c) for c in set(s)}
-    return -sum(n / len(s) * math.log2(n / len(s)) for n in counts.values())
 
 
 def find_secrets(text):
     """Labels of the credential kinds `text` appears to contain (sorted, no
     duplicates, never the matched text)."""
-    found = {label for label, rx in TOKEN_PATTERNS if rx.search(text)}
-    for m in ASSIGNMENT.finditer(text):
-        if entropy(m.group(1)) >= MIN_ENTROPY:
-            found.add("credential assignment")
-    return sorted(found)
+    return sorted(label for label, rx in TOKEN_PATTERNS if rx.search(text))

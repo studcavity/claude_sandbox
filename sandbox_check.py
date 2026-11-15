@@ -2,7 +2,7 @@
 
     python sandbox_check.py BASE HEAD [--strict]
 
-Prints GitHub annotations (`::error::`, `::warning::`, `::notice::`) for every
+Prints GitHub annotations (`::error::` and `::warning::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
 (with --strict, any warning too). The format of a follow-up request
 (`todo/<name>.md`) lives in `sandbox_todo`; the other rules are below. This
@@ -21,16 +21,11 @@ Rules and severities
          is still caught: it stays in history)
   warn   subject isn't `type: summary` (conventional commits)
   warn   source files changed but no test file changed anywhere in the range
-  notice a secret finding suppressed by an allow marker (below)
 
-Secret allow marker. A line that deliberately contains a fake credential can
-say `secret-scan: allow` (any comment syntax) and is reported as a NOTICE
-instead of an error. The marker lives in the very change being judged, so it
-is in-band: it can't stop a careless leak from being *noticed* (every use
-prints a notice with file and line for the reviewer) but it is not a defence
-against a session that wants to hide one. Prefer assembling fixtures at
-runtime (`"ghp_" + "x" * 40`) so nothing token-shaped is in the source at all.
-Commit messages have no marker: rephrase them.
+A line that deliberately contains a fake credential can't be marked as
+allowed: assemble the fixture at runtime (`"ghp_" + "x" * 40`) so nothing
+token-shaped is in the source. Commit messages are scanned the same way:
+rephrase them.
 
 Everything read here was written by an AI session. Findings quote at most our
 own text (rule names, ids, paths) and never a matched secret, and annotation
@@ -46,7 +41,7 @@ import sandbox_todo
 import sandbox_untrusted
 
 Finding = collections.namedtuple("Finding", "sha severity text path line")
-ERROR, WARNING, NOTICE = "error", "warning", "notice"
+ERROR, WARNING = "error", "warning"
 
 CONVENTIONAL = re.compile(
     r"^(?:feat|fix|docs|test|tests|ci|chore|refactor|perf|build|style|revert|wip)"
@@ -55,7 +50,6 @@ FIXUP = re.compile(r"^(?:fixup|squash|amend)! ")
 # CLAUDE.md allows prose ("Not verified against real incus"), not only `Key:`.
 VERIFIED = re.compile(r"(?im)^\s*(?:not\s+verified|verified)\b")
 RESOLVES = re.compile(r"(?i)\bResolves follow-up from ([0-9a-f]{7,40})\b")
-ALLOW_MARKER = "secret-scan: allow"
 # Changes to these need a run in the real environment, so the commit must say
 # whether that happened (CLAUDE.md "Rules"). Repo-specific by nature.
 NEEDS_REAL_RUN = frozenset({"sandbox_containers.py", "sandbox_images.py",
@@ -102,8 +96,8 @@ def resolves_findings(message, exists):
 def message_secret_findings(message):
     kinds = sandbox_untrusted.find_secrets(message[:MAX_SCAN_CHARS * 5])
     return [(ERROR, "the commit message appears to contain "
-                    + ", ".join(kinds) + " (no allow marker applies to "
-                    "messages; rephrase it)")] if kinds else []
+                    + ", ".join(kinds) + " (rephrase "
+                    "it)")] if kinds else []
 
 
 def parse_added_lines(diff):
@@ -134,13 +128,8 @@ def added_secret_findings(added):
         kinds = sandbox_untrusted.find_secrets(text[:MAX_SCAN_CHARS])
         if not kinds:
             continue
-        if ALLOW_MARKER in text:
-            out.append((NOTICE, "secret-scan allowed here ("
-                        + ", ".join(kinds) + "): reviewer, confirm this is a "
-                        "fixture", path, line))
-        else:
-            out.append((ERROR, "added line appears to contain "
-                        + ", ".join(kinds), path, line))
+        out.append((ERROR, "added line appears to contain "
+                    + ", ".join(kinds), path, line))
     return out
 
 
