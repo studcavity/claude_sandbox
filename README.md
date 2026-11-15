@@ -63,6 +63,44 @@ it's a copy-on-write clone instead of an unpack.
 The image contains no credentials: SSH keys and git identity are still
 created per session.
 
+## repo dependencies
+A repo can put a `claude_sandbox_deps.yaml` at the root of its default branch
+to have tooling installed in the container before the session starts:
+```yaml
+apt:
+  - build-essential
+scripts:                    # remote installer, run as root with bash
+  - name: arduino-cli
+    url: https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh
+    sha256: <64 hex>        # optional, recommended
+    env: {BINDIR: /usr/local/bin}
+binaries:                   # -> /usr/local/bin/<name>
+  - name: shellcheck
+    url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+    sha256: <64 hex>        # required
+    archive_path: shellcheck-v0.10.0/shellcheck   # optional, file inside a tar/zip
+```
+Install order is apt, binaries, scripts. Skip all of it with `--no-deps`.
+
+Hardening:
+- The host fetches the file through the GitHub API, validates it against a
+  strict schema (unknown keys, odd names, `-`-prefixed apt specs, loader/shell
+  env vars like `LD_PRELOAD`/`PATH` are rejected) and aborts the launch on any
+  error.
+- The host downloads everything (https only, including redirects; no
+  credentials in URLs; size caps; the GitHub token is never sent) and checks
+  sha256 *before* the bytes enter the container. Binaries must have a
+  checksum. Archive members are read in memory, never unpacked.
+- Install runs *before* the SSH deploy key and Claude credentials exist in the
+  container, so an installer can't read them. Commands run with an argv list,
+  never through a shell string.
+- Remaining trust: apt repos, and any script without a `sha256` (it runs
+  whatever its URL serves). A change to this file runs as root in future
+  sandboxes, so review it like code.
+
+The sandbox CLAUDE.md documents the format, so a session that can't install
+something itself can edit the file, push, and ask you to relaunch.
+
 ## sandbox CLAUDE.md
 Each session writes `~/.claude/CLAUDE.md` inside the container. It tells
 Claude Code about the sandbox: that the container and its key are thrown away
@@ -76,7 +114,7 @@ lost if the sandbox disappears. Git inside the container is set to
 The text comes from `sandbox_CLAUDE.md`, a Markdown template next to the
 script; pass `--claude-md PATH` to use a different one. Placeholders filled
 in per session: `$container`, `$access`, `$user`, `$uid`, `$home`, `$sudo`,
-`$tools`, `$branch`. Write `$$` for a literal `$`.
+`$tools`, `$branch`, `$deps`, `$deps_file`. Write `$$` for a literal `$`.
 
 ## scrollback / terminal behavior
 `incus exec` only passes `TERM` into the container, so Claude Code can't tell

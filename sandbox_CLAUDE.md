@@ -22,6 +22,54 @@ $access
 - Install anything else you need; it disappears with the sandbox, so record
   real project dependencies in the repo, not just in this container.
 
+## Dependencies (`$deps_file`)
+$deps
+
+A repo can declare the tooling it needs in `$deps_file` at the root of its
+default branch. The launcher on the **host** reads it, validates it, downloads
+everything and checks checksums, then installs it into the container *before*
+your session starts. You can't re-run that from inside, so changes take effect
+the next time the user launches a sandbox.
+
+If you need a tool that isn't installed:
+- If `sudo` works, install it now so you can keep going, **and** add it to
+  `$deps_file` so future sandboxes have it.
+- If you can't install it (no `sudo`, or a download you can't do), add it to
+  `$deps_file`, commit and push, and tell the user to relaunch the sandbox.
+
+Format (all sections optional; unknown keys make the whole file invalid and
+abort the launch):
+
+```yaml
+apt:                       # Debian/Ubuntu package names, optional =version
+  - build-essential
+  - libssl-dev=3.0.13-0ubuntu3
+scripts:                   # remote install script, run as root with bash
+  - name: arduino-cli      # [A-Za-z0-9._+-], used for the temp file name
+    url: https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh
+    sha256: <64 hex>       # optional but strongly recommended
+    args: []               # optional, argv for the script
+    env: {BINDIR: /usr/local/bin}   # optional; installers need a system dir
+binaries:                  # installed to /usr/local/bin/<name>, mode 0755
+  - name: shellcheck
+    url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+    sha256: <64 hex>       # required
+    archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
+```
+
+Rules:
+- URLs must be `https://` (redirects too) with no credentials. Order of
+  installation: apt, binaries, scripts.
+- `sha256` is of the downloaded file itself (the archive, if `archive_path`
+  is used). Prefer a checksum published by the project; if you had to compute
+  it from your own download (`sha256sum`), say so to the user, because that
+  only proves the file hasn't changed since you looked at it.
+- A script without `sha256` runs whatever the URL serves at launch time.
+- This file runs as root in every future sandbox for this repo, so treat edits
+  as security-sensitive: add only what the user asked for or the task needs,
+  use official upstream URLs, keep entries minimal, and call out each change
+  in the commit message and to the user.
+
 ## Git: linear history is paramount
 - Never create merge commits. Integrate upstream changes with
   `git pull --rebase` (git is configured with `pull.rebase=true` and

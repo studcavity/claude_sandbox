@@ -53,6 +53,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import sandbox_deps
+
 API = "https://api.github.com"
 USER, UID, HOME = "ubuntu", "1000", "/home/ubuntu"
 
@@ -137,24 +139,34 @@ def github_token():
         sys.exit("No GitHub token: set GITHUB_TOKEN or run `gh auth login`.")
 
 
-def gh_api(method, path, token, body=None):
+class GitHubError(RuntimeError):
+    def __init__(self, msg, code):
+        super().__init__(msg)
+        self.code = code
+
+
+def gh_api(method, path, token, body=None, raw=False):
+    """Call the GitHub API; raw=True returns the response body as bytes."""
     req = urllib.request.Request(
         API + path,
         method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={
             "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
+            "Accept": ("application/vnd.github.raw+json" if raw
+                       else "application/vnd.github+json"),
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             data = r.read()
+            if raw:
+                return data
             return json.loads(data) if data else None
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"GitHub {method} {path} -> {e.code}: "
-                           f"{e.read().decode(errors='replace')}") from None
+        raise GitHubError(f"GitHub {method} {path} -> {e.code}: "
+                          f"{e.read().decode(errors='replace')}", e.code) from None
 
 
 # --------------------------------------------------------------------------- #
@@ -175,6 +187,23 @@ class Container:
 
     def root(self, script, **kw):
         return run([self.cli, "exec", self.name, "--", "bash", "-c", script], **kw)
+
+    def root_argv(self, argv, env=None, cwd=None, input=None, capture=True):
+        """Run argv as root with no shell involved (safe for untrusted strings).
+
+        env goes on the command line, so never put secrets in it.
+        """
+        cmd = [self.cli, "exec", self.name]
+        for k, v in (env or {}).items():
+            cmd += ["--env", f"{k}={v}"]
+        if cwd:
+            cmd += ["--cwd", cwd]
+        return subprocess.run(cmd + ["--", *argv], check=True, input=input,
+                              capture_output=capture)
+
+    def put_file(self, path, data, mode="0644"):
+        """Write bytes to path in the container (as root) via stdin."""
+        self.root_argv(["install", "-m", mode, "/dev/stdin", path], input=data)
 
     def user_cmd(self, *argv, env=None):
         cmd = [self.cli, "exec", self.name,
@@ -297,6 +326,8 @@ class Sandbox:
         self.key_id = None
         self.container_up = False
         self._torn_down = False
+        self.deps_note = ("No repo was cloned, so there is no "
+                          f"`{sandbox_deps.DEPS_FILE}`.")
 
     @functools.cached_property
     def token(self):
@@ -321,6 +352,67 @@ class Sandbox:
                       "(apt-get update -qq && apt-get install -y -qq tmux)",
                       capture=True)
             self.user("cat > ~/.tmux.conf", input=TMUX_CONF)
+
+    def install_deps(self):
+        """Install the repo's claude_sandbox_deps.yaml into the container.
+
+        Runs before the SSH key and Claude credentials exist in the container,
+        so installers never see them. Everything is parsed, downloaded and
+        checksum-verified on the host; the container only receives bytes.
+        Any problem aborts the launch (fail closed); --no-deps skips this.
+        """
+        f = sandbox_deps.DEPS_FILE
+        if not self.args.repo:
+            return
+        if self.args.no_deps:
+            self.deps_note = f"Skipped (`--no-deps`): `{f}` was not applied."
+            return
+        try:
+            raw = gh_api("GET", f"/repos/{self.args.repo}/contents/{f}",
+                         self.token, raw=True)
+        except GitHubError as e:
+            if e.code != 404:
+                raise
+            self.deps_note = f"This repo has no `{f}`, so nothing extra was installed."
+            return
+        deps = sandbox_deps.parse(raw)
+        lines = sandbox_deps.summary(deps)
+        self.deps_note = (f"Installed at launch from `{f}`:\n"
+                          + "\n".join(f"  - {l}" for l in lines)
+                          if lines else f"`{f}` is present but empty.")
+        for l in lines:
+            log(f"deps: {l}")
+
+        box = self.box
+        if deps["apt"]:
+            log("installing apt packages")
+            env = {"DEBIAN_FRONTEND": "noninteractive"}
+            box.root_argv(["apt-get", "update", "-qq"], env=env)
+            box.root_argv(["apt-get", "install", "-y", "-qq",
+                           "--no-install-recommends", *deps["apt"]], env=env)
+
+        for b in deps["binaries"]:
+            log(f"installing binary {b['name']}")
+            data = sandbox_deps.fetch(b["url"], sandbox_deps.MAX_BINARY, b["sha256"])
+            if b["archive_path"]:
+                data = sandbox_deps.extract_member(data, b["archive_path"])
+            box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
+
+        if deps["scripts"]:
+            scratch = "/var/tmp/sandbox-deps"
+            box.root_argv(["install", "-d", "-m", "0700", scratch])
+            try:
+                for s in deps["scripts"]:
+                    log(f"running install script {s['name']}"
+                        + ("" if s["sha256"] else " (no sha256 pinned!)"))
+                    data = sandbox_deps.fetch(s["url"], sandbox_deps.MAX_SCRIPT,
+                                              s["sha256"])
+                    path = f"{scratch}/{s['name']}.sh"
+                    box.put_file(path, data, "0700")
+                    box.root_argv(["bash", path, *s["args"]], cwd=scratch,
+                                  env=s["env"])
+            finally:
+                box.root_argv(["rm", "-rf", scratch], capture=True)
 
     def provision_key(self):
         log("generating SSH key inside the container")
@@ -378,7 +470,8 @@ class Sandbox:
         """Render the CLAUDE.md template into ~/.claude/ in the container.
 
         The template is plain Markdown with string.Template placeholders
-        ($container, $access, $user, $uid, $home, $sudo, $tools, $branch);
+        ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
+        $deps_file);
         write $$ for a literal dollar sign.
         """
         probe = self.user(
@@ -424,6 +517,8 @@ class Sandbox:
                   "packages."),
             tools=", ".join(f"`{t}`" for t in tools) or "(minimal image)",
             branch=f" (`{branch}`)" if branch else "",
+            deps=self.deps_note,
+            deps_file=sandbox_deps.DEPS_FILE,
         )
         self.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md", input=md)
 
@@ -551,6 +646,8 @@ def main():
     p.add_argument("--max-age", type=float, default=7, metavar="DAYS",
                    help="rebuild the cached image when older than this "
                         "(default: 7)")
+    p.add_argument("--no-deps", action="store_true",
+                   help=f"don't install the repo's {sandbox_deps.DEPS_FILE}")
     p.add_argument("--claude-md", metavar="PATH",
                    default=os.path.join(os.path.dirname(
                        os.path.abspath(__file__)), "sandbox_CLAUDE.md"),
@@ -586,6 +683,7 @@ def main():
         if args.setup_token:
             box.install_claude()
             return box.setup_token()
+        box.install_deps()  # before any credential is in the container
         box.provision_key()
         box.install_claude()
         workdir = box.clone()
@@ -595,8 +693,10 @@ def main():
         log("interrupted")
     except (subprocess.CalledProcessError, RuntimeError) as e:
         log(f"error: {e}")
-        if getattr(e, "stderr", None):
-            print(e.stderr, file=sys.stderr)
+        err = getattr(e, "stderr", None)
+        if err:
+            print(err.decode(errors="replace") if isinstance(err, bytes)
+                  else err, file=sys.stderr)
         return 1
     finally:
         box.teardown()
