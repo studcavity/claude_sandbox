@@ -195,57 +195,38 @@ the guard. Mention the guard in the script's header comment so a reader knows
 why it exists.
 
 ## Commit messages carry point-in-time state
-A commit message is a durable, versioned place for state that is true *now*
-but doesn't belong in the code or docs: what you verified and how, what you
-could **not** verify or do (and why), and the follow-ups someone must action
-later. Put it there rather than in a stray notes file or only in chat.
-- Use a `Follow-up:` line per item (or a `Follow-ups:` list) in the body, each
-  saying what to do, where, and why it was blocked (e.g. "Follow-up: run
-  `./smoke.sh` on a host with incus; this sandbox has none").
-- Use `Not verified:` / `Verified:` lines the same way.
-- When you start work or are asked what is outstanding, look there:
-  `git log --grep='Follow-up' -n 20` (and read recent messages). Once a
-  follow-up is done, say so in the commit that does it (`Resolves follow-up
-  from <short-sha>: ...`). Never rewrite pushed history to edit one; add a new
-  commit instead.
-- **Structured follow-ups.** To have the launcher file a GitHub issue for a
-  follow-up when the session ends, add a trailer to the LAST paragraph of the
-  commit message, one line of JSON:
+A commit message is the durable place for what is true *now* but doesn't
+belong in code or docs: what you verified and how, what you could **not**
+verify or do (and why), and follow-ups someone must action later.
+- Use `Verified:` / `Not verified:` lines and a `Follow-up:` line per item
+  (what to do, where, why it was blocked). Find open ones with
+  `git log --grep='Follow-up' -n 20`; close one in the commit that does it
+  (`Resolves follow-up from <short-sha>: ...`). Never rewrite pushed history to
+  edit one.
+- **Structured follow-ups.** For the launcher to file a GitHub issue when the
+  session ends, add a trailer to the LAST paragraph of the commit message, one
+  line of JSON (keep the prose `Follow-up:` line too):
   `Sandbox-Action: {"v": 1, "type": "issue", "id": "smoke-20261115-$session-a3f9", "title": "Run ./smoke.sh on a host", "body": "why it was blocked"}`
   The `id` is `<slug>-<YYYYMMDD>-$session-<4 random [a-z0-9]>` (max 100 chars,
-  only `[A-Za-z0-9._-]`), so it can't collide with another commit's. Generate
-  the suffix, don't invent it:
-  `python3 -c "import datetime,secrets; print('smoke-%s-$session-%s' % (datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d'), secrets.token_hex(2)))"`
-  Say a later commit addressed one with
-  `{"v": 1, "type": "resolve", "id": "<new id, same shape>", "ref": "<sha7+>:<id>"}`
-  and it won't be filed. Anything malformed or unknown is silently ignored by
-  the launcher (and fails CI), so keep the plain `Follow-up:` prose line too.
-  Full spec: `sandbox_actions.py`.
-- **Lint your own commits before you finish.** Run `sandbox-check` (no
-  arguments) inside the repo. It checks every commit you added since the
-  remote's default branch with the rules CI and the launcher use: action id
-  shape, the `todo/<id>.md` brief, no
-  leftover `fixup!`, no merge commits, no credential-shaped text in messages or
-  added lines, and a `Verified` or `Not verified` statement on commits that
-  touch files needing a real run. Fix what it reports with new commits (or, for
-  commits only on your own unmerged branch, rebase and `git push
-  --force-with-lease`). It is a convenience, not a gate: you have `sudo`, so it
-  can't stop you. The same checks run on the host and in CI, and those decide.
-- **Every `issue` action gets a brief file, in the same commit, at
-  `todo/<id>.md`** (CI fails without it; the path is how the item is found
-  later). It exists to describe a
-  problem and some potential solutions. It is NOT a work order: it must not
-  dictate which solution gets implemented. Write it for a fresh agent with no
-  context from this session, who must be able to pick the item up from that
-  file alone and then choose the approach themselves: what the problem is and
-  why it matters; what you already tried or ruled out; the exact files,
-  functions, commands and error text involved; why it was blocked here
-  (missing tool, host access, credentials); what "done" looks like and how to
-  verify it (outcomes, not a prescribed implementation); candidate solutions
-  with their trade-offs, labelled as options (say which you'd lean towards and
-  why, if you have a view, but as a suggestion); and anything risky or
-  surprising. The issue `body` can stay a short summary. When a later
-  commit resolves the item, delete its `todo/<id>.md` in that commit.
+  only `[A-Za-z0-9._-]`); generate the suffix
+  (`python3 -c "import secrets; print(secrets.token_hex(2))"`), don't invent it.
+  Mark one addressed with `{"v": 1, "type": "resolve", "id": "<new id, same
+  shape>", "ref": "<sha7+>:<id>"}`. Malformed trailers are silently ignored by
+  the launcher (and fail CI). Spec: `sandbox_actions.py`.
+- **Every `issue` action needs `todo/<id>.md` in the same commit** (CI fails
+  without it). It exists to describe a problem and some potential solutions. It
+  is NOT a work order: it must not dictate which solution gets implemented.
+  Write it for a fresh agent with no context from this session: the problem
+  and why it matters; what you tried or ruled out; exact files, commands and
+  error text; why it was blocked here; what "done" looks like and how to
+  verify it; options with trade-offs (say which you lean towards, as a
+  suggestion); anything risky. Delete it in the commit that resolves the item.
+- **Run `sandbox-check`** (no arguments) before you finish. It lints your
+  commits since the default branch the way CI does (action ids, briefs, no
+  `fixup!` or merge commits, no credential-shaped text, a `Verified` or `Not
+  verified` line where files need a real run). Fix with new commits (or, on
+  your own unmerged branch, rebase and `git push --force-with-lease`). It is
+  advisory; CI decides.
 
 ## Testing and quality gates
 Work comes with automated tests that **live in the repo**; a one-off check in
