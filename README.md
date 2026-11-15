@@ -84,7 +84,7 @@ Any number of sandboxes can run on one repo at once.
 - **Identity.** Each session gets a Docker-style id (`quirky-hopper`, or
   `--name`), used as the container name, in its deploy key's title
   (`ephemeral <host>:<id>`) and in its branch names.
-- **Branches.** The clone starts on `sbx/<id>/work`; the session is told to use
+- **Branches.** The clone starts on `sbx/<id>/work` and the session renames it to a slug of its task before first push; the session is told to use
   only `sbx/<id>/*`, never the default branch or another session's branches.
 - **PRs, opened by the launcher.** When a session ends, the launcher (host,
   your `gh` login) opens a PR for each of its pushed branches. **No GitHub
