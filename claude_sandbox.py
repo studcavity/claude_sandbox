@@ -301,18 +301,29 @@ def check_failure_text(returncode):
             else f"exited with status {returncode}")
 
 
-def resume_prompt(failures):
+def resume_prompt(failures, can_push=True):
     """The prompt that reopens the session after a failed final check.
 
     `failures`: [(check entry, returncode, output)], in run order. The text
     is the project's own test output, handed back to the session that wrote
-    the code, in the container it ran in.
+    the code, in the container it ran in. `can_push`: whether the session
+    has a remote to push to (not with --local, where committed branches are
+    copied out when it exits).
     """
-    parts = ["The launcher's final check ran after you exited, and it FAILED. "
-             "The container and your push access are still alive, but only "
-             "until you exit again. Fix the failures below, re-run each "
-             "failing script until it passes, then commit and push (new "
-             "commits; never bypass or weaken the check) and stop.\n"]
+    if can_push:
+        intro = ("The launcher's final check ran after you exited, and it "
+                 "FAILED. The container and your push access are still alive, "
+                 "but only until you exit again. Fix the failures below, re-run "
+                 "each failing script until it passes, then commit and push "
+                 "(new commits; never bypass or weaken the check) and stop.\n")
+    else:
+        intro = ("The launcher's final check ran after you exited, and it "
+                 "FAILED. The container is still alive, but only until you "
+                 "exit again. Fix the failures below, re-run each failing "
+                 "script until it passes, then commit (new commits; never "
+                 "bypass or weaken the check) and stop. There is no push: your "
+                 "committed branches are copied out when you exit.\n")
+    parts = [intro]
     for s, code, out in failures:
         parts.append(f"## `{s['path']}` ({s['name']}): "
                      f"{check_failure_text(code)}\n"
@@ -962,9 +973,11 @@ class Sandbox:
         log(f"final check FAILED: {', '.join(names)}")
         if not ask_resume(names):
             log("not resuming: tearing down with the check failing (what "
-                "was pushed still becomes a PR; say so in review)")
+                + ("was pushed still becomes a PR" if self.backend.can_push
+                   else "was committed is still imported")
+                + "; say so in review)")
             return None
-        return resume_prompt(failures)
+        return resume_prompt(failures, can_push=self.backend.can_push)
 
     def setup_token(self):
         """Run `claude setup-token` interactively, then save the pasted token."""

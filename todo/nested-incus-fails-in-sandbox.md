@@ -67,6 +67,13 @@ takes.
 - **Accept that container changes are verified on the host only**, and say
   so in CLAUDE.md, so sessions stop trying.
 
+- **Make `final-check.sh`'s incus probe launch something.** It decides
+  whether to run `tests/integration` with `incus info`, which succeeds once
+  incus is initialised even when no container can start (exactly the state
+  above). Every integration test then fails with the `forkstart` error
+  instead of being skipped. A probe that launches and deletes a tiny
+  ephemeral container (or `self_check`s one) would tell the two apart.
+
 I lean towards the first two together; the last is the fallback.
 
 ## Risk

@@ -1414,3 +1414,19 @@ def test_the_local_variant_promises_nothing_github_does(repo_root):
                   "Nothing from this sandbox may run in a trusted or privileged "
                   "execution context", "signed"):
         assert there in " ".join(md.split()), there
+
+
+def test_the_resume_prompt_matches_what_the_backend_can_do():
+    f = [(CHECK, 1, "boom")]
+    assert "push access" in cs.resume_prompt(f)
+    local = cs.resume_prompt(f, can_push=False)
+    assert "push access" not in local and "There is no push" in local
+    assert "boom" in local and "never bypass or weaken the check" in local
+
+
+def test_a_local_sessions_failed_check_resumes_without_promising_a_push(checking):
+    checking.box.backend = types.SimpleNamespace(can_push=False)
+    checking.results.append((1, "FAILED x"))
+    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert "There is no push" in prompt and "push access" not in prompt

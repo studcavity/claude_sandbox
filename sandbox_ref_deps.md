@@ -90,10 +90,11 @@ The guard every hazardous `setup:` script needs is in `~/.claude/CLAUDE.md`.
 
 ### Final check (`check:`)
 Same entry shape as `setup:`, but run **when the user exits Claude**, in this
-container, in the clone, before anything is torn down (deploy key still live).
+container, in the clone, before anything is torn down (the session's access is
+still live).
 Entries run in order, no stdin, each under its `timeout`. If any fails and the
 user agrees, the launcher reopens this conversation (`claude --continue`) with
 the failing scripts' output tail, so fix it, re-run the script until it
-passes, commit and push; never weaken the check. Point `check:` at one script
+passes, commit (and push, where you can); never weaken the check. Point `check:` at one script
 that runs the repo's full lint + test suite and exits non-zero on any failure.
 `--no-final-check` and `--no-deps` skip it.

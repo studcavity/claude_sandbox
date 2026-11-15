@@ -549,3 +549,11 @@ def test_recover_never_touches_a_volume_in_use(local, monkeypatch, capsys):
 def test_recover_needs_local():
     with pytest.raises(ValueError, match="--recover"):
         cs.normalize_args(cs.build_parser().parse_args(["o/r", "--recover"]))
+
+
+def test_only_a_writable_github_session_can_push(make_args, local):
+    be, _ = local
+    assert be.can_push is False
+    import sandbox_backend_github as bg
+    assert bg.GitHubBackend(make_args(repo="o/r")).can_push is True
+    assert bg.GitHubBackend(make_args(repo="o/r", read_only=True)).can_push is False
