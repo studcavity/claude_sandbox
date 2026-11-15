@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 
+from claude_sandbox import mergecheck
+
 
 # The final check (`check:` in the deps file): see Sandbox.final_check.
 CHECK_OUTPUT_CHARS = 6000   # per failing script: what the resumed session is shown
@@ -29,14 +31,15 @@ def check_failure_text(returncode):
             else f"exited with status {returncode}")
 
 
-def resume_prompt(failures, can_push=True):
+def resume_prompt(failures, can_push=True, merge_findings=()):
     """The prompt that reopens the session after a failed final check.
 
     `failures`: [(check entry, returncode, output)], in run order. The text
     is the project's own test output, handed back to the session that wrote
     the code, in the container it ran in. `can_push`: whether the session
     has a remote to push to (not with --local, where committed branches are
-    copied out when it exits).
+    copied out when it exits). `merge_findings`: [(branch, problem)] from
+    mergecheck, listed after the scripts' output.
     """
     if can_push:
         intro = ("The launcher's final check ran after you exited, and it "
@@ -57,6 +60,8 @@ def resume_prompt(failures, can_push=True):
                      f"{check_failure_text(code)}\n"
                      f"Run it from the repo root: `./{s['path']}`\n"
                      f"```\n{tail_text(out)}\n```\n")
+    if merge_findings:
+        parts.append(mergecheck.resume_text(merge_findings, can_push))
     return "\n".join(parts)
 
 

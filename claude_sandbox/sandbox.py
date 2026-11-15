@@ -19,6 +19,7 @@ from claude_sandbox.container.images import apply_deps
 from claude_sandbox.util import log, sigint_to_child
 from claude_sandbox.backends.github import GitHubBackend
 from claude_sandbox.backends.local import LocalBackend
+from claude_sandbox import mergecheck
 from claude_sandbox import options
 from claude_sandbox import credentials
 from claude_sandbox import render
@@ -408,14 +409,39 @@ class Sandbox:
             if prompt is None:
                 return
 
+    def merge_findings(self, workdir):
+        """Branches of this session that won't land cleanly on the base (see
+        mergecheck), run in the container. [] when all is well or there is
+        nothing to land; never raises."""
+        if not self.backend.has_commits:
+            return []
+
+        def git(*args):
+            argv = ["git", *args]
+            if args[0] == "fetch":
+                argv = ["timeout", mergecheck.FETCH_TIMEOUT, *argv]
+            r = self.box.user_argv(argv, cwd=workdir, capture=True,
+                                   check=False)
+            return r.returncode, r.stdout or ""
+        try:
+            findings, notes = mergecheck.inspect(
+                git, self.session_id, remote=self.backend.can_push)
+        except Exception as e:  # a broken check must not trap the session
+            log(f"warning: couldn't check the branches' mergeability: {e}")
+            return []
+        for n in notes:
+            log(f"mergeability: {n}")
+        return findings
+
     def final_check(self, workdir):
-        """Run the repo's `check:` scripts now that Claude has exited, while
-        the container and its deploy key are still alive. Returns the prompt
-        to resume Claude with when something failed and the user wants that,
-        else None. Ctrl-C skips the check (and tears down)."""
+        """Run the repo's `check:` scripts, and the launcher's own
+        mergeability check of the session's branches, now that Claude has
+        exited, while the container and its deploy key are still alive.
+        Returns the prompt to resume Claude with when something failed and the
+        user wants that, else None. Ctrl-C skips the check (and tears down)."""
         a = self.args
-        checks = (self.deps or {}).get("check")
-        if not checks or a.shell or a.no_final_check:
+        checks = (self.deps or {}).get("check") or []
+        if a.shell or a.no_final_check:
             return None
         failures = []
         for s in checks:
@@ -426,10 +452,15 @@ class Sandbox:
             code, out = resume.run_streaming(cmd)
             if code != 0:
                 failures.append((s, code, out))
-        if not failures:
-            log("final check passed")
+        merge = self.merge_findings(workdir)
+        if not failures and not merge:
+            if checks:
+                log("final check passed")
             return None
         names = [s["path"] for s, _, _ in failures]
+        if merge:
+            names.append("mergeability: "
+                         + ", ".join(sorted({b for b, _ in merge})))
         log(f"final check FAILED: {', '.join(names)}")
         if not resume.ask_resume(names):
             log("not resuming: tearing down with the check failing (what "
@@ -437,7 +468,8 @@ class Sandbox:
                    else "was committed is still imported")
                 + "; say so in review)")
             return None
-        return resume.resume_prompt(failures, can_push=self.backend.can_push)
+        return resume.resume_prompt(failures, can_push=self.backend.can_push,
+                                    merge_findings=merge)
 
     def setup_token(self):
         """Run `claude setup-token` interactively, then save the pasted token."""
