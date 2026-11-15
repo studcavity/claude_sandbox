@@ -25,6 +25,23 @@ def no_real_actions(monkeypatch, request):
     monkeypatch.setattr(sandbox_actions, "run", lambda *a, **k: [])
 
 
+@pytest.fixture(autouse=True)
+def private_state_dir(monkeypatch, tmp_path):
+    """Recorded signing keys go to a per-test directory, never ~/.local."""
+    import sandbox_provenance
+    monkeypatch.setenv(sandbox_provenance.STATE_ENV, str(tmp_path / "state"))
+
+
+@pytest.fixture(autouse=True)
+def no_real_provenance(monkeypatch, request):
+    """Tests never post provenance statuses to a real GitHub (its own tests
+    pass fakes instead)."""
+    import sandbox_provenance
+    if request.module.__name__.endswith("test_provenance"):
+        return
+    monkeypatch.setattr(sandbox_provenance, "post_session", lambda *a, **k: [])
+
+
 @pytest.fixture
 def repo_root():
     return REPO_ROOT
@@ -70,7 +87,7 @@ def make_args(tmp_path):
     def _make(**kw):
         base = dict(repo=None, repository=None, account_key=False,
                     github_user="studcavity", no_user_check=False,
-                    no_update_check=True, read_only=False, no_pr=False, no_actions=False, no_protect_prompt=False, no_check_status=False, max_actions=25, max_issues=10, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
+                    no_update_check=True, read_only=False, no_pr=False, no_actions=False, no_protect_prompt=False, no_check_status=False, no_provenance=False, max_actions=25, max_issues=10, timings=False, timings_json=None, no_prefetch=False, hard_max_age=30, refresh_images=False,
                     land_all=False, image=None,
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,

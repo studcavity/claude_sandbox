@@ -64,6 +64,7 @@ On every launch the program:
 | `sandbox_actions.py` | host-side: `Sandbox-Action:` commit trailers (versioned JSON) become issues etc.; spec in the docstring |
 | `sandbox_land.py` | host-side: open PRs for a session's branches (labelled, with what the commits say about themselves), hold privileged ones |
 | `sandbox_check.py` | stdlib-only commit linter (CI, and inside the sandbox as `sandbox-check`); `--post-status` (the `sandbox/check` merge gate, `--override` to break glass), `--file-issues` (post-merge filer) |
+| `sandbox_provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status: every commit in a session PR signed by that session or by you |
 | `sandbox_record.py` | stdlib-only: the Verified / Not verified / Follow-up lines in commit messages, for PR bodies |
 | `sandbox_untrusted.py` | stdlib-only: sanitising session text, and the credential scan |
 | `sandbox_labels.py` | stdlib-only: the labels on issues and PRs |
@@ -206,6 +207,42 @@ Also:
   use the "Update branch" button when PRs collide.
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
+
+### Provenance: which commits really came from the session
+A deploy key can push to any branch, so a sibling session (or anyone else
+with push access) can add commits to a session's branch, even after its PR
+is open. The launcher can prove which commits a session made:
+- At launch the container makes an ed25519 signing key and git signs every
+  commit with it. Only the public half leaves, and the launcher records it
+  on the host (`~/.local/state/claude_sandbox/signing/<owner>/<repo>/<session>.pub`,
+  or under `$CLAUDE_SANDBOX_STATE_DIR`), never in the repo, where the
+  session could change it. The private half dies with the container. A new
+  session never reuses a name that has a recorded key.
+- After teardown, for each PR it opened or found, the launcher checks that
+  every commit between the default branch and the PR's head has a good
+  signature from that session's key **or one of your own SSH signing keys
+  on GitHub** (so your rebases and fixups pass if you sign them), and that
+  none is a merge commit. It posts the result as the commit status
+  `sandbox/provenance` on the head commit (`--no-provenance` skips this).
+- A status belongs to one commit: anything pushed later leaves the new head
+  without one. With `rulesets/require-sandbox-provenance.json` applied, the
+  merge stays blocked until you re-check:
+  `./venv/bin/python sandbox_provenance.py OWNER/REPO --pr N`
+  (fixes: drop or re-sign foreign commits; or `git rebase --exec 'git commit
+  --amend --no-edit -S' origin/main` with your own SSH signing key).
+- What it proves: every commit came from this session or from you. What it
+  doesn't: that the session's own commits are benign (it holds its key), or
+  that CI didn't already run foreign commits (`pull_request: synchronize`
+  runs on every push).
+- Caveats: GitHub's "Update branch" button and GPG-signed commits fail the
+  check (GitHub's commits aren't signed by an allowed key; only SSH signing
+  keys are read from your account). That is why the ruleset's "require
+  branches to be up to date" is off. A PR from before this feature, or from
+  another host, has no recorded key and fails closed. The status is posted
+  with your `gh` login, so a ruleset can't pin it to an app: anything else
+  allowed to post statuses (e.g. a workflow's `GITHUB_TOKEN` when the repo's
+  default workflow permissions allow writes) could post a fake success. Set
+  Settings -> Actions -> Workflow permissions to read-only.
 
 ### Optional: confine deploy keys to `sbx/` (apply by hand)
 A deploy key can create any branch and push tags. A pushed tag runs

@@ -41,6 +41,13 @@ the code-layout table.
   `sandbox_templates.py` (+ `templates/`), `sandbox_names.py`: small pure
   helpers. Session text is untrusted: sanitise with `sandbox_untrusted`, never
   paste it into GitHub raw.
+- `sandbox_provenance.py`: per-session commit-signing keys. The container
+  makes the key and signs every commit; only the public half is recorded, on
+  the host (`$CLAUDE_SANDBOX_STATE_DIR` or `~/.local/state/claude_sandbox/
+  signing/`), never in the repo. After teardown the launcher posts
+  `sandbox/provenance` per PR. Verification is git's own (`%G?`/`%GF`), with
+  the user's git config shut out and `gpg.ssh.program` pinned (a lying
+  program makes git report any commit as good; a test proves it).
 - `sandbox_timing.py`: the `--timings` stopwatch; stages are explicit
   `with sandbox_timing.stage(...)` blocks, never wrappers assigned onto the
   `Sandbox` instance (shadowing a method crashed every launch once).
