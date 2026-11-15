@@ -13,6 +13,7 @@ Each spec is meant to be its own PR.
 | [04](04-narrow-secret-scan.md) | 4 | A narrower secret scan, aimed at what the sandbox holds |
 | [05](05-stacked-prs.md) | 5 (stacking) | Stacked PRs get no CI: close the gap or stop stacking |
 | [06](06-one-landing-pipeline.md) | new, + 5 | Setup-script review hold skipped under `--land-all` / `--no-deps`; one landing pipeline |
+| [07](07-untrusted-ci-context.md) | new | Check that CI runs of session code are untrusted, and offer the settings that make them so |
 
 ## Suggested order
 
@@ -23,6 +24,9 @@ Each spec is meant to be its own PR.
 4. 04 at any point. It is independent, but 01-03 remove some of its call
    sites.
 5. 06's remaining parts, whenever they cause the least churn.
+6. 07 before choosing option B in 05. Its first step, checking whether a
+   deploy key can push workflow files, is worth doing early whatever else
+   happens.
 
 ## Corrections to the plan, found during review
 
