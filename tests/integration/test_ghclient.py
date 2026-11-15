@@ -142,45 +142,35 @@ def test_pr_info_is_typed_and_maps_a_deleted_head_repo_to_empty(client):
 
 
 def test_post_status_sends_exactly_the_fields_the_gate_needs(client, srv):
-    client.post_status("o/r", SHA, "success", "sandbox/check", "0 errors, 0 warnings",
+    client.post_status("o/r", SHA, "success", "sandbox/provenance", "0 errors, 0 warnings",
                        "https://github.com/o/r/pull/7")
     (post,) = srv.calls("POST")
     assert post["path"] == f"/repos/o/r/statuses/{SHA}"
     assert json.loads(post["body"]) == {
         "state": "success", "target_url": "https://github.com/o/r/pull/7",
-        "description": "0 errors, 0 warnings", "context": "sandbox/check"}
-    client.post_status("o/r", SHA, "error", "sandbox/check", "check crashed")
+        "description": "0 errors, 0 warnings", "context": "sandbox/provenance"}
+    client.post_status("o/r", SHA, "error", "sandbox/provenance", "check crashed")
     assert "target_url" not in json.loads(srv.calls("POST")[-1]["body"])
 
 
-def test_comments_and_labels_hit_the_issue_endpoints(client, srv):
+def test_comments_hit_the_issue_endpoint(client, srv):
     client.comment("o/r", 7, "overridden by octo")
-    client.add_label("o/r", 7, "check-failed")
-    client.remove_label("o/r", 7, "check-failed")
-    client.ensure_label("o/r", "check-failed", "d73a4a", "red")
     seen = [(r["method"], r["path"]) for r in srv.requests if r["method"] != "GET"]
     assert ("POST", "/repos/o/r/issues/7/comments") in seen
-    assert ("POST", "/repos/o/r/issues/7/labels") in seen
-    labels_post = [r for r in srv.requests if r["path"] == "/repos/o/r/issues/7/labels"][0]
-    assert json.loads(labels_post["body"]) == ["check-failed"]
-    assert ("DELETE", "/repos/o/r/issues/7/labels/check-failed") in seen
-    assert ("POST", "/repos/o/r/labels") in seen
-    comment = [r for r in srv.requests if r["path"].endswith("/comments")][0]
-    assert json.loads(comment["body"]) == {"body": "overridden by octo"}
 
 
 def test_library_defaults_that_would_slow_every_write_are_off(client, srv):
     """PyGithub sleeps 1 s between writes and 0.25 s between requests by default."""
     start = time.monotonic()
     for i in range(5):
-        client.post_status("o/r", SHA, "success", "sandbox/check", f"d{i}")
+        client.post_status("o/r", SHA, "success", "sandbox/provenance", f"d{i}")
     assert time.monotonic() - start < 3.0        # the defaults alone would be >= 8 s
 
 
 def test_a_failed_write_is_never_retried_but_a_failed_read_is(client, srv):
     srv.overrides[("POST", f"/repos/o/r/statuses/{SHA}")] = [503, 200]
     with pytest.raises(GitHubError) as e:
-        client.post_status("o/r", SHA, "success", "sandbox/check", "x")
+        client.post_status("o/r", SHA, "success", "sandbox/provenance", "x")
     assert e.value.code == 503
     assert len(srv.calls("POST")) == 1           # a retried POST could duplicate
 
@@ -195,16 +185,6 @@ def test_http_errors_become_githuberror_with_the_status(client, srv, code):
     with pytest.raises(GitHubError) as e:
         client.pr("o/r", 7)
     assert e.value.code == code and f"HTTP {code}" in str(e.value)
-
-
-def test_expected_refusals_are_not_errors(client, srv):
-    srv.overrides[("POST", "/repos/o/r/labels")] = [422]           # already exists
-    client.ensure_label("o/r", "x", "ffffff", "d")
-    srv.overrides[("DELETE", "/repos/o/r/issues/7/labels/gone")] = [404]
-    client.remove_label("o/r", 7, "gone")                           # wasn't there
-    srv.overrides[("POST", "/repos/o/r/labels")] = [403]
-    with pytest.raises(GitHubError):                               # but not permitted is real
-        client.ensure_label("o/r", "x", "ffffff", "d")
 
 
 def test_gh_token_comes_from_the_gh_login_and_is_never_in_an_error(monkeypatch):

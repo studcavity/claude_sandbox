@@ -393,3 +393,51 @@ def test_main_override_routes_to_override_pr(monkeypatch, capsys):
                         sp.Verdict("success", "d", [], "a" * 40))
     assert sp.main(["o/r", "--pr", "3", "--override", "a good reason"]) == 0
     assert seen == [("o/r", 3, "a good reason")]
+
+
+# --- helpers that used to live in sandbox_check (spec 01) ------------------ #
+GH_TOKEN = "ghp_" + "x" * 40
+
+
+def test_override_description_format_and_bounds():
+    d = sp.override_description("octo", "false positive: the fixture is fake")
+    assert d == "OVERRIDDEN by octo: false positive: the fixture is fake"
+    long = sp.override_description("octo", "x" * 500)
+    assert len(long) == sp.DESC_MAX and long.endswith("\u2026")
+    assert "\n" not in sp.override_description("octo", "line one\nline two is here")
+    assert sp.override_description("bad login!", "a long enough reason").startswith(
+        "OVERRIDDEN by unknown:")
+
+
+@pytest.mark.parametrize("reason", ["", "short", "         ", "\n" * 11])
+def test_override_needs_a_real_reason(reason):
+    with pytest.raises(sp.ProvenanceError, match="real reason"):
+        sp.override_description("octo", reason)
+
+
+def test_override_reason_with_a_credential_is_refused_without_echoing_it():
+    with pytest.raises(sp.ProvenanceError) as e:
+        sp.override_description("octo", f"because {GH_TOKEN} is needed")
+    assert GH_TOKEN not in str(e.value) and "credential" in str(e.value)
+
+
+@pytest.mark.parametrize("bad", ["--upload-pack=touch /tmp/x", "abc", "", None,
+                                 "g" * 40])
+def test_base_commit_id_is_validated_before_reaching_git(bad, tmp_path):
+    with pytest.raises(sp.ProvenanceError, match="unexpected base"):
+        sp.fetch_pr("file:///nowhere", 1, bad, str(tmp_path / "d"))
+
+
+def test_a_failed_fetch_is_a_clean_error(tmp_path):
+    with pytest.raises(sp.ProvenanceError, match="couldn't fetch PR #1"):
+        sp.fetch_pr(str(tmp_path / "nowhere"), 1, "a" * 40, str(tmp_path / "d"))
+
+
+def test_pr_numbers_only_from_opened_or_existing_prs():
+    L = types.SimpleNamespace
+    got = sp.pr_numbers([
+        L(outcome="opened", detail="https://github.com/o/r/pull/7"),
+        L(outcome="exists", detail="https://github.com/o/r/pull/8/"),
+        L(outcome="held", detail=""), L(outcome="empty", detail=""),
+        L(outcome="opened", detail="not-a-pr-url")])
+    assert got == [7, 8]

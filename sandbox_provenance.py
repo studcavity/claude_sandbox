@@ -14,7 +14,7 @@ status `sandbox/provenance` on the PR's head commit. A ruleset can require
 it (rulesets/require-sandbox-provenance.json).
 
 --override REASON is the audited break-glass path (the same shape as
-`sandbox_check.py --override`): it posts `success` for that one head commit
+a status override elsewhere): it posts `success` for that one head commit
 with an `OVERRIDDEN by <login>: <reason>` description and comments on the PR,
 without checking signatures. Use it for commits the check can't vouch for
 though you do, e.g. a rebase made with GitHub's web button (signed by GitHub,
@@ -47,7 +47,6 @@ import sys
 import tempfile
 import urllib.parse
 
-import sandbox_check
 import sandbox_names
 import sandbox_untrusted
 
@@ -55,6 +54,8 @@ CONTEXT = "sandbox/provenance"
 DESC_MAX = 140
 STATE_ENV = "CLAUDE_SANDBOX_STATE_DIR"
 SIGNING_KEY = "~/.ssh/signing_ed25519"   # inside the container
+MIN_OVERRIDE_REASON = 10
+LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 _KEY_RE = re.compile(r"^(ssh-ed25519) ([A-Za-z0-9+/]+={0,2})(?: .*)?$")
 
@@ -246,12 +247,56 @@ def default_tip(api, repo):
     return b["commit"]["sha"]
 
 
+def override_description(login, reason):
+    """The status description for a break-glass override (<= DESC_MAX chars).
+    Raises ProvenanceError when the reason is unusable."""
+    reason = " ".join(sandbox_untrusted.printable(reason).split())
+    if len(reason) < MIN_OVERRIDE_REASON:
+        raise ProvenanceError(f"--override needs a real reason (>= "
+                              f"{MIN_OVERRIDE_REASON} characters)")
+    if sandbox_untrusted.find_secrets(reason):
+        raise ProvenanceError("--override reason looks like it contains a "
+                              "credential; not posted")
+    who = login if LOGIN_RE.match(login or "") else "unknown"
+    return sandbox_untrusted.truncate(f"OVERRIDDEN by {who}: {reason}", DESC_MAX)
+
+
+def fetch_pr(url, number, base_sha, dest):
+    """Fetch a PR's head and its base commit into a fresh bare repository at
+    `dest`, authenticating through the user's gh login (no token handled)."""
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha or ""):
+        raise ProvenanceError(f"unexpected base commit id {base_sha!r}")
+    try:
+        subprocess.run(["git", "init", "-q", "--bare", dest], check=True,
+                       capture_output=True, text=True, errors="replace")
+        subprocess.run(
+            ["git", "-C", dest, "-c", "credential.helper=",
+             "-c", "credential.helper=!gh auth git-credential",
+             "fetch", "-q", "--no-tags", url,
+             f"+refs/pull/{int(number)}/head:refs/pr/head", base_sha],
+            check=True, capture_output=True, text=True, errors="replace")
+    except subprocess.CalledProcessError as e:
+        raise ProvenanceError(f"couldn't fetch PR #{int(number)} from {url}: "
+                              f"{(e.stderr or '').strip()[-200:]}") from None
+
+
+def pr_numbers(landed):
+    """PR numbers of the open PRs a landing produced (duck-typed on
+    `.outcome` and `.detail`, which holds the PR URL for opened/exists)."""
+    nums = []
+    for l in landed:
+        tail = (l.detail or "").rstrip("/").rsplit("/", 1)[-1]
+        if l.outcome in ("opened", "exists") and tail.isdigit():
+            nums.append(int(tail))
+    return nums
+
+
 def check_pr(repo, number, api, client, root=None, fetch=None):
     """Verify one PR -> Verdict (nothing posted)."""
     pr = client.pr(repo, number)
     if (pr.head_repo or "").lower() != repo.lower():
         raise ProvenanceError(f"PR #{number} comes from {pr.head_repo or 'a fork'}")
-    session = sandbox_check.branch_session(pr.head_ref)
+    session = sandbox_names.branch_session(pr.head_ref)
     if not session:
         raise ProvenanceError(f"PR #{number} isn't from a sandbox branch")
     key = load_key(repo, session, root)
@@ -264,7 +309,7 @@ def check_pr(repo, number, api, client, root=None, fetch=None):
     base = default_tip(api, repo)
     with tempfile.TemporaryDirectory() as tmp:
         repo_dir = os.path.join(tmp, "repo.git")
-        (fetch or sandbox_check.fetch_pr)(
+        (fetch or fetch_pr)(
             f"https://github.com/{repo}.git", number, base, repo_dir)
         signers = os.path.join(tmp, "allowed_signers")
         with open(signers, "w") as f:
@@ -306,7 +351,7 @@ def post_pr(repo, number, api=None, client=None, root=None, fetch=None):
 
 def override_comment(login, reason, sha):
     """PR comment that makes an override auditable."""
-    who = login if sandbox_check.LOGIN_RE.match(login or "") else "unknown"
+    who = login if LOGIN_RE.match(login or "") else "unknown"
     return "\n".join([
         f"**`{CONTEXT}` overridden** by `{who}` for commit `{sha[:7]}`.", "",
         "Reason: " + sandbox_untrusted.one_line(reason, 500), "",
@@ -326,13 +371,10 @@ def override_pr(repo, number, reason, client=None):
     pr = client.pr(repo, number)
     if (pr.head_repo or "").lower() != repo.lower():
         raise ProvenanceError(f"PR #{number} comes from {pr.head_repo or 'a fork'}")
-    if not sandbox_check.branch_session(pr.head_ref):
+    if not sandbox_names.branch_session(pr.head_ref):
         raise ProvenanceError(f"PR #{number} isn't from a sandbox branch")
     login = client.login()
-    try:
-        desc = sandbox_check.override_description(login, reason)
-    except sandbox_check.CheckError as e:
-        raise ProvenanceError(str(e)) from None
+    desc = override_description(login, reason)
     if client.pr(repo, number).head_sha != pr.head_sha:
         raise ProvenanceError(f"PR #{number} head moved; nothing posted. Re-run.")
     client.post_status(repo, pr.head_sha, "success", CONTEXT, desc, pr.url)
@@ -344,7 +386,7 @@ def post_session(repo, landed, api=None, client=None, root=None, poster=None):
     """Post `sandbox/provenance` for each PR a landing opened or found ->
     [Outcome]. One PR failing never affects the others."""
     out = []
-    for n in sandbox_check.pr_numbers(landed):
+    for n in pr_numbers(landed):
         try:
             v = (poster or post_pr)(repo, n, api=api, client=client, root=root)
             out.append(Outcome(n, v.state, v.description))

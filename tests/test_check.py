@@ -68,10 +68,11 @@ def test_session_branch_commits_need_no_trailer(repo):
 
 
 def test_branch_session_parsing():
-    assert sc.branch_session(f"sbx/{S}/work") == S
-    assert sc.branch_session(f"refs/heads/sbx/{S}/a/b") == S
+    import sandbox_names
+    assert sandbox_names.branch_session(f"sbx/{S}/work") == S
+    assert sandbox_names.branch_session(f"refs/heads/sbx/{S}/a/b") == S
     for ref in (None, "", "main", "sbx/x", "feature/sbx/x/y"):
-        assert sc.branch_session(ref) is None
+        assert sandbox_names.branch_session(ref) is None
 
 
 def test_option_like_revisions_are_refused():

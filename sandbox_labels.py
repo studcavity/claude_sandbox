@@ -10,13 +10,10 @@ import re
 
 SANDBOX = "sandbox"              # everything we create
 FOLLOW_UP = "follow-up"          # an issue from a Sandbox-Action trailer
-CHECK_FAILED = "check-failed"    # a PR whose sandbox/check status is red
 
 TABLE = {  # name -> (colour, description)
     SANDBOX: ("5319e7", "Filed by claude_sandbox from a session's commit"),
     FOLLOW_UP: ("fbca04", "A follow-up a sandboxed session asked for"),
-    CHECK_FAILED: ("d73a4a", "sandbox/check reported errors for this PR's "
-                             "head commit"),
 }
 SESSION_PREFIX = "session:"
 _SESSION_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")
