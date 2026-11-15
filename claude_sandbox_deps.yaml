@@ -5,12 +5,12 @@
 
 # Where/when this toolchain was resolved, so it can be reproduced later.
 # Refresh both whenever you edit this file (inert metadata, never executed).
-last_generated: "2026-11-15T01:56:39Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
+last_generated: "2026-11-15T20:21:22Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
 platform: |                              # lsb_release -a; uname -m
   Distributor ID: Ubuntu
-  Description:    Ubuntu 24.04.5 LTS
-  Release:        24.04
-  Codename:       noble
+  Description:    Ubuntu 26.04.1 LTS
+  Release:        26.04
+  Codename:       resolute
   x86_64
 
 # Debian/Ubuntu packages (optionally pinned: name=version).
@@ -38,3 +38,10 @@ binaries:
 #   - name: arduino-cli
 #     url: https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh
 #     env: {BINDIR: /usr/local/bin}
+
+# Run when Claude exits, before teardown; a failure offers to resume the
+# session with the output (README: "final check:").
+check:
+  - name: lint-and-tests
+    path: final-check.sh
+    timeout: 900

@@ -92,6 +92,56 @@ def test_session_script(kw, expect):
     assert cs.session_script("/w", "", **kw) == f"cd /w && {expect}"
 
 
+def test_resumed_session_script_continues_with_the_prompt_as_one_argument():
+    """Failing test output is arbitrary text: it must reach claude as exactly
+    one argv word, never be parsed by the shell."""
+    nasty = "FAILED $(touch /pwned) `x` 'q' \"d\"; rm -rf /\nline2"
+    script = cs.session_script("/w", "", model="opus", resume_prompt=nasty)
+    import shlex
+    words = shlex.split(script.split("exec ", 1)[1])
+    assert words == ["claude", "--model", "opus", "--continue", nasty]
+    # the same through tmux's extra layer of quoting
+    tmuxed = cs.session_script("/w", "", tmux=True, resume_prompt=nasty)
+    inner = shlex.split(shlex.split(tmuxed.split("exec ", 1)[1])[-1])
+    assert inner == ["claude", "--continue", nasty]
+
+
+def test_a_shell_session_is_never_resumed():
+    assert cs.session_script("/w", "", shell=True, resume_prompt="x") == \
+        "cd /w && exec bash -l"
+
+
+def test_tail_text_strips_terminal_noise_and_marks_a_cut():
+    assert cs.tail_text("\x1b[31mFAILED\x1b[0m a\r\n\x07done\n") == "FAILED a\ndone"
+    cut = cs.tail_text("x" * 50 + "END", limit=10)
+    assert cut == "[... output cut ...]\n" + "x" * 7 + "END"
+
+
+def test_resume_prompt_names_each_failure_and_its_output():
+    a = {"name": "tests", "path": "final-check.sh"}
+    b = {"name": "lint", "path": "tools/lint.sh"}
+    p = cs.resume_prompt([(a, 1, "FAILED tests/test_x.py::test_y"),
+                          (b, 124, "slow")])
+    assert "final-check.sh" in p and "exited with status 1" in p
+    assert "FAILED tests/test_x.py::test_y" in p
+    assert "tools/lint.sh" in p and "timed out" in p
+    assert "commit and push" in p
+
+
+def test_run_streaming_echoes_and_keeps_only_the_tail(tmp_path):
+    import io
+    import sys
+    echo = io.StringIO()
+    code, out = cs.run_streaming(
+        [sys.executable, "-c",
+         "import sys\nfor i in range(100): print('line', i)\nsys.exit(3)"],
+        limit=60, echo=echo)
+    assert code == 3
+    assert echo.getvalue().count("\n") == 100          # all of it was shown
+    assert out.endswith("line 99\n") and len(out) <= 60 + len("line 99\n")
+    assert "line 0\n" not in out
+
+
 def test_session_script_quotes_workdir_and_prefixes_secrets():
     s = cs.session_script("/home/u/my repo", ". f && ")
     assert s.startswith(". f && cd '/home/u/my repo' && ")
@@ -1224,3 +1274,87 @@ def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
     assert ("The only permission a session should have is to push branches "
             "with its ephemeral deploy key") in t
     assert "Tell the user at once" in t and "filed only after a merge" in t
+
+
+# --------------------------------------------------------------------------- #
+# final check: run `check:` when Claude exits, resume on failure
+# --------------------------------------------------------------------------- #
+CHECK = {"name": "tests", "path": "final-check.sh", "args": [], "env": {},
+         "timeout": 60}
+
+
+@pytest.fixture
+def checking(make_args, monkeypatch):
+    """A Sandbox with one check script; `ran` records each command line and
+    `results` scripts (returncode, output) per run."""
+    ran, results = [], []
+    box = cs.Sandbox(make_args(repo="o/r"))
+    box.deps = {"check": [CHECK]}
+    monkeypatch.setattr(box.box, "user_cmd",
+                        lambda *argv, env=None: ["x", "--cwd", "/h", "--", *argv],
+                        raising=False)
+
+    def fake_stream(cmd, **kw):
+        ran.append(cmd)
+        return results.pop(0)
+    monkeypatch.setattr(cs, "run_streaming", fake_stream)
+    return types.SimpleNamespace(box=box, ran=ran, results=results,
+                                 monkeypatch=monkeypatch)
+
+
+def test_final_check_runs_the_script_in_the_clone_with_its_timeout(checking):
+    checking.results.append((0, "ok"))
+    assert checking.box.final_check("/w/repo") is None
+    cmd = checking.ran[0]
+    assert cmd[cmd.index("--cwd") + 1] == "/w/repo"
+    assert cmd[cmd.index("--") + 1:] == cs.setup_argv(CHECK)
+
+
+def test_final_check_failure_returns_a_prompt_when_the_user_agrees(checking):
+    checking.results.append((1, "FAILED test_y"))
+    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert "FAILED test_y" in prompt and "final-check.sh" in prompt
+
+
+def test_final_check_failure_tears_down_when_the_user_declines(checking):
+    checking.results.append((1, "FAILED"))
+    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: False)
+    assert checking.box.final_check("/w") is None
+
+
+def test_every_check_runs_even_after_one_fails(checking):
+    checking.box.deps = {"check": [CHECK, dict(CHECK, name="b", path="b.sh")]}
+    checking.results += [(1, "one"), (2, "two")]
+    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert len(checking.ran) == 2 and "one" in prompt and "two" in prompt
+
+
+@pytest.mark.parametrize("deps, kw", [
+    (None, {}), ({"check": []}, {}),
+    ({"check": [CHECK]}, {"shell": True}),
+    ({"check": [CHECK]}, {"no_final_check": True}),
+])
+def test_final_check_is_skipped_without_checks_or_when_opted_out(
+        make_args, monkeypatch, deps, kw):
+    box = cs.Sandbox(make_args(repo="o/r", **kw))
+    box.deps = deps
+    monkeypatch.setattr(cs, "run_streaming",
+                        lambda *a, **k: pytest.fail("ran a check"))
+    assert box.final_check("/w") is None
+
+
+def test_ask_resume_never_resumes_without_a_terminal(monkeypatch):
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr("builtins.input",
+                        lambda *a: pytest.fail("prompted without a tty"))
+    assert cs.ask_resume(["x"]) is False
+
+
+@pytest.mark.parametrize("answer, expect", [
+    ("", True), ("y", True), ("YES", True), ("n", False), ("no", False)])
+def test_ask_resume_defaults_to_yes(monkeypatch, answer, expect):
+    monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *a: answer)
+    assert cs.ask_resume(["x"]) is expect
