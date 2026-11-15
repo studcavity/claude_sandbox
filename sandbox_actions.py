@@ -64,12 +64,14 @@ import json
 import re
 import urllib.parse
 
+import sandbox_names
+
 TRAILER = "Sandbox-Action"
 SESSION_TRAILER = "Sandbox-Session"
 ID_MAX = 100          # was 40; ids now carry date + session + random suffix
 ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,%d}$" % ID_MAX)
 REF_RE = re.compile(r"^([0-9a-f]{7,40}):([A-Za-z0-9._-]{1,%d})$" % ID_MAX)
-SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,39}$")  # = sandbox_sessions
+SESSION_RE = sandbox_names.SESSION_RE
 MAX_ACTIONS = 25      # executed per run, across all commits
 MAX_LINE = 8000       # a trailer line longer than this is ignored
 MAX_TITLE = 120

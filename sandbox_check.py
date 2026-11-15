@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 import sandbox_actions
-import sandbox_sessions
+import sandbox_names
 
 
 def git(*args):
@@ -23,7 +23,7 @@ def git(*args):
 def branch_session(ref):
     """'sbx/<session>/x' (or refs/heads/...) -> session, else None."""
     parts = (ref or "").removeprefix("refs/heads/").split("/")
-    if len(parts) >= 3 and parts[0] == sandbox_sessions.BRANCH_ROOT:
+    if len(parts) >= 3 and parts[0] == sandbox_names.BRANCH_ROOT:
         return parts[1]
     return None
 
