@@ -531,6 +531,16 @@ warning in the log (what was pushed still becomes a PR). Ctrl-C during the
 check skips it and tears down. `--no-final-check`, `--no-deps` and `--shell`
 skip it.
 
+The launcher adds its own check, whether or not the repo has `check:`
+scripts (`claude_sandbox/mergecheck.py`): each of the session's branches is
+judged alone against its base and reported if it conflicts with it or is
+behind it. GitHub: the session's *pushed* `sbx/<session>/*` branches after a
+fetch, each against the repo's default branch (what its PR will target); local
+branches never pushed, or moved since, are reported as well. `--local`: the
+session's local `sbx/<session>/*` branches against the base it started from.
+Empty branches and other sessions' branches are ignored. Findings resume the
+session like a failed script; after the rebase, the scripts run again.
+
 This repo's `scripts/final-check.sh` also runs `tests/integration` when the sandbox
 was launched with `--nesting` (and says so when it skips them).
 
