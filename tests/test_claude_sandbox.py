@@ -824,3 +824,9 @@ def test_action_failure_never_blocks_teardown(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch, repo="o/r")
     box.key_id = 1
     box.land()
+
+
+def test_template_asks_for_a_todo_file_per_issue_action(repo_root):
+    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    assert "`todo/<id>.md`" in t and "same commit" in t
+    assert "fresh agent" in t

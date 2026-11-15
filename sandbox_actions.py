@@ -39,6 +39,11 @@ Types today
                earlier one is skipped, so only unaddressed items are filed.
                (An issue that was already filed is left for a human to close.)
 
+Convention (instruction to sessions, not enforced or consumed here yet): an
+`issue` action's full description lives in the same commit at `todo/<id>.md`,
+written so a fresh agent with no context could pick the item up. It may later
+become the issue body; today the launcher ignores it.
+
 Trust: everything here is text written by an AI session. It is bounded
 (MAX_*), stripped of control characters and live @-mentions, and labelled
 untrusted. Handlers only ever do narrow, reversible, non-merging things.

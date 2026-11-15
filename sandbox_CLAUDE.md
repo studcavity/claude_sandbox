@@ -210,6 +210,16 @@ later. Put it there rather than in a stray notes file or only in chat.
   addressed one with `{"v": 1, "type": "resolve", "id": "r1", "ref": "<sha7+>:<id>"}`
   and it won't be filed. Anything malformed or unknown is silently ignored, so
   keep the plain `Follow-up:` prose line too. Full spec: `sandbox_actions.py`.
+- **Every `issue` action gets a brief file, in the same commit, at
+  `todo/<id>.md`** (so pick an `id` unique across the repo, not just the
+  commit: the path is how the item is found later). Write it for a fresh agent
+  with no context from this session, who must be able to pick the item up from
+  that file alone: what the problem is and why it matters; what you already
+  tried or ruled out; the exact files, functions, commands and error text
+  involved; why it was blocked here (missing tool, host access, credentials);
+  what "done" looks like and how to verify it; and anything that would be
+  risky or surprising. The issue `body` can stay a short summary. When a later
+  commit resolves the item, delete its `todo/<id>.md` in that commit.
 
 ## Testing: part of the repo, not just the session
 Work should always come with automated tests that **live in the repo** and
