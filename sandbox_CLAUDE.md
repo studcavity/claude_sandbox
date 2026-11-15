@@ -224,7 +224,10 @@ silently work around it, fake it, or give up. Instead:
 ## Session identity and branches
 Other sessions may be working in this same repo **at the same time**. You are
 session `$session`. If no repo was cloned, ignore this section.
-- Work only on branches under `$prefix`. You start on `$prefix`work. For a
+- Work only on branches under `$prefix`. You start on `$prefix`work. **As soon as you
+  know the task, and before your first push, rename it** to a short slug of
+  the task (2-5 lowercase hyphenated words): `git branch -m $prefix<slug>`.
+  Never rename a pushed branch. For a
   separate task, branch from the default branch: `git fetch origin && git
   switch -c $prefix<task> origin/HEAD`.
 - **Never push to the default branch, and never touch another session's
