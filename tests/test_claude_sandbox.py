@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import subprocess
+import types
 
 import pytest
 
@@ -453,8 +454,11 @@ def test_template_documents_setup_and_the_hazard_guard(repo_root):
     t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
     guard = '[ -f /etc/claude-sandbox ] || '
     assert guard in t and "Gate hazardous scripts" in t
-    assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in t
-    assert "\nsetup:" in t and cs.SANDBOX_MARKER == "/etc/claude-sandbox"
+    flat = " ".join(t.split())
+    assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in flat
+    assert cs.SANDBOX_MARKER == "/etc/claude-sandbox"
+    ref = open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read()
+    assert "\nsetup:" in ref and "idempotent" in ref
 
 
 # --------------------------------------------------------------------------- #
@@ -628,7 +632,7 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
 
 
 def test_template_documents_image_key(repo_root):
-    t = open(os.path.join(repo_root, "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, cs.DEPS_REF_TEMPLATE)).read()
     assert "\nimage: images:ubuntu/24.04" in t and "--image" in t
 
 
@@ -788,7 +792,29 @@ def test_template_tells_session_its_identity_and_branch_rules(repo_root):
     assert "session\n`quirky-hopper`" in md.replace("session `", "session\n`")
     assert "sbx/quirky-hopper/" in md and "Never push to the default" in md
     assert "force-with-lease" in md and "claude/" not in md.replace(
-        "claude_sandbox", "").replace("claude-sandbox", "")
+        "claude_sandbox", "").replace("claude-sandbox", "").replace(
+        "~/.claude/", "")
+
+
+def test_deps_reference_is_written_and_the_prompt_points_at_it(
+        make_args, monkeypatch, repo_root):
+    """The deps schema is read on demand: it must land where CLAUDE.md says,
+    fully rendered, and CLAUDE.md must name that path."""
+    writes = {}
+
+    class Box:
+        def user(self, script, input=None, **kw):
+            writes[script] = input
+            return types.SimpleNamespace(stdout="sudo=yes\ntools=git\nbranch=")
+
+    box = _sandbox(make_args, monkeypatch, repo="me/p")
+    box.box = Box()
+    box.write_claude_md("/home/ubuntu/p")
+    (ref,) = [v for k, v in writes.items() if k == f"cat > {cs.DEPS_REF_PATH}"]
+    assert cs.sandbox_deps.DEPS_FILE in ref and "last_generated" in ref
+    assert not re.search(r"\$[a-z_{]", ref), "unsubstituted placeholder"
+    (main,) = [v for k, v in writes.items() if "CLAUDE.md" in k]
+    assert cs.DEPS_REF_PATH in main
 
 
 def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
