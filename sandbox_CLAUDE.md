@@ -243,10 +243,11 @@ session `$session`. If no repo was cloned, ignore this section.
   original signatures; rebasing, amending and cherry-picking here re-sign
   them, which is fine.
 - You cannot open or merge PRs. When the session ends, the launcher opens a PR
-  for each of your pushed branches that has commits. It **holds back** (no PR)
-  any branch that changes `.github/`, `.githooks/`, `CODEOWNERS`, `$deps_file`,
-  the host file or a `setup:` script, since those run with extra privilege;
-  say in your final message if a branch needs that kind of review. The check
+  for each of your pushed branches that has commits. It **holds back** (no PR
+  unless the user confirms at an interactive prompt) any branch that changes
+  `.github/`, `.githooks/`, `CODEOWNERS`, `$deps_file`, the host file or a
+  `setup:` script, since those run with extra privilege; say in your final
+  message if a branch needs that kind of review. The check
   is against the default branch, so every branch stacked above a held one is
   held too.
 - **Stacking PRs is fine for iterative work.** Build each step on your previous
