@@ -18,6 +18,11 @@ the code-layout table.
 - `sandbox_containers.py`: `Container`, a thin `lxc`/`incus` wrapper.
 - `sandbox_github.py`: GitHub access through the host's `gh` CLI (run with
   invoke), `validate_repo`, `resolve_repo`.
+- `sandbox_ghclient.py`: typed GitHub operations through PyGithub, returning
+  small frozen dataclasses. Use it for new code; `gh_api` stays for what
+  needs raw REST dicts or exact file bytes (PyGithub's requester mangles raw
+  content, so don't route `gh_api` through it). Its tests run real PyGithub
+  against a local HTTPS server (`tests/integration/test_ghclient.py`).
 - `sandbox_host.py`: `claude_sandbox_host.yaml` (USB requests) and approval.
 - `sandbox_deps.py`: `claude_sandbox_deps.yaml` schema, downloads, archives.
 - `sandbox_util.py`: `log`, `run`, `sigint_to_child`.

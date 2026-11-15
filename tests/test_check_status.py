@@ -1,10 +1,13 @@
 """--post-status / --override (plan 5c): the PR path runs through real git, with
 a local repository standing in for GitHub and a fake API for the REST calls."""
+import dataclasses
 import json
 
 import pytest
 
 import sandbox_check as sc
+from sandbox_ghclient import PrInfo
+from sandbox_github import GitHubError
 from test_check_rules import GH, Repo
 
 LOGIN = "studcavity"
@@ -67,32 +70,47 @@ def test_override_comment_caps_the_findings_list():
 
 # --- the PR path, against a local "remote" ---------------------------------- #
 class Api:
+    """A fake typed client (sandbox_ghclient.GhClient). It records in the shapes
+    the earlier REST-level fake used (path, body) so assertions read the same."""
     def __init__(self, base, head, ref, repo="o/r", head_after=None, fail_post=False):
-        self.pr = {"base": {"sha": base}, "head": {"sha": head, "ref": ref,
-                   "repo": {"full_name": repo}}, "html_url": "https://github.com/o/r/pull/1"}
+        self.info = PrInfo(1, base, head, ref, repo, "https://github.com/o/r/pull/1")
         self.head_after, self.fail_post = head_after, fail_post
         self.reads, self.posts = 0, []
         self.label_calls, self.deletes, self.fail_labels = [], [], False
 
-    def __call__(self, method, path, body=None, raw=False):
-        if method == "GET" and path == "/repos/o/r/pulls/1":
-            self.reads += 1
-            if self.head_after and self.reads > 1:
-                return {**self.pr, "head": {**self.pr["head"], "sha": self.head_after}}
-            return self.pr
-        if method == "GET" and path == "/user":
-            return {"login": LOGIN}
-        if method in ("POST", "DELETE") and path.endswith(("/labels", "/labels/check-failed")):
-            if self.fail_labels:
-                raise RuntimeError("HTTP 403")
-            (self.label_calls if method == "POST" else self.deletes).append((path, body))
-            return {}
-        if method == "POST":
-            if self.fail_post:
-                raise RuntimeError("HTTP 500")
-            self.posts.append((path, body))
-            return {}
-        raise AssertionError((method, path))
+    def pr(self, repo, number):
+        self.reads += 1
+        if self.head_after and self.reads > 1:
+            return dataclasses.replace(self.info, head_sha=self.head_after)
+        return self.info
+
+    def login(self):
+        return LOGIN
+
+    def post_status(self, repo, sha, state, context, description, target_url=None):
+        if self.fail_post:
+            raise GitHubError("HTTP 500", 500)
+        body = {"state": state, "context": context, "description": description}
+        if target_url:
+            body["target_url"] = target_url
+        self.posts.append((f"/repos/{repo}/statuses/{sha}", body))
+
+    def comment(self, repo, number, body):
+        self.posts.append((f"/repos/{repo}/issues/{number}/comments", {"body": body}))
+
+    def ensure_label(self, repo, name, color, description):
+        if self.fail_labels:
+            raise GitHubError("HTTP 403", 403)
+
+    def add_label(self, repo, number, name):
+        if self.fail_labels:
+            raise GitHubError("HTTP 403", 403)
+        self.label_calls.append((f"/repos/{repo}/issues/{number}/labels", {"labels": [name]}))
+
+    def remove_label(self, repo, number, name):
+        if self.fail_labels:
+            raise GitHubError("HTTP 403", 403)
+        self.deletes.append((f"/repos/{repo}/issues/{number}/labels/{name}", None))
 
     def status(self):
         (s,) = [b for p, b in self.posts if "/statuses/" in p]
@@ -117,7 +135,7 @@ def pr(tmp_path):
 
 def go(api, url, **kw):
     lines = []
-    rc = sc.post_status_run("o/r", pr=1, api=api, url=url, out=lines.append, **kw)
+    rc = sc.post_status_run("o/r", pr=1, client=api, url=url, out=lines.append, **kw)
     return rc, lines
 
 
@@ -154,7 +172,7 @@ def test_secret_added_by_the_pr_fails_the_gate_without_echoing_it(pr, tmp_path):
     o.path = tmp_path / "origin"
     sha = o.commit("feat: leak", {"leak.txt": f"T={GH}\n"})
     o.git("update-ref", "refs/pull/1/head", sha)
-    api.pr["head"]["sha"] = sha
+    api.info = dataclasses.replace(api.info, head_sha=sha)
     rc, lines = go(api, url)
     assert rc == 1 and not any(GH in l for l in lines)
     assert api.status()["state"] == "failure"
@@ -236,7 +254,7 @@ def test_a_bad_override_reason_posts_nothing(pr):
 def test_override_requires_a_pr():
     with pytest.raises(sc.CheckError, match="needs --pr"):
         sc.post_status_run("o/r", base="a", head="b", override="a good reason here",
-                           api=lambda *a, **k: {})
+                           client=object())
 
 
 # --- local mode and the CLI -------------------------------------------------- #
@@ -246,7 +264,7 @@ def test_local_range_posts_to_the_resolved_head_sha(tmp_path, monkeypatch):
     r.commit("feat: a", {"a.txt": "1"})
     head = r.git("rev-parse", "HEAD").strip()
     api = Api("0" * 40, head, "x")
-    rc = sc.post_status_run("o/r", base="main~1", head="main", api=api, out=lambda s: None)
+    rc = sc.post_status_run("o/r", base="main~1", head="main", client=api, out=lambda s: None)
     assert rc == 0 and api.posts[0][0] == f"/repos/o/r/statuses/{head}"
     assert "target_url" not in api.status()
 
@@ -266,7 +284,7 @@ def test_cli_rejects_inconsistent_arguments(argv, capsys):
 
 def test_invalid_repo_is_refused_before_anything_runs():
     with pytest.raises(ValueError):
-        sc.post_status_run("../etc", base="a", head="b", api=lambda *a, **k: {})
+        sc.post_status_run("../etc", base="a", head="b", client=object())
 
 
 # --- the ruleset that requires the status ------------------------------------- #
@@ -394,5 +412,5 @@ def test_local_range_mode_touches_no_labels(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r.commit("feat: a", {"a.txt": "1"})
     api = Api("0" * 40, r.git("rev-parse", "HEAD").strip(), "x")
-    sc.post_status_run("o/r", base="main~1", head="main", api=api, out=lambda s: None)
+    sc.post_status_run("o/r", base="main~1", head="main", client=api, out=lambda s: None)
     assert api.label_calls == [] and api.deletes == []

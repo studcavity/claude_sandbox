@@ -52,7 +52,8 @@ On every launch the program:
 | `sandbox_update.py` | offer to `git pull` when this checkout is behind |
 | `sandbox_images.py` | cached base/deps images, applying deps into a container |
 | `sandbox_containers.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
-| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation |
+| `sandbox_github.py` | GitHub access via the `gh` CLI (invoke), repo-name validation, concurrent prefetch of a launch's independent reads |
+| `sandbox_ghclient.py` | typed GitHub operations through PyGithub (PR info, status, comments, labels); auth is still your `gh` login |
 | `sandbox_deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
 | `sandbox_host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `sandbox_volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |

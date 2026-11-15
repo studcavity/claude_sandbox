@@ -312,17 +312,15 @@ def override_comment(login, reason, sha, findings):
     return "\n".join(lines)
 
 
-def pr_info(api, repo, number):
-    """-> (base sha, head sha, head branch, html url) of an open PR from this
+def pr_details(client, repo, number):
+    """-> (base sha, head sha, head branch, html url) of a PR from this
     repository (a fork's commits aren't ours to bless)."""
-    pr = api("GET", f"/repos/{repo}/pulls/{number}")
-    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name", "")
-    if head_repo.lower() != repo.lower():
-        raise CheckError(f"PR #{number} comes from {head_repo or 'a fork'}, "
+    pr = client.pr(repo, number)
+    if (pr.head_repo or "").lower() != repo.lower():
+        raise CheckError(f"PR #{number} comes from {pr.head_repo or 'a fork'}, "
                          f"not {repo}: not posting a status for someone "
                          "else's commits")
-    return (pr["base"]["sha"], pr["head"]["sha"], pr["head"]["ref"],
-            pr.get("html_url"))
+    return pr.base_sha, pr.head_sha, pr.head_ref, pr.url
 
 
 def fetch_pr(url, number, base_sha, dest):
@@ -341,24 +339,24 @@ def fetch_pr(url, number, base_sha, dest):
                          f"{(e.stderr or '').strip()[-200:]}") from None
 
 
-def sync_check_label(api, repo, pr, state):
+def sync_check_label(client, repo, pr, state):
     """`check-failed` on the PR while its status is red, removed when it turns
     green (re-run or override). Best effort and never fatal: the status is the
     gate, the label is a convenience."""
+    name = sandbox_labels.CHECK_FAILED
     try:
         if state in ("failure", "error"):
-            sandbox_labels.ensure(api, repo, [sandbox_labels.CHECK_FAILED])
-            api("POST", f"/repos/{repo}/issues/{pr}/labels",
-                {"labels": [sandbox_labels.CHECK_FAILED]})
+            color, desc = sandbox_labels.colour_and_description(name)
+            client.ensure_label(repo, name, color, desc)
+            client.add_label(repo, pr, name)
         else:
-            api("DELETE", f"/repos/{repo}/issues/{pr}/labels/"
-                f"{sandbox_labels.CHECK_FAILED}")
+            client.remove_label(repo, pr, name)
     except RuntimeError:
-        pass  # 404 on removal just means it wasn't there
+        pass  # refused, or not there to remove: neither matters
 
 
 def post_status_run(repo, pr=None, base=None, head=None, branch=None,
-                    override=None, strict=False, api=None, url=None,
+                    override=None, strict=False, client=None, url=None,
                     out=print, result=None):
     """Check a range or a PR and post `sandbox/check`. -> exit code:
     0 success posted, 1 failure/refusal, 2 the checker crashed (`error` posted).
@@ -367,23 +365,25 @@ def post_status_run(repo, pr=None, base=None, head=None, branch=None,
     import tempfile
     import sandbox_github
     sandbox_github.validate_repo(repo)
-    api = api or sandbox_github.gh_api
     url = url or f"https://github.com/{repo}.git"
     if override and not pr:
         raise CheckError("--override needs --pr: an override applies to one "
                          "PR's head commit")
+    if client is None:
+        import sandbox_ghclient
+        client = sandbox_ghclient.GhClient.from_environment()
     target = None
     with tempfile.TemporaryDirectory() as tmp:
         cwd = None
         if pr:
-            base, sha, branch, target = pr_info(api, repo, pr)
+            base, sha, branch, target = pr_details(client, repo, pr)
             fetch_pr(url, pr, base, tmp)
             cwd, head = tmp, sha
         else:
             sha = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
         login = None
         if override:
-            login = api("GET", "/user")["login"]
+            login = client.login()
             desc_override = override_description(login, override)  # validates now
         try:
             findings = check_findings(base, sha, branch, cwd=cwd)
@@ -399,21 +399,17 @@ def post_status_run(repo, pr=None, base=None, head=None, branch=None,
         state, desc = "error", "check crashed: see the log"
     else:
         state, desc = status_for(findings, strict)
-    if pr and pr_info(api, repo, pr)[1] != sha:
+    if pr and pr_details(client, repo, pr)[1] != sha:
         raise CheckError(f"PR #{pr} head moved while checking; nothing "
                          "posted. Re-run.")
-    payload = {"state": state, "context": STATUS_CONTEXT, "description": desc}
-    if target:
-        payload["target_url"] = target
     try:
-        api("POST", f"/repos/{repo}/statuses/{sha}", payload)
+        client.post_status(repo, sha, state, STATUS_CONTEXT, desc, target)
         if override:
-            api("POST", f"/repos/{repo}/issues/{pr}/comments",
-                {"body": override_comment(login, override, sha, findings)})
+            client.comment(repo, pr, override_comment(login, override, sha, findings))
     except RuntimeError as e:
         raise CheckError(f"couldn't post the status: {e}") from None
     if pr:
-        sync_check_label(api, repo, pr, state)
+        sync_check_label(client, repo, pr, state)
     out(f"posted {STATUS_CONTEXT} {state} on {sha[:7]}: {desc}")
     if result is not None:
         result.update(state=state, description=desc, sha=sha)
@@ -448,7 +444,7 @@ def pr_numbers(landed):
     return nums
 
 
-def post_session_statuses(repo, landed, api=None, poster=None):
+def post_session_statuses(repo, landed, api=None, poster=None, client=None):
     """Post `sandbox/check` for each PR a session opened, if the repo requires
     it -> [StatusOutcome]. One PR failing never affects the others."""
     import sandbox_github
@@ -461,7 +457,7 @@ def post_session_statuses(repo, landed, api=None, poster=None):
     for n in nums:
         res: dict = {}
         try:
-            poster(repo, pr=n, api=api, out=lambda s: None, result=res)
+            poster(repo, pr=n, client=client, out=lambda s: None, result=res)
             out.append(StatusOutcome(n, res.get("state", "?"),
                                      res.get("description", "")))
         except Exception as e:  # CheckError, GitHub or git trouble: report, go on
