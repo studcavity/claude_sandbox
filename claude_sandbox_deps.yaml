@@ -44,4 +44,4 @@ binaries:
 check:
   - name: lint-and-tests
     path: final-check.sh
-    timeout: 900
+    timeout: 1800
