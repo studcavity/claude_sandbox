@@ -10,26 +10,26 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.fixture(autouse=True)
 def no_real_container_runtime(monkeypatch):
     """Tests never ask a real incus/lxc what containers exist."""
-    from claude_sandbox.container import incus as sandbox_containers
-    monkeypatch.setattr(sandbox_containers.Container, "list_names",
+    from claude_sandbox.container import incus as incus
+    monkeypatch.setattr(incus.Container, "list_names",
                         staticmethod(lambda cli: set()))
 
 
 @pytest.fixture(autouse=True)
 def private_state_dir(monkeypatch, tmp_path):
     """Recorded signing keys go to a per-test directory, never ~/.local."""
-    from claude_sandbox import provenance as sandbox_provenance
-    monkeypatch.setenv(sandbox_provenance.STATE_ENV, str(tmp_path / "state"))
+    from claude_sandbox import provenance as provenance
+    monkeypatch.setenv(provenance.STATE_ENV, str(tmp_path / "state"))
 
 
 @pytest.fixture(autouse=True)
 def no_real_provenance(monkeypatch, request):
     """Tests never post provenance statuses to a real GitHub (its own tests
     pass fakes instead)."""
-    from claude_sandbox import provenance as sandbox_provenance
+    from claude_sandbox import provenance as provenance
     if request.module.__name__.endswith("test_provenance"):
         return
-    monkeypatch.setattr(sandbox_provenance, "post_session", lambda *a, **k: [])
+    monkeypatch.setattr(provenance, "post_session", lambda *a, **k: [])
 
 
 @pytest.fixture
@@ -96,8 +96,8 @@ def make_args(tmp_path):
 def no_real_pool_check(monkeypatch, request):
     """main() checks the incus pool; never let unit tests reach a real one."""
     if request.module.__name__ != "test_pool":
-        from claude_sandbox.container import pool as sandbox_pool
-        monkeypatch.setattr(sandbox_pool, "check", lambda cli, grow_to=None: None)
+        from claude_sandbox.container import pool as pool
+        monkeypatch.setattr(pool, "check", lambda cli, grow_to=None: None)
 
 
 @pytest.fixture(autouse=True)
@@ -106,5 +106,5 @@ def no_real_prefetch(monkeypatch, request):
     tests fake `gh_api` per module, so keep the prefetch from reaching a real
     `gh` (test_prefetch turns it back on against a faked `_gh`)."""
     if request.module.__name__ != "test_prefetch":
-        from claude_sandbox.github import gh as sandbox_github
-        monkeypatch.setattr(sandbox_github, "PREFETCH_ENABLED", False)
+        from claude_sandbox.github import gh as gh
+        monkeypatch.setattr(gh, "PREFETCH_ENABLED", False)

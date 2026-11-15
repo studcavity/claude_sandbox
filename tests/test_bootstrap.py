@@ -1,4 +1,4 @@
-"""Tests for sandbox_bootstrap: venv creation, requirements stamp, re-exec."""
+"""Tests for bootstrap: venv creation, requirements stamp, re-exec."""
 import os
 
 import pytest

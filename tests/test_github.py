@@ -1,4 +1,4 @@
-"""Tests for sandbox_github: repo resolution and the gh-CLI-via-invoke client."""
+"""Tests for github_gh: repo resolution and the gh-CLI-via-invoke client."""
 import json
 import shlex
 

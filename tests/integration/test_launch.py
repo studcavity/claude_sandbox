@@ -23,6 +23,9 @@ import uuid
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox import options
+from claude_sandbox import sandbox
+from claude_sandbox import shell
 from claude_sandbox.backends import github as bg
 pytestmark = [pytest.mark.incus, pytest.mark.smoke]
 
@@ -55,12 +58,12 @@ def kv(text):
 @pytest.fixture
 def box(tmp_path, monkeypatch):
     name = f"cs-smoke-{uuid.uuid4().hex[:6]}"
-    args = cs.build_parser().parse_args([
+    args = options.build_parser().parse_args([
         "o/r", "--name", name, "--shell", "--cli", CLI, "--no-update-check",
         "--no-usb", "--no-deps", "--disk-size", "0",  # dir pools have no quota
         "--token-file", str(tmp_path / "tok"),
         "--usb-allow", str(tmp_path / "allow")])
-    cs.normalize_args(args)
+    options.normalize_args(args)
 
     calls = []
 
@@ -74,7 +77,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(bg, "gh_api", fake_gh)
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", FAKE_TOKEN)
 
-    sb = cs.Sandbox(args)
+    sb = sandbox.Sandbox(args)
     sb.gh_calls = calls
     try:
         yield sb
@@ -115,7 +118,7 @@ def test_full_lifecycle_in_a_real_container(box, monkeypatch):
     assert "$session" not in md and "$prefix" not in md and "$repo" not in md
 
     # the sandbox marker exists and names this session
-    marker = box.box.root_argv(["cat", cs.SANDBOX_MARKER]).stdout.decode()
+    marker = box.box.root_argv(["cat", shell.SANDBOX_MARKER]).stdout.decode()
     assert marker.strip() == box.name
 
     # run the real session() with a scripted stdin instead of a terminal; it
@@ -176,12 +179,12 @@ def test_local_lifecycle_in_a_real_container(tmp_path, monkeypatch, capfd):
                                  check=True, capture_output=True, text=True).stdout
 
     name = f"cs-smoke-{uuid.uuid4().hex[:6]}"
-    args = cs.build_parser().parse_args([
+    args = options.build_parser().parse_args([
         "--local", str(primary), "--name", name, "--shell", "--cli", CLI,
         "--no-update-check", "--no-usb", "--no-deps", "--disk-size", "0",
         "--token-file", str(tmp_path / "tok"), "--usb-allow", str(tmp_path / "allow")])
-    cs.normalize_args(args)
-    sb = cs.Sandbox(args)
+    options.normalize_args(args)
+    sb = sandbox.Sandbox(args)
     try:
         assert sb.backend.check_host() is None
         sb.launch(IMAGE)

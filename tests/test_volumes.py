@@ -1,4 +1,4 @@
-"""Tests for sandbox_volumes: planning, orphan detection, attach/delete."""
+"""Tests for volumes: planning, orphan detection, attach/delete."""
 import datetime
 import json
 import subprocess

@@ -47,8 +47,8 @@ import sys
 import tempfile
 import urllib.parse
 
-from claude_sandbox.portable import names as sandbox_names
-from claude_sandbox.portable import untrusted as sandbox_untrusted
+from claude_sandbox.portable import names
+from claude_sandbox.portable import untrusted
 CONTEXT = "sandbox/provenance"
 DESC_MAX = 140
 STATE_ENV = "CLAUDE_SANDBOX_STATE_DIR"
@@ -119,7 +119,7 @@ def store_root(environ=None):
 def key_path(repo, session, root=None):
     if not _REPO_RE.match(repo or "") or ".." in repo:
         raise ValueError(f"bad repository name {repo!r}")
-    if not sandbox_names.SESSION_RE.match(session or ""):
+    if not names.SESSION_RE.match(session or ""):
         raise ValueError(f"bad session name {session!r}")
     owner, name = repo.lower().split("/")
     return os.path.join(root or store_root(), owner, name, f"{session}.pub")
@@ -249,15 +249,15 @@ def default_tip(api, repo):
 def override_description(login, reason):
     """The status description for a break-glass override (<= DESC_MAX chars).
     Raises ProvenanceError when the reason is unusable."""
-    reason = " ".join(sandbox_untrusted.printable(reason).split())
+    reason = " ".join(untrusted.printable(reason).split())
     if len(reason) < MIN_OVERRIDE_REASON:
         raise ProvenanceError(f"--override needs a real reason (>= "
                               f"{MIN_OVERRIDE_REASON} characters)")
-    if sandbox_untrusted.find_secrets(reason):
+    if untrusted.find_secrets(reason):
         raise ProvenanceError("--override reason looks like it contains a "
                               "credential; not posted")
     who = login if LOGIN_RE.match(login or "") else "unknown"
-    return sandbox_untrusted.truncate(f"OVERRIDDEN by {who}: {reason}", DESC_MAX)
+    return untrusted.truncate(f"OVERRIDDEN by {who}: {reason}", DESC_MAX)
 
 
 def fetch_pr(url, number, base_sha, dest):
@@ -295,7 +295,7 @@ def check_pr(repo, number, api, client, root=None, fetch=None):
     pr = client.pr(repo, number)
     if (pr.head_repo or "").lower() != repo.lower():
         raise ProvenanceError(f"PR #{number} comes from {pr.head_repo or 'a fork'}")
-    session = sandbox_names.branch_session(pr.head_ref)
+    session = names.branch_session(pr.head_ref)
     if not session:
         raise ProvenanceError(f"PR #{number} isn't from a sandbox branch")
     key = load_key(repo, session, root)
@@ -324,11 +324,11 @@ def post_pr(repo, number, api=None, client=None, root=None, fetch=None):
     A crash posts `error`, never `success`; nothing is posted if the head
     moved while checking (the verdict would be for the wrong commit)."""
     if api is None:
-        from claude_sandbox.github import gh as sandbox_github
-        api = sandbox_github.gh_api
+        from claude_sandbox.github import gh as gh
+        api = gh.gh_api
     if client is None:
-        from claude_sandbox.github import client as sandbox_ghclient
-        client = sandbox_ghclient.GhClient.from_environment()
+        from claude_sandbox.github import client as ghclient
+        client = ghclient.GhClient.from_environment()
     if not _REPO_RE.match(repo or ""):
         raise ProvenanceError(f"bad repository name {repo!r}")
     try:
@@ -353,7 +353,7 @@ def override_comment(login, reason, sha):
     who = login if LOGIN_RE.match(login or "") else "unknown"
     return "\n".join([
         f"**`{CONTEXT}` overridden** by `{who}` for commit `{sha[:7]}`.", "",
-        "Reason: " + sandbox_untrusted.one_line(reason, 500), "",
+        "Reason: " + untrusted.one_line(reason, 500), "",
         "Signatures were not checked. This applies to this commit only: a new "
         "commit needs a new check (or a new override)."])
 
@@ -363,14 +363,14 @@ def override_pr(repo, number, reason, client=None):
     comment on the PR -> Verdict. Same-repo sandbox-branch PRs only; nothing is
     posted if the reason is unusable or the head moved."""
     if client is None:
-        from claude_sandbox.github import client as sandbox_ghclient
-        client = sandbox_ghclient.GhClient.from_environment()
+        from claude_sandbox.github import client as ghclient
+        client = ghclient.GhClient.from_environment()
     if not _REPO_RE.match(repo or ""):
         raise ProvenanceError(f"bad repository name {repo!r}")
     pr = client.pr(repo, number)
     if (pr.head_repo or "").lower() != repo.lower():
         raise ProvenanceError(f"PR #{number} comes from {pr.head_repo or 'a fork'}")
-    if not sandbox_names.branch_session(pr.head_ref):
+    if not names.branch_session(pr.head_ref):
         raise ProvenanceError(f"PR #{number} isn't from a sandbox branch")
     login = client.login()
     desc = override_description(login, reason)

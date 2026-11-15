@@ -7,7 +7,10 @@ import types
 import pytest
 
 from claude_sandbox import cli as cs
-from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.github import gh
+from claude_sandbox import options
+from claude_sandbox import sandbox
+from claude_sandbox.container import deps as container_deps
 from claude_sandbox.container import images as im
 DAY = datetime.timedelta(days=1)
 UTC = datetime.timezone.utc
@@ -138,12 +141,12 @@ def test_rebuild_flag_always_rebuilds(monkeypatch, builds, lock):
 
 
 # --- deps image ------------------------------------------------------------------ #
-DEPS = sandbox_deps.parse("apt: [git]")
+DEPS = container_deps.parse("apt: [git]")
 
 
 def deps_setup(monkeypatch, base_age, deps_age):
     base = im.base_alias("src")
-    dalias = im.deps_alias(base, sandbox_deps.cache_key(DEPS))
+    dalias = im.deps_alias(base, container_deps.cache_key(DEPS))
     images(monkeypatch, base=ago(base_age), deps=ago(deps_age) if deps_age is not None else None,
            alias=base, dalias=dalias)
     return base, dalias
@@ -234,9 +237,9 @@ def test_a_failure_to_spawn_is_only_a_warning(monkeypatch, tmp_path, capsys):
 
 def test_refresh_images_refreshes_base_then_deps(monkeypatch, make_args):
     order = []
-    monkeypatch.setattr(cs.Sandbox, "load_deps",
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps",
                         lambda self: setattr(self, "deps", DEPS))
-    monkeypatch.setattr(cs.Sandbox, "choose_image", lambda self: "src")
+    monkeypatch.setattr(sandbox.Sandbox, "choose_image", lambda self: "src")
     monkeypatch.setattr(cs, "ensure_base_image",
                         lambda *a, **k: order.append(("base", k)) or "img")
     monkeypatch.setattr(cs, "ensure_deps_image",
@@ -249,13 +252,13 @@ def test_refresh_images_refreshes_base_then_deps(monkeypatch, make_args):
 
 def test_refresh_images_reports_failure_without_raising(monkeypatch, make_args):
     def boom(self):
-        raise cs.GitHubError("no auth", 0)
-    monkeypatch.setattr(cs.Sandbox, "load_deps", boom)
+        raise gh.GitHubError("no auth", 0)
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps", boom)
     assert cs.refresh_images(make_args(repo="o/r")) == 1
 
 
 def test_the_refresher_needs_no_repository():
-    p = cs.build_parser()
+    p = options.build_parser()
     a = p.parse_args(["--refresh-images"])
-    cs.normalize_args(a)            # must not raise "a repository is required"
+    options.normalize_args(a)            # must not raise "a repository is required"
     assert a.refresh_images and a.hard_max_age == 30

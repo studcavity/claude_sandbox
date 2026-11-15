@@ -1,8 +1,8 @@
-"""Contract tests for sandbox_github against the REAL `gh` binary.
+"""Contract tests for gh against the REAL `gh` binary.
 
 Hermetic (needs no network or login): gh is pointed at a throwaway local HTTPS
 server (GH_HOST + a self-signed cert via SSL_CERT_FILE), so these exercise the
-exact argv, stdin body, headers and error text between sandbox_github and gh
+exact argv, stdin body, headers and error text between gh and gh
 that the mocked unit tests cannot. Skipped unless `gh` and `openssl` are on
 PATH. gh's version floats with the host, so this is what catches an upstream
 change in flags or output.
@@ -164,7 +164,7 @@ def test_put_body_arrives_intact_for_the_actions_settings(api):
 @pytest.mark.parametrize("tail,code", [("conflict", 409), ("forbidden", 403)])
 def test_an_org_policy_or_missing_admin_surfaces_as_a_coded_error(api, tail, code):
     """409 (an organisation forbids the change) and 403 (no admin) are the two
-    refusals sandbox_hardening reports instead of failing on."""
+    refusals hardening reports instead of failing on."""
     from claude_sandbox.github import hardening as sh
     with pytest.raises(g.GitHubError) as e:
         g.gh_api("PUT", f"/repos/me/p/actions/permissions/workflow/{tail}",

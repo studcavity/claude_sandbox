@@ -7,7 +7,7 @@ import json
 import os
 import uuid
 
-from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.container import deps as container_deps
 from claude_sandbox.container.incus import Container
 from claude_sandbox.util import log, run
 
@@ -255,9 +255,9 @@ def apply_deps(box, deps):
 
     for b in deps["binaries"]:
         log(f"installing binary {b['name']}")
-        data = sandbox_deps.fetch(b["url"], sandbox_deps.MAX_BINARY, b["sha256"])
+        data = container_deps.fetch(b["url"], container_deps.MAX_BINARY, b["sha256"])
         if b["archive_path"]:
-            data = sandbox_deps.extract_member(data, b["archive_path"])
+            data = container_deps.extract_member(data, b["archive_path"])
         box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
 
     if deps["scripts"]:
@@ -267,7 +267,7 @@ def apply_deps(box, deps):
             for s in deps["scripts"]:
                 log(f"running install script {s['name']}"
                     + ("" if s["sha256"] else " (no sha256 pinned!)"))
-                data = sandbox_deps.fetch(s["url"], sandbox_deps.MAX_SCRIPT,
+                data = container_deps.fetch(s["url"], container_deps.MAX_SCRIPT,
                                           s["sha256"])
                 path = f"{scratch}/{s['name']}.sh"
                 box.put_file(path, data, "0700")
@@ -293,7 +293,7 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
     (including one merely older than a freshly refreshed base) is used now and
     refreshed in the background; `refresh=True` is that background refresher.
     """
-    key = sandbox_deps.cache_key(deps)
+    key = container_deps.cache_key(deps)
     if key is None:
         if any(s["sha256"] is None for s in deps["scripts"]):
             log("deps image cache off: an install script has no sha256 pin")

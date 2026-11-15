@@ -9,28 +9,43 @@ import types
 
 import pytest
 
-from claude_sandbox.container import volumes as sandbox_volumes
+from claude_sandbox import provenance
+from claude_sandbox import sessions
+from claude_sandbox import update
+from claude_sandbox.container import deps as container_deps
+from claude_sandbox.container import host
+from claude_sandbox.container import volumes
+from claude_sandbox.github import land as github_land
 from claude_sandbox import cli as cs
+from claude_sandbox.github import gh as github_gh
+from claude_sandbox.container import incus
+from claude_sandbox import credentials
+from claude_sandbox import options
+from claude_sandbox import render
+from claude_sandbox import resume
+from claude_sandbox import sandbox
+from claude_sandbox import session_tool
+from claude_sandbox import shell
 from claude_sandbox.backends import github as bg
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 def test_parser_defaults(monkeypatch):
     monkeypatch.delenv("CLAUDE_SANDBOX_MODEL", raising=False)
-    args = cs.build_parser().parse_args([])
-    assert args.model == cs.DEFAULT_MODEL
+    args = options.build_parser().parse_args([])
+    assert args.model == options.DEFAULT_MODEL
     assert args.cli == "incus" and args.max_age == 7
     assert args.image is None  # unset: repo's image: or the default applies
-    assert cs.DEFAULT_IMAGE == "images:ubuntu/26.04"
+    assert options.DEFAULT_IMAGE == "images:ubuntu/26.04"
     assert args.github_user == "studcavity"
-    assert args.git_email == cs.DEFAULT_GIT_EMAIL
+    assert args.git_email == options.DEFAULT_GIT_EMAIL
     assert args.repository is None and not args.account_key
     assert os.path.isfile(args.claude_md)
 
 
 def test_parser_model_from_env(monkeypatch):
     monkeypatch.setenv("CLAUDE_SANDBOX_MODEL", "opus")
-    assert cs.build_parser().parse_args([]).model == "opus"
+    assert options.build_parser().parse_args([]).model == "opus"
 
 
 @pytest.mark.parametrize("argv, msg", [
@@ -54,25 +69,25 @@ def test_main_rejects_bad_args(argv, msg, capsys):
 # --------------------------------------------------------------------------- #
 def test_token_file_roundtrip(tmp_path):
     path = str(tmp_path / "sub" / "oauth_token")
-    assert cs.read_token_file(path) is None
-    cs.save_token_file(path, "sk-ant-xyz")
-    assert cs.read_token_file(path) == "sk-ant-xyz"
+    assert credentials.read_token_file(path) is None
+    credentials.save_token_file(path, "sk-ant-xyz")
+    assert credentials.read_token_file(path) == "sk-ant-xyz"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
 def test_claude_secrets_precedence(tmp_path):
     tf = tmp_path / "t"
     tf.write_text("from-file\n")
-    assert cs.claude_secrets({}, str(tf)) == {
+    assert credentials.claude_secrets({}, str(tf)) == {
         "CLAUDE_CODE_OAUTH_TOKEN": "from-file"}
     env = {"CLAUDE_CODE_OAUTH_TOKEN": "from-env", "ANTHROPIC_API_KEY": "k"}
-    assert cs.claude_secrets(env, str(tf)) == {
+    assert credentials.claude_secrets(env, str(tf)) == {
         "CLAUDE_CODE_OAUTH_TOKEN": "from-env", "ANTHROPIC_API_KEY": "k"}
-    assert cs.claude_secrets({}, str(tmp_path / "missing")) == {}
+    assert credentials.claude_secrets({}, str(tmp_path / "missing")) == {}
 
 
 def test_secrets_script_quotes_values():
-    script = cs.secrets_script({"K": "a'b $x"})
+    script = shell.secrets_script({"K": "a'b $x"})
     out = subprocess.run(["bash", "-c", script + 'printf %s "$K"'],
                          capture_output=True, text=True, check=True).stdout
     assert out == "a'b $x"
@@ -87,38 +102,38 @@ def test_secrets_script_quotes_values():
      "exec tmux new-session -s claude 'claude --model opus'"),
 ])
 def test_session_script(kw, expect):
-    assert cs.session_script("/w", "", **kw) == f"cd /w && {expect}"
+    assert shell.session_script("/w", "", **kw) == f"cd /w && {expect}"
 
 
 def test_resumed_session_script_continues_with_the_prompt_as_one_argument():
     """Failing test output is arbitrary text: it must reach claude as exactly
     one argv word, never be parsed by the shell."""
     nasty = "FAILED $(touch /pwned) `x` 'q' \"d\"; rm -rf /\nline2"
-    script = cs.session_script("/w", "", model="opus", resume_prompt=nasty)
+    script = shell.session_script("/w", "", model="opus", resume_prompt=nasty)
     import shlex
     words = shlex.split(script.split("exec ", 1)[1])
     assert words == ["claude", "--model", "opus", "--continue", nasty]
     # the same through tmux's extra layer of quoting
-    tmuxed = cs.session_script("/w", "", tmux=True, resume_prompt=nasty)
+    tmuxed = shell.session_script("/w", "", tmux=True, resume_prompt=nasty)
     inner = shlex.split(shlex.split(tmuxed.split("exec ", 1)[1])[-1])
     assert inner == ["claude", "--continue", nasty]
 
 
 def test_a_shell_session_is_never_resumed():
-    assert cs.session_script("/w", "", shell=True, resume_prompt="x") == \
+    assert shell.session_script("/w", "", shell=True, resume_prompt="x") == \
         "cd /w && exec bash -l"
 
 
 def test_tail_text_strips_terminal_noise_and_marks_a_cut():
-    assert cs.tail_text("\x1b[31mFAILED\x1b[0m a\r\n\x07done\n") == "FAILED a\ndone"
-    cut = cs.tail_text("x" * 50 + "END", limit=10)
+    assert resume.tail_text("\x1b[31mFAILED\x1b[0m a\r\n\x07done\n") == "FAILED a\ndone"
+    cut = resume.tail_text("x" * 50 + "END", limit=10)
     assert cut == "[... output cut ...]\n" + "x" * 7 + "END"
 
 
 def test_resume_prompt_names_each_failure_and_its_output():
     a = {"name": "tests", "path": "scripts/final-check.sh"}
     b = {"name": "lint", "path": "tools/lint.sh"}
-    p = cs.resume_prompt([(a, 1, "FAILED tests/test_x.py::test_y"),
+    p = resume.resume_prompt([(a, 1, "FAILED tests/test_x.py::test_y"),
                           (b, 124, "slow")])
     assert "final-check.sh" in p and "exited with status 1" in p
     assert "FAILED tests/test_x.py::test_y" in p
@@ -130,7 +145,7 @@ def test_run_streaming_echoes_and_keeps_only_the_tail(tmp_path):
     import io
     import sys
     echo = io.StringIO()
-    code, out = cs.run_streaming(
+    code, out = resume.run_streaming(
         [sys.executable, "-c",
          "import sys\nfor i in range(100): print('line', i)\nsys.exit(3)"],
         limit=60, echo=echo)
@@ -141,20 +156,20 @@ def test_run_streaming_echoes_and_keeps_only_the_tail(tmp_path):
 
 
 def test_session_script_quotes_workdir_and_prefixes_secrets():
-    s = cs.session_script("/home/u/my repo", ". f && ")
+    s = shell.session_script("/home/u/my repo", ". f && ")
     assert s.startswith(". f && cd '/home/u/my repo' && ")
 
 
 def test_parse_probe():
-    facts = cs.parse_probe("sudo=yes\ntools=git rg \nbranch=main\njunk\n")
+    facts = render.parse_probe("sudo=yes\ntools=git rg \nbranch=main\njunk\n")
     assert facts == {"sudo": True, "tools": ["git", "rg"], "branch": "main",
                      "usb": set()}
-    assert cs.parse_probe("") == {"sudo": False, "tools": [], "branch": "",
+    assert render.parse_probe("") == {"sudo": False, "tools": [], "branch": "",
                                   "usb": set()}
 
 
 def test_parse_probe_usb_keeps_only_well_formed_ids():
-    facts = cs.parse_probe("usb=2E8A:000c junk 1234:abcd; $(x) 2e8a:\n")
+    facts = render.parse_probe("usb=2E8A:000c junk 1234:abcd; $(x) 2e8a:\n")
     assert facts["usb"] == {("2e8a", "000c")}
 
 
@@ -166,8 +181,8 @@ def test_parse_probe_usb_keeps_only_well_formed_ids():
 def test_render_claude_md_real_template(repo_root, repo, read_only, needle):
     with open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")) as f:
         template = f.read()
-    md = cs.render_claude_md(
-        template, cs.parse_probe("sudo=no\ntools=git jq\nbranch=main"),
+    md = render.render_claude_md(
+        template, render.parse_probe("sudo=no\ntools=git jq\nbranch=main"),
         container="claude-1", workdir="/home/ubuntu/p", repo=repo,
         read_only=read_only, deps_note="DEPS-NOTE")
     assert needle in md
@@ -187,15 +202,15 @@ def gh(monkeypatch):
     def fake(method, path, body=None, raw=False):
         calls.append((method, path))
         if "/contents/" in path:
-            raise cs.GitHubError("nf", 404)
+            raise github_gh.GitHubError("nf", 404)
         return {"id": 42}
     monkeypatch.setattr(bg, "gh_api", fake)
     return calls
 
 
 def _sandbox(make_args, monkeypatch, **kw):
-    box = cs.Sandbox(make_args(**kw))
-    monkeypatch.setattr(bg.GitHubBackend, "login", cs.DEFAULT_GITHUB_USER,
+    box = sandbox.Sandbox(make_args(**kw))
+    monkeypatch.setattr(bg.GitHubBackend, "login", options.DEFAULT_GITHUB_USER,
                         raising=False)
     return box
 
@@ -228,7 +243,7 @@ def test_teardown_still_destroys_container_if_key_delete_fails(
     box = _sandbox(make_args, monkeypatch)
 
     def boom(*a, **k):
-        raise cs.GitHubError("down", 500)
+        raise github_gh.GitHubError("down", 500)
     monkeypatch.setattr(bg, "gh_api", boom)
     deleted = []
     monkeypatch.setattr(box.box, "delete", lambda: deleted.append(True))
@@ -290,7 +305,7 @@ def test_check_workflow_scope_warns_when_workflows_are_pushable(
 
 def test_check_workflow_scope_never_raises(monkeypatch, capsys):
     def down():
-        raise cs.GitHubError("GitHub GET / -> 503", 503)
+        raise github_gh.GitHubError("GitHub GET / -> 503", 503)
     monkeypatch.setattr(bg, "token_scopes", down)
     bg.check_workflow_scope()
     assert "couldn't verify" in capsys.readouterr().err
@@ -310,8 +325,8 @@ def test_launch_runs_self_check_right_after_network(make_args, monkeypatch,
 
 
 def test_launch_config_only_sets_nesting_when_asked(make_args):
-    assert cs.launch_config(make_args()) == {}
-    assert cs.launch_config(make_args(nesting=True)) == {
+    assert sandbox.launch_config(make_args()) == {}
+    assert sandbox.launch_config(make_args(nesting=True)) == {
         "security.nesting": "true"}
 
 
@@ -323,18 +338,18 @@ def test_setup_nesting_is_noop_without_flag(make_args, monkeypatch, fake_box):
     box = _sandbox(make_args, monkeypatch, nesting=True)
     box.box = fake_box
     box.setup_nesting()
-    assert fake_box.calls == [("root", cs.NESTING_SETUP)]
+    assert fake_box.calls == [("root", sandbox.NESTING_SETUP)]
 
 
 def test_nesting_setup_script_shape():
-    s = cs.NESTING_SETUP
+    s = sandbox.NESTING_SETUP
     assert s.index("command -v incus") < s.index("subuid")  # guarded first
     assert "root:100000:65536" in s and "incus admin init --minimal" in s
     assert "SocketMode=0666" in s
 
 
 def test_parser_has_nesting_flag():
-    assert cs.build_parser().parse_args(["--nesting"]).nesting is True
+    assert options.build_parser().parse_args(["--nesting"]).nesting is True
 
 
 # --------------------------------------------------------------------------- #
@@ -348,9 +363,9 @@ HOST_YAML = (b'usb:\n  - name: probe\n    vendor_id: "2e8a"\n'
 def gh_host(monkeypatch):
     """GitHub serving a host file that requests 2e8a:000c."""
     def fake(method, path, body=None, raw=False):
-        if path.endswith("/" + cs.sandbox_host.HOST_FILE):
+        if path.endswith("/" + host.HOST_FILE):
             return HOST_YAML
-        raise cs.GitHubError("nf", 404)
+        raise github_gh.GitHubError("nf", 404)
     monkeypatch.setattr(bg, "gh_api", fake)
 
 
@@ -431,18 +446,18 @@ def test_usb_attached_after_deps_before_key(monkeypatch):
                                  "xyz1:0000", "2e8a:000c;rm", "2e8a:00000"])
 def test_usb_flag_rejects_malformed(bad, capsys):
     with pytest.raises(SystemExit):
-        cs.build_parser().parse_args(["--usb", bad])
+        options.build_parser().parse_args(["--usb", bad])
 
 
 def test_usb_flag_normalises_case():
-    assert cs.build_parser().parse_args(["--usb", "2E8A:000C"]).usb == ["2e8a:000c"]
+    assert options.build_parser().parse_args(["--usb", "2E8A:000C"]).usb == ["2e8a:000c"]
 
 
 def _render(repo_root, devices, visible=""):
     with open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")) as f:
         template = f.read()
-    return cs.render_claude_md(
-        template, cs.parse_probe(f"sudo=no\nusb={visible}"), container="c1",
+    return render.render_claude_md(
+        template, render.parse_probe(f"sudo=no\nusb={visible}"), container="c1",
         workdir="/w", repo="me/p", read_only=False, deps_note="D",
         usb_devices=devices, cli="incus")
 
@@ -456,16 +471,16 @@ DEPS_REF_BUDGET_CHARS = 8_000
 
 
 def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
-    md = cs.render_claude_md(
+    md = render.render_claude_md(
         open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read(),
-        cs.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
+        render.parse_probe("sudo=yes\ntools=git jq rg fd\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/some-repo", "owner/some-repo", False,
         "- apt: `a`\n- binaries: `b`", session="quirky-hopper",
         disk_note="- " + "disk note " * 30)
     assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
         f"{len(md)} chars: move detail to an on-demand reference file")
-    ref = cs.render_deps_ref(
-        open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read())
+    ref = render.render_deps_ref(
+        open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read())
     assert len(ref) <= DEPS_REF_BUDGET_CHARS
 
 
@@ -497,7 +512,7 @@ SETUP = {"name": "tc", "path": "tools/setup.sh", "args": ["--x", "a b"],
 
 
 def test_setup_argv_has_no_shell_and_is_bounded():
-    assert cs.setup_argv(SETUP) == [
+    assert shell.setup_argv(SETUP) == [
         "timeout", "--kill-after=10", "99", "bash", "-l", "./tools/setup.sh",
         "--x", "a b"]
 
@@ -544,7 +559,7 @@ def test_setup_runs_after_clone_and_before_credentials():
     assert (src.index("box.clone()") < src.index("box.run_setup(")
             < src.index("box.session("))
     # credentials are only pushed by session(); setup must not touch them
-    assert "push_secrets" not in inspect.getsource(cs.Sandbox.run_setup)
+    assert "push_secrets" not in inspect.getsource(sandbox.Sandbox.run_setup)
 
 
 def test_launch_writes_sandbox_marker(make_args, monkeypatch, fake_box):
@@ -566,8 +581,8 @@ def test_template_documents_setup_and_the_hazard_guard(repo_root):
     assert guard in t and "Gate hazardous scripts" in t
     flat = " ".join(t.split())
     assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in flat
-    assert cs.SANDBOX_MARKER == "/etc/claude-sandbox"
-    ref = open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read()
+    assert shell.SANDBOX_MARKER == "/etc/claude-sandbox"
+    ref = open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read()
     assert "\nsetup:" in ref and "idempotent" in ref
 
 
@@ -575,8 +590,8 @@ def test_template_documents_setup_and_the_hazard_guard(repo_root):
 # defaults, repository resolution and the gh user gate (formerly run.sh)
 # --------------------------------------------------------------------------- #
 def _norm(argv):
-    args = cs.build_parser().parse_args(argv)
-    return cs.normalize_args(args)
+    args = options.build_parser().parse_args(argv)
+    return options.normalize_args(args)
 
 
 def test_bare_repository_name_resolves_under_github_user():
@@ -619,19 +634,19 @@ def test_check_expected_user():
 def main_env(monkeypatch):
     """main() with every side effect stubbed; records what ran."""
     seen = {"launched": False, "update": 0}
-    monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
+    monkeypatch.setattr(update, "check_for_updates",
                         lambda *a, **k: seen.__setitem__("update", seen["update"] + 1))
     monkeypatch.setattr(bg.GitHubBackend, "login", "studcavity", raising=False)
     monkeypatch.setattr(bg, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
-    monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: None)
-    monkeypatch.setattr(cs.Sandbox, "resolve_usb", lambda self: [])
-    monkeypatch.setattr(cs.Sandbox, "launch",
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "resolve_usb", lambda self: [])
+    monkeypatch.setattr(sandbox.Sandbox, "launch",
                         lambda self, image: seen.__setitem__("launched", True)
                         or (_ for _ in ()).throw(RuntimeError("stop here")))
-    monkeypatch.setattr(cs.Sandbox, "teardown", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "teardown", lambda self: None)
     monkeypatch.setattr(bg.GitHubBackend, "preflight", lambda self, *a: None)
-    monkeypatch.setattr(cs.Sandbox, "land", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "land", lambda self: None)
     return seen
 
 
@@ -650,7 +665,7 @@ def test_main_no_user_check_flag(main_env, monkeypatch):
 
 def test_main_reports_missing_gh_cleanly(main_env, monkeypatch, capsys):
     def no_gh(self):
-        raise cs.GitHubError("the GitHub CLI `gh` is not installed", 0)
+        raise github_gh.GitHubError("the GitHub CLI `gh` is not installed", 0)
     monkeypatch.setattr(bg.GitHubBackend, "login", property(no_gh), raising=False)
     assert cs.main(["proj"]) == 1
     assert "gh" in capsys.readouterr().err and not main_env["launched"]
@@ -674,7 +689,7 @@ def test_update_check_runs_by_default_and_can_be_disabled(main_env):
 def test_update_check_happens_before_any_github_or_container_work(
         main_env, monkeypatch):
     order = []
-    monkeypatch.setattr(cs.sandbox_update, "check_for_updates",
+    monkeypatch.setattr(update, "check_for_updates",
                         lambda *a, **k: order.append("update"))
     monkeypatch.setattr(bg.GitHubBackend, "login",
                         property(lambda self: order.append("gh") or "studcavity"),
@@ -692,10 +707,10 @@ def test_template_has_no_docker_references(repo_root):
 # base image: default Ubuntu 26.04, per-repo `image:` override, --image wins
 # --------------------------------------------------------------------------- #
 def test_choose_image_precedence():
-    assert cs.choose_image(None, None) == ("images:ubuntu/26.04", "default")
-    assert cs.choose_image(None, "images:ubuntu/24.04") == (
-        "images:ubuntu/24.04", cs.sandbox_deps.DEPS_FILE)
-    assert cs.choose_image("images:debian/13", "images:ubuntu/24.04") == (
+    assert sandbox.choose_image(None, None) == ("images:ubuntu/26.04", "default")
+    assert sandbox.choose_image(None, "images:ubuntu/24.04") == (
+        "images:ubuntu/24.04", container_deps.DEPS_FILE)
+    assert sandbox.choose_image("images:debian/13", "images:ubuntu/24.04") == (
         "images:debian/13", "--image")  # the host user may pick anything
 
 
@@ -716,7 +731,7 @@ def test_flag_overrides_the_repos_image_and_the_session_is_told(make_args,
 
 def test_default_image_without_deps_or_flag(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch)
-    assert box.choose_image() == cs.DEFAULT_IMAGE
+    assert box.choose_image() == options.DEFAULT_IMAGE
 
 
 def test_deps_are_read_before_the_base_image_is_built():
@@ -731,8 +746,8 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
     seen = {}
     monkeypatch.setattr(cs, "ensure_base_image",
                         lambda cli, source, *a, **k: seen.setdefault("source", source))
-    parsed = cs.sandbox_deps.parse("image: images:ubuntu/24.04")
-    monkeypatch.setattr(cs.Sandbox, "load_deps",
+    parsed = container_deps.parse("image: images:ubuntu/24.04")
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps",
                         lambda self: setattr(self, "deps", parsed))
     cs.main(["proj"])
     assert seen["source"] == "images:ubuntu/24.04"
@@ -742,7 +757,7 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
 
 
 def test_template_documents_image_key(repo_root):
-    t = open(os.path.join(repo_root, "claude_sandbox", "data", cs.DEPS_REF_TEMPLATE)).read()
+    t = open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read()
     assert "\nimage: images:ubuntu/24.04" in t and "--image" in t
 
 
@@ -750,18 +765,18 @@ def test_template_documents_image_key(repo_root):
 # disk quotas and volumes
 # --------------------------------------------------------------------------- #
 def test_size_arg():
-    assert cs.size_arg("30GiB") == "30GiB"
-    assert cs.size_arg("0") is None
+    assert options.size_arg("30GiB") == "30GiB"
+    assert options.size_arg("0") is None
     for bad in ("", "-1GiB", "lots", "30 GiB; rm", "0GiB"):
         with pytest.raises(argparse.ArgumentTypeError):
-            cs.size_arg(bad)
+            options.size_arg(bad)
 
 
 def test_disk_flags_default_and_disable():
-    a = cs.build_parser().parse_args(["r"])
-    assert (a.disk_size, a.volume_size) == (cs.DEFAULT_DISK_SIZE,
-                                            cs.DEFAULT_VOLUME_SIZE)
-    a = cs.build_parser().parse_args(["--disk-size", "0", "--volume-size", "0", "r"])
+    a = options.build_parser().parse_args(["r"])
+    assert (a.disk_size, a.volume_size) == (options.DEFAULT_DISK_SIZE,
+                                            options.DEFAULT_VOLUME_SIZE)
+    a = options.build_parser().parse_args(["--disk-size", "0", "--volume-size", "0", "r"])
     assert a.disk_size is None and a.volume_size is None
 
 
@@ -785,8 +800,8 @@ def test_repo_workdir():
 def test_disk_note_reflects_mounted_volumes(make_args, monkeypatch, fake_box):
     box = _sandbox(make_args, monkeypatch, disk_size="30GiB", volume_size="20GiB")
     assert "Everything shares that one disk" in box.disk_note()
-    m = sandbox_volumes.plan("c", "/home/ubuntu/p", "20GiB")
-    box.volumes = sandbox_volumes.Volumes("incus", fake_box, m, "20GiB")
+    m = volumes.plan("c", "/home/ubuntu/p", "20GiB")
+    box.volumes = volumes.Volumes("incus", fake_box, m, "20GiB")
     box.volumes.created = [m[0].volume]
     note = box.disk_note()
     assert "30GiB" in note and "`/tmp`" in note and "/home/ubuntu/p" not in note
@@ -811,22 +826,22 @@ def test_session_id_is_the_container_name_and_avoids_existing(make_args,
     seen = {}
     monkeypatch.setattr(cs.Container, "list_names",
                         staticmethod(lambda cli: seen.setdefault("n", {"x"})))
-    box = cs.Sandbox(make_args(name=None))
+    box = sandbox.Sandbox(make_args(name=None))
     assert box.session_id == box.name and "claude" not in box.name
-    assert cs.sandbox_sessions.validate_session(box.name)
+    assert sessions.validate_session(box.name)
 
 
 def test_bad_name_is_rejected_up_front():
-    p = cs.build_parser()
+    p = options.build_parser()
     args = p.parse_args(["repo", "--name", "a/b"])
     with pytest.raises(ValueError):
-        cs.normalize_args(args)
+        options.normalize_args(args)
 
 
 def test_land_all_needs_a_repo():
-    args = cs.build_parser().parse_args(["--account-key", "--land-all"])
+    args = options.build_parser().parse_args(["--account-key", "--land-all"])
     with pytest.raises(ValueError, match="--land-all"):
-        cs.normalize_args(args)
+        options.normalize_args(args)
 
 
 def test_clone_puts_session_on_its_own_branch(make_args, monkeypatch):
@@ -854,7 +869,7 @@ def test_deploy_key_title_names_host_and_session(make_args, monkeypatch):
                         posted.append(body) or {"id": 7, "ssh_keys": []})
     box.provision_key()
     key = [b for b in posted if b and "key" in b][0]
-    assert key["title"] == f"ephemeral {cs.sandbox_sessions.host_id()}:quirky-hopper"
+    assert key["title"] == f"ephemeral {sessions.host_id()}:quirky-hopper"
 
 
 @pytest.mark.parametrize("kw", [dict(no_pr=True), dict(read_only=True),
@@ -863,13 +878,13 @@ def test_land_is_skipped_when_it_should_be(make_args, monkeypatch, kw):
     base = dict(repo="o/r", no_pr=False)
     box = _sandbox(make_args, monkeypatch, **{**base, **kw})
     box.backend.key_id = 1
-    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    monkeypatch.setattr(github_land, "land", lambda *a: pytest.fail("landed"))
     box.land()
 
 
 def test_land_is_skipped_before_a_key_exists(make_args, monkeypatch):
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False)
-    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: pytest.fail("landed"))
+    monkeypatch.setattr(github_land, "land", lambda *a: pytest.fail("landed"))
     box.land()  # key_id is None: the session never got that far
 
 
@@ -878,19 +893,19 @@ def test_land_failure_never_blocks_teardown(make_args, monkeypatch):
     box.backend.key_id = 1
 
     def boom(*a):
-        raise cs.GitHubError("down", 0)
-    monkeypatch.setattr(bg.sandbox_land, "land", boom)
+        raise github_gh.GitHubError("down", 0)
+    monkeypatch.setattr(github_land, "land", boom)
     box.land()  # logs a warning, does not raise
 
 
 def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
-    """Setup-script holds are decided inside sandbox_land (from the default
+    """Setup-script holds are decided inside github_land (from the default
     branch's deps file), not by what this launch happened to parse."""
     box = _sandbox(make_args, monkeypatch, repo="o/r", no_pr=False,
                    name="quirky-hopper", no_deps=True)
     box.backend.key_id, box.deps = 1, None
     got = []
-    monkeypatch.setattr(bg.sandbox_land, "land", lambda *a: got.append(a) or [])
+    monkeypatch.setattr(github_land, "land", lambda *a: got.append(a) or [])
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False)
     box.land()
     assert got == [("o/r", "quirky-hopper", None)]  # no prompt
@@ -902,7 +917,7 @@ def test_land_passes_session_and_confirm_only(make_args, monkeypatch):
 
 def test_template_tells_session_its_identity_and_branch_rules(repo_root):
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
-    md = cs.render_claude_md(
+    md = render.render_claude_md(
         t, {"sudo": True, "tools": [], "branch": "sbx/quirky-hopper/work",
             "usb": set()}, "quirky-hopper", "/h/r", "o/r", False, "",
         session="quirky-hopper")
@@ -927,11 +942,11 @@ def test_deps_reference_is_written_and_the_prompt_points_at_it(
     box = _sandbox(make_args, monkeypatch, repo="me/p")
     box.box = Box()
     box.write_claude_md("/home/ubuntu/p")
-    (ref,) = [v for k, v in writes.items() if k == f"cat > {cs.DEPS_REF_PATH}"]
-    assert cs.sandbox_deps.DEPS_FILE in ref and "last_generated" in ref
+    (ref,) = [v for k, v in writes.items() if k == f"cat > {render.DEPS_REF_PATH}"]
+    assert container_deps.DEPS_FILE in ref and "last_generated" in ref
     assert not re.search(r"\$[a-z_{]", ref), "unsubstituted placeholder"
     (main,) = [v for k, v in writes.items() if "CLAUDE.md" in k]
-    assert cs.DEPS_REF_PATH in main
+    assert render.DEPS_REF_PATH in main
 
 
 def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
@@ -945,12 +960,12 @@ def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
 
 
 def test_the_session_end_never_files_issues(make_args, monkeypatch):
-    """Follow-ups are filed only after merge (sandbox_issues); the launcher
+    """Follow-ups are filed only after merge (issues); the launcher
     has no filing step, flag or cap any more."""
     assert not hasattr(cs, "sandbox_actions") and not hasattr(cs, "report_actions")
     for flag in ("--no-actions", "--max-actions", "--max-issues"):
         with pytest.raises(SystemExit):
-            cs.build_parser().parse_args(["o/r", flag] + (["3"] if flag != "--no-actions" else []))
+            options.build_parser().parse_args(["o/r", flag] + (["3"] if flag != "--no-actions" else []))
 
 
 def test_template_asks_for_a_todo_file_per_issue(repo_root):
@@ -1017,16 +1032,16 @@ def test_the_checker_script_imports_only_portable(repo_root):
 
 def test_session_tool_files_are_the_script_the_portable_package_and_an_executable_wrapper(repo_root):
     import glob
-    files = cs.session_tool_files(repo_root)
+    files = session_tool.session_tool_files(repo_root)
     paths = [p for p, _, _ in files]
     portable = sorted(os.path.basename(f) for f in glob.glob(
         os.path.join(repo_root, "claude_sandbox", "portable", "*.py")))
-    d = cs.SESSION_TOOL_DIR
+    d = session_tool.SESSION_TOOL_DIR
     assert paths == ([f"{d}/scripts/sandbox_check.py", f"{d}/claude_sandbox/__init__.py"]
                      + [f"{d}/claude_sandbox/portable/{n}" for n in portable]
-                     + [cs.SESSION_TOOL_BIN])
+                     + [session_tool.SESSION_TOOL_BIN])
     modes = {p: m for p, _, m in files}
-    assert modes[cs.SESSION_TOOL_BIN] == "0755" and modes[paths[0]] == "0755"
+    assert modes[session_tool.SESSION_TOOL_BIN] == "0755" and modes[paths[0]] == "0755"
     assert modes[paths[1]] == "0644"
     assert files[0][1].startswith(b'"""sandbox_check.py')
 
@@ -1054,25 +1069,25 @@ def test_install_session_tools_is_two_execs_and_one_tar_stream(make_args, monkey
     box.box = ArgvBox()
     box.install_session_tools()
     assert [c[0] for c in box.box.calls] == ["user", "root_argv"]        # not 9
-    assert "mkdir -p" in box.box.calls[0][1] and cs.SESSION_TOOL_DIR in box.box.calls[0][1]
+    assert "mkdir -p" in box.box.calls[0][1] and session_tool.SESSION_TOOL_DIR in box.box.calls[0][1]
     argv, data = box.box.calls[1][1], box.box.calls[1][2]
     assert argv == ["tar", "-xzf", "-", "-C", "/"]
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         members = {m.name: m for m in tar.getmembers()}
-        assert set(members) == {p.lstrip("/") for p, _, _ in cs.session_tool_files(repo_root)}
-        wrapper = members[cs.SESSION_TOOL_BIN.lstrip("/")]
+        assert set(members) == {p.lstrip("/") for p, _, _ in session_tool.session_tool_files(repo_root)}
+        wrapper = members[session_tool.SESSION_TOOL_BIN.lstrip("/")]
         assert wrapper.mode == 0o755 and members[
-            f"{cs.SESSION_TOOL_DIR.lstrip('/')}/scripts/sandbox_check.py"].mode == 0o755
+            f"{session_tool.SESSION_TOOL_DIR.lstrip('/')}/scripts/sandbox_check.py"].mode == 0o755
         assert all(m.uid == 0 and m.gid == 0 and m.mtime == 0 for m in members.values())
-        assert tar.extractfile(wrapper).read() == cs.SESSION_TOOL_WRAPPER.encode()
+        assert tar.extractfile(wrapper).read() == session_tool.SESSION_TOOL_WRAPPER.encode()
 
 
 def test_the_archive_is_deterministic_and_cannot_escape_the_root(repo_root):
-    files = cs.session_tool_files(repo_root)
-    assert cs.session_tool_archive(files) == cs.session_tool_archive(files)
+    files = session_tool.session_tool_files(repo_root)
+    assert session_tool.session_tool_archive(files) == session_tool.session_tool_archive(files)
     import io
     import tarfile
-    with tarfile.open(fileobj=io.BytesIO(cs.session_tool_archive(files))) as tar:
+    with tarfile.open(fileobj=io.BytesIO(session_tool.session_tool_archive(files))) as tar:
         for m in tar.getmembers():
             assert not m.name.startswith("/") and ".." not in m.name.split("/")
             assert m.isreg()
@@ -1101,11 +1116,11 @@ def test_the_installed_wrapper_really_lints_a_clones_commits(repo_root, tmp_path
     sh(*git, "-C", str(origin), "add", "-A")
     sh(*git, "-C", str(origin), "commit", "-q", "-m", "feat: base")
     sh(*git, "clone", "-q", str(origin), str(clone))
-    for path, data, _ in cs.session_tool_files(repo_root):
-        dest = home / os.path.relpath(path, cs.HOME)
+    for path, data, _ in session_tool.session_tool_files(repo_root):
+        dest = home / os.path.relpath(path, incus.HOME)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-    wrapper = home / os.path.relpath(cs.SESSION_TOOL_BIN, cs.HOME)
+    wrapper = home / os.path.relpath(session_tool.SESSION_TOOL_BIN, incus.HOME)
     env = {**os.environ, "HOME": str(home)}
 
     sh(*git, "-C", str(clone), "switch", "-q", "-c", "sbx/quirky-hopper/work")
@@ -1135,7 +1150,7 @@ def run_sh(script, env=None, cwd=None):
 @pytest.mark.parametrize("name", ["quirky-hopper", "has space", "q'uote", "$(touch pwned)", "a;b"])
 def test_marker_script_writes_the_name_verbatim_and_mode_0644(tmp_path, name):
     path = tmp_path / "marker"
-    r = run_sh(cs.marker_script(name, str(path)), cwd=tmp_path)
+    r = run_sh(shell.marker_script(name, str(path)), cwd=tmp_path)
     assert r.returncode == 0, r.stderr
     assert path.read_text() == name + "\n"
     assert oct(path.stat().st_mode & 0o777) == "0o644"
@@ -1143,7 +1158,7 @@ def test_marker_script_writes_the_name_verbatim_and_mode_0644(tmp_path, name):
 
 
 def test_git_config_script_sets_everything_in_a_clean_home(tmp_path):
-    script = cs.git_config_script("Ada L", "ada@example.com")
+    script = shell.git_config_script("Ada L", "ada@example.com")
     r = run_sh(script, env={"HOME": str(tmp_path), "GIT_CONFIG_NOSYSTEM": "1"})
     assert r.returncode == 0, r.stderr
     out = run_sh("git config --global --list", env={"HOME": str(tmp_path)}).stdout
@@ -1154,8 +1169,8 @@ def test_git_config_script_sets_everything_in_a_clean_home(tmp_path):
 
 
 def test_git_config_script_without_identity_and_with_hostile_values(tmp_path):
-    assert "user.name" not in cs.git_config_script(None, None)
-    r = run_sh(cs.git_config_script("x'; touch pwned; '", "$(touch pwned2)"),
+    assert "user.name" not in shell.git_config_script(None, None)
+    r = run_sh(shell.git_config_script("x'; touch pwned; '", "$(touch pwned2)"),
                env={"HOME": str(tmp_path)}, cwd=tmp_path)
     assert r.returncode == 0
     assert not (tmp_path / "pwned").exists() and not (tmp_path / "pwned2").exists()
@@ -1185,11 +1200,11 @@ def test_provision_key_is_two_execs_and_keeps_its_order(make_args, monkeypatch):
 def test_the_real_tar_binary_extracts_the_archive_to_the_right_places(repo_root, tmp_path):
     """What the container runs (`tar -xzf - -C /`), against a temp root."""
     import subprocess
-    files = cs.session_tool_files(repo_root)
+    files = session_tool.session_tool_files(repo_root)
     root = tmp_path / "root"
-    for d in (cs.SESSION_TOOL_DIR, os.path.dirname(cs.SESSION_TOOL_BIN)):
+    for d in (session_tool.SESSION_TOOL_DIR, os.path.dirname(session_tool.SESSION_TOOL_BIN)):
         (root / d.lstrip("/")).mkdir(parents=True)             # made by `mkdir -p` as the user
-    r = subprocess.run(["tar", "-xzf", "-", "-C", str(root)], input=cs.session_tool_archive(files),
+    r = subprocess.run(["tar", "-xzf", "-", "-C", str(root)], input=session_tool.session_tool_archive(files),
                        capture_output=True)
     assert r.returncode == 0, r.stderr
     for path, data, mode in files:
@@ -1221,7 +1236,7 @@ def _pipeline(monkeypatch, land=None, prov=None):
         calls.append(("land", repo, session))
         if land:
             raise land
-        return [bg.sandbox_land.Landed("sbx/s/work", "main", "opened",
+        return [github_land.Landed("sbx/s/work", "main", "opened",
                                        "https://github.com/o/r/pull/7", 1)]
 
     def fake_post(repo, landed):
@@ -1229,8 +1244,8 @@ def _pipeline(monkeypatch, land=None, prov=None):
         if prov:
             raise prov
         return []
-    monkeypatch.setattr(bg.sandbox_land, "land", fake_land)
-    monkeypatch.setattr(cs.sandbox_provenance, "post_session", fake_post)
+    monkeypatch.setattr(github_land, "land", fake_land)
+    monkeypatch.setattr(provenance, "post_session", fake_post)
     monkeypatch.setattr(bg, "report_landing", lambda *a, **k: None)
     monkeypatch.setattr(bg, "report_provenance", lambda *a, **k: None)
     return calls
@@ -1244,7 +1259,7 @@ def test_the_pipeline_lands_then_posts_provenance(make_args, monkeypatch):
 
 
 def test_a_failed_landing_skips_provenance_but_never_raises(make_args, monkeypatch):
-    calls = _pipeline(monkeypatch, land=cs.GitHubError("down", 0))
+    calls = _pipeline(monkeypatch, land=github_gh.GitHubError("down", 0))
     landed, ok = bg.land_and_report(make_args(repo="o/r"), "quirky-hopper")
     assert landed == [] and not ok and [c[0] for c in calls] == ["land"]
 
@@ -1263,13 +1278,13 @@ def test_no_pr_and_no_provenance_are_honoured(make_args, monkeypatch):
     assert [c[0] for c in calls] == ["land"]
 
 
-@pytest.mark.parametrize("kw,code", [({}, 0), ({"land": cs.GitHubError("x", 0)}, 1),
+@pytest.mark.parametrize("kw,code", [({}, 0), ({"land": github_gh.GitHubError("x", 0)}, 1),
                                      ({"prov": RuntimeError("boom")}, 0)])
 def test_land_all_goes_through_the_same_pipeline(monkeypatch, kw, code):
     """--land-all used to repeat the sequence (and an exception from a later
     step escaped it); both entry points now call land_and_report."""
     calls = _pipeline(monkeypatch, **kw)
-    monkeypatch.setattr(cs.sandbox_update, "check_for_updates", lambda *a, **k: None)
+    monkeypatch.setattr(update, "check_for_updates", lambda *a, **k: None)
     assert cs.main(["o/r", "--land-all", "--no-user-check"]) == code
     assert calls[0] == ("land", "o/r", None)
     assert ("provenance" in [c[0] for c in calls]) == (not kw.get("land"))
@@ -1278,8 +1293,8 @@ def test_land_all_goes_through_the_same_pipeline(monkeypatch, kw, code):
 def test_landing_is_called_from_exactly_one_place():
     import inspect
     src = inspect.getsource(bg)
-    assert src.count("sandbox_land.land(") == 1
-    assert "sandbox_land" not in inspect.getsource(cs)
+    assert src.count("github_land.land(") == 1
+    assert "github_land" not in inspect.getsource(cs)
 
 
 def test_template_states_the_trust_boundary_and_what_to_do_at_it(repo_root):
@@ -1310,7 +1325,7 @@ def checking(make_args, monkeypatch):
     """A Sandbox with one check script; `ran` records each command line and
     `results` scripts (returncode, output) per run."""
     ran, results = [], []
-    box = cs.Sandbox(make_args(repo="o/r"))
+    box = sandbox.Sandbox(make_args(repo="o/r"))
     box.deps = {"check": [CHECK]}
     monkeypatch.setattr(box.box, "user_cmd",
                         lambda *argv, env=None: ["x", "--cwd", "/h", "--", *argv],
@@ -1319,7 +1334,7 @@ def checking(make_args, monkeypatch):
     def fake_stream(cmd, **kw):
         ran.append(cmd)
         return results.pop(0)
-    monkeypatch.setattr(cs, "run_streaming", fake_stream)
+    monkeypatch.setattr(resume, "run_streaming", fake_stream)
     return types.SimpleNamespace(box=box, ran=ran, results=results,
                                  monkeypatch=monkeypatch)
 
@@ -1329,26 +1344,26 @@ def test_final_check_runs_the_script_in_the_clone_with_its_timeout(checking):
     assert checking.box.final_check("/w/repo") is None
     cmd = checking.ran[0]
     assert cmd[cmd.index("--cwd") + 1] == "/w/repo"
-    assert cmd[cmd.index("--") + 1:] == cs.setup_argv(CHECK)
+    assert cmd[cmd.index("--") + 1:] == shell.setup_argv(CHECK)
 
 
 def test_final_check_failure_returns_a_prompt_when_the_user_agrees(checking):
     checking.results.append((1, "FAILED test_y"))
-    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = checking.box.final_check("/w")
     assert "FAILED test_y" in prompt and "final-check.sh" in prompt
 
 
 def test_final_check_failure_tears_down_when_the_user_declines(checking):
     checking.results.append((1, "FAILED"))
-    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: False)
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: False)
     assert checking.box.final_check("/w") is None
 
 
 def test_every_check_runs_even_after_one_fails(checking):
     checking.box.deps = {"check": [CHECK, dict(CHECK, name="b", path="b.sh")]}
     checking.results += [(1, "one"), (2, "two")]
-    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = checking.box.final_check("/w")
     assert len(checking.ran) == 2 and "one" in prompt and "two" in prompt
 
@@ -1360,9 +1375,9 @@ def test_every_check_runs_even_after_one_fails(checking):
 ])
 def test_final_check_is_skipped_without_checks_or_when_opted_out(
         make_args, monkeypatch, deps, kw):
-    box = cs.Sandbox(make_args(repo="o/r", **kw))
+    box = sandbox.Sandbox(make_args(repo="o/r", **kw))
     box.deps = deps
-    monkeypatch.setattr(cs, "run_streaming",
+    monkeypatch.setattr(resume, "run_streaming",
                         lambda *a, **k: pytest.fail("ran a check"))
     assert box.final_check("/w") is None
 
@@ -1371,7 +1386,7 @@ def test_ask_resume_never_resumes_without_a_terminal(monkeypatch):
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: False, raising=False)
     monkeypatch.setattr("builtins.input",
                         lambda *a: pytest.fail("prompted without a tty"))
-    assert cs.ask_resume(["x"]) is False
+    assert resume.ask_resume(["x"]) is False
 
 
 @pytest.mark.parametrize("answer, expect", [
@@ -1379,7 +1394,7 @@ def test_ask_resume_never_resumes_without_a_terminal(monkeypatch):
 def test_ask_resume_defaults_to_yes(monkeypatch, answer, expect):
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr("builtins.input", lambda *a: answer)
-    assert cs.ask_resume(["x"]) is expect
+    assert resume.ask_resume(["x"]) is expect
 
 
 # --------------------------------------------------------------------------- #
@@ -1388,30 +1403,30 @@ def test_ask_resume_defaults_to_yes(monkeypatch, answer, expect):
 def test_select_variant_keeps_one_kind_and_the_shared_text():
     t = ("a\n<!-- if github -->\ng\n<!-- end -->\n"
          "<!-- if local -->\nl\n<!-- end -->\nz\n")
-    assert cs.select_variant(t, "github") == "a\ng\nz\n"
-    assert cs.select_variant(t, "local") == "a\nl\nz\n"
-    assert cs.select_variant("plain\n", "local") == "plain\n"   # custom templates
+    assert render.select_variant(t, "github") == "a\ng\nz\n"
+    assert render.select_variant(t, "local") == "a\nl\nz\n"
+    assert render.select_variant("plain\n", "local") == "plain\n"   # custom templates
 
 
 @pytest.mark.parametrize("bad", ["<!-- if a -->\n", "<!-- end -->\n",
                                  "<!-- if a -->\n<!-- if b -->\n<!-- end -->\n"])
 def test_select_variant_refuses_unbalanced_markers(bad):
     with pytest.raises(ValueError):
-        cs.select_variant(bad, "a")
+        render.select_variant(bad, "a")
 
 
 def test_template_variants_name_only_real_backends(repo_root):
     import re
-    from claude_sandbox.backends import local as sandbox_backend_local
+    from claude_sandbox.backends import local as backends_local
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     kinds = set(re.findall(r"^<!-- if ([a-z]+) -->$", t, re.M))
-    assert kinds == {bg.GitHubBackend.kind, sandbox_backend_local.LocalBackend.kind}
+    assert kinds == {bg.GitHubBackend.kind, backends_local.LocalBackend.kind}
 
 
 def _render_kind(repo_root, kind):
-    return cs.render_claude_md(
+    return render.render_claude_md(
         open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read(),
-        cs.parse_probe("sudo=yes\ntools=git\nbranch=sbx/quirky-hopper/work"),
+        render.parse_probe("sudo=yes\ntools=git\nbranch=sbx/quirky-hopper/work"),
         "quirky-hopper", "/home/ubuntu/r", "o/r", False, "- deps",
         session="quirky-hopper", disk_note="- disk", kind=kind,
         access=["- ACCESS LINES"])
@@ -1438,8 +1453,8 @@ def test_the_local_variant_promises_nothing_github_does(repo_root):
 
 def test_the_resume_prompt_matches_what_the_backend_can_do():
     f = [(CHECK, 1, "boom")]
-    assert "push access" in cs.resume_prompt(f)
-    local = cs.resume_prompt(f, can_push=False)
+    assert "push access" in resume.resume_prompt(f)
+    local = resume.resume_prompt(f, can_push=False)
     assert "push access" not in local and "There is no push" in local
     assert "boom" in local and "never bypass or weaken the check" in local
 
@@ -1447,6 +1462,6 @@ def test_the_resume_prompt_matches_what_the_backend_can_do():
 def test_a_local_sessions_failed_check_resumes_without_promising_a_push(checking):
     checking.box.backend = types.SimpleNamespace(can_push=False)
     checking.results.append((1, "FAILED x"))
-    checking.monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = checking.box.final_check("/w")
     assert "There is no push" in prompt and "push access" not in prompt

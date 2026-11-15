@@ -13,9 +13,12 @@ import subprocess
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox import options
+from claude_sandbox import sandbox
+from claude_sandbox import shell
 from claude_sandbox.backends import local as lb
-from claude_sandbox import provenance as sandbox_provenance
-from claude_sandbox.container import volumes as sandbox_volumes
+from claude_sandbox import provenance
+from claude_sandbox.container import volumes
 S = "quirky-hopper"
 SHA = "a" * 40
 
@@ -35,13 +38,13 @@ def test_repo_id_is_stable_readable_and_unique_per_path():
 def test_repo_id_always_fits_the_key_store(path, tmp_path):
     rid = lb.repo_id(path)
     # key_path raises on anything the key store can't hold safely
-    p = sandbox_provenance.key_path(rid, S, str(tmp_path))
+    p = provenance.key_path(rid, S, str(tmp_path))
     assert p.startswith(str(tmp_path)) and ".." not in rid
 
 
 def test_local_keys_never_share_a_directory_with_github_owners(tmp_path):
     env = {"CLAUDE_SANDBOX_STATE_DIR": str(tmp_path)}
-    gh_root, local_root = sandbox_provenance.store_root(env), lb.key_root(env)
+    gh_root, local_root = provenance.store_root(env), lb.key_root(env)
     assert gh_root != local_root
     assert not local_root.startswith(gh_root + os.sep)
 
@@ -347,7 +350,7 @@ def test_signed_commits_pass_provenance_in_the_report(local, tmp_path, capsys):
     key = tmp_path / "sign"
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
                    check=True)
-    sandbox_provenance.save_key(be.key_repo, S, (tmp_path / "sign.pub").read_text(),
+    provenance.save_key(be.key_repo, S, (tmp_path / "sign.pub").read_text(),
                                 root=be.key_root)
     wd = be.populate(box, S)
     for k, v in (("gpg.format", "ssh"), ("user.signingkey", str(key)),
@@ -383,23 +386,23 @@ def a_repo(tmp_path):
 
 
 def test_local_picks_the_local_backend(a_repo):
-    args = cs.normalize_args(cs.build_parser().parse_args(["--local", a_repo]))
+    args = options.normalize_args(options.build_parser().parse_args(["--local", a_repo]))
     assert args.local == os.path.realpath(a_repo) and args.repo is None
-    assert isinstance(cs.make_backend(args), lb.LocalBackend)
-    assert not isinstance(cs.make_backend(cs.normalize_args(
-        cs.build_parser().parse_args(["o/r"]))), lb.LocalBackend)
+    assert isinstance(sandbox.make_backend(args), lb.LocalBackend)
+    assert not isinstance(sandbox.make_backend(options.normalize_args(
+        options.build_parser().parse_args(["o/r"]))), lb.LocalBackend)
 
 
 @pytest.mark.parametrize("extra", [["o/r"], ["--repo", "o/r"], ["--account-key"],
                                    ["--land-all"], ["--read-only"]])
 def test_local_refuses_github_only_modes(a_repo, extra):
     with pytest.raises(ValueError, match="--local can't be combined"):
-        cs.normalize_args(cs.build_parser().parse_args(["--local", a_repo, *extra]))
+        options.normalize_args(options.build_parser().parse_args(["--local", a_repo, *extra]))
 
 
 def test_base_needs_local():
     with pytest.raises(ValueError, match="--base"):
-        cs.normalize_args(cs.build_parser().parse_args(["o/r", "--base", "dev"]))
+        options.normalize_args(options.build_parser().parse_args(["o/r", "--base", "dev"]))
 
 
 def test_the_background_refresh_keeps_the_local_source(make_args):
@@ -408,8 +411,8 @@ def test_the_background_refresh_keeps_the_local_source(make_args):
 
 
 def test_no_github_rewrite_without_a_key():
-    assert "insteadOf" not in cs.git_config_script("a", "b", github_ssh=False)
-    assert "insteadOf" in cs.git_config_script("a", "b")
+    assert "insteadOf" not in shell.git_config_script("a", "b", github_ssh=False)
+    assert "insteadOf" in shell.git_config_script("a", "b")
 
 
 # --------------------------------------------------------------------------- #
@@ -463,7 +466,7 @@ def test_sandbox_releases_kept_volumes_only_when_the_backend_says_so(make_args):
             return self.ok
     for ok, n in ((False, 0), (True, 1)):
         Vols.released = 0
-        sb = cs.Sandbox(make_args(repo="o/r"))
+        sb = sandbox.Sandbox(make_args(repo="o/r"))
         sb.backend, sb.volumes = Be(ok), Vols()
         sb.land()
         assert Vols.released == 0            # not beside the background delete
@@ -474,7 +477,7 @@ def test_sandbox_releases_kept_volumes_only_when_the_backend_says_so(make_args):
 # --------------------------------------------------------------------------- #
 # --recover
 # --------------------------------------------------------------------------- #
-META = sandbox_volumes.META_PREFIX
+META = volumes.META_PREFIX
 
 
 def _kv(name="claude-sandbox-keep-c-work", used_by=(), **cfg):
@@ -511,7 +514,7 @@ def test_recover_mounts_read_only_imports_and_deletes(local, monkeypatch, capsys
                                   workdir=wd)])
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
     monkeypatch.setattr(lb, "run", fake_run)
-    monkeypatch.setattr(sandbox_volumes, "run", fake_run)
+    monkeypatch.setattr(volumes, "run", fake_run)
 
     class Helper(LocalBox):
         def __init__(self, cli_, name):
@@ -536,7 +539,7 @@ def test_recover_mounts_read_only_imports_and_deletes(local, monkeypatch, capsys
 
 def test_recover_never_touches_a_volume_in_use(local, monkeypatch, capsys):
     be, _ = local
-    monkeypatch.setattr(sandbox_volumes, "run", lambda cmd, **k: subprocess.CompletedProcess(
+    monkeypatch.setattr(volumes, "run", lambda cmd, **k: subprocess.CompletedProcess(
         cmd, 0, "default\n", ""))
     monkeypatch.setattr(lb, "run", lambda cmd, **k: subprocess.CompletedProcess(
         cmd, 0, json.dumps([_kv(source=be.primary, used_by=["/1.0/instances/x"])]), ""))
@@ -547,7 +550,7 @@ def test_recover_never_touches_a_volume_in_use(local, monkeypatch, capsys):
 
 def test_recover_needs_local():
     with pytest.raises(ValueError, match="--recover"):
-        cs.normalize_args(cs.build_parser().parse_args(["o/r", "--recover"]))
+        options.normalize_args(options.build_parser().parse_args(["o/r", "--recover"]))
 
 
 def test_only_a_writable_github_session_can_push(make_args, local):

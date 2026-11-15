@@ -1,4 +1,4 @@
-"""Tests for sandbox_provenance: per-session signing keys and the
+"""Tests for provenance: per-session signing keys and the
 `sandbox/provenance` status. Signing and verification use the real git and
 ssh-keygen (the code under test relies on git's own %G?/%GF checks); GitHub
 is faked."""
@@ -394,7 +394,7 @@ def test_main_override_routes_to_override_pr(monkeypatch, capsys):
     assert seen == [("o/r", 3, "a good reason")]
 
 
-# --- helpers that used to live in sandbox_check (spec 01) ------------------ #
+# --- helpers that used to live in check (spec 01) ------------------ #
 GH_TOKEN = "ghp_" + "x" * 40
 
 

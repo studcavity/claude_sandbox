@@ -1,4 +1,4 @@
-"""Tests for sandbox_issues: requests from a git checkout, filing, the ledger.
+"""Tests for github_issues: requests from a git checkout, filing, the ledger.
 GitHub is faked; git is real."""
 import subprocess
 
@@ -24,7 +24,7 @@ def req(name="i1", sha=A, body=None):
 
 
 class Api:
-    """A small model of the GitHub calls sandbox_issues makes. Created issues
+    """A small model of the GitHub calls github_issues makes. Created issues
     are remembered and served back by the listing, so the issue-as-ledger path
     is exercised for real."""
     def __init__(self, fail_issue=(), issues=None):

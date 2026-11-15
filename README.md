@@ -188,7 +188,7 @@ branch* (reviewed and merged, never a session's branch). If it has any, the
 launcher offers those *instead of* the generic one, one yes/no each with the
 effects listed first, even when the branch is already protected (GitHub layers
 rulesets). Because that file is untrusted text that edits repo settings, it
-must pass a strict allowlist (`sandbox_protect.validate_repo_ruleset`): default
+must pass a strict allowlist (`github/protect.py` `validate_repo_ruleset`): default
 branch only, no bypass actors, enforcement `active`/`evaluate`, and only the
 rule types `deletion`, `non_fast_forward`,
 `pull_request`, `required_status_checks` and `required_signatures`. Invalid
@@ -252,7 +252,7 @@ Also:
 ### Secrets: what is scanned, and GitHub push protection
 A session can only leak what it can see, and the launcher puts exactly three
 secrets in a container: the Claude credential (`sk-ant-...`), the deploy key
-and the session signing key (OpenSSH private keys). `sandbox_untrusted` scans
+and the session signing key (OpenSSH private keys). `portable/untrusted.py` scans
 for those, plus GitHub token formats, in commit messages and added lines (CI),
 PR text, and `todo/` issue text; it reports the kind, never the value. It does
 not scan for credentials the sandbox never holds (AWS, Slack, generic

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from claude_sandbox import timing as st
-from claude_sandbox import util as sandbox_util
+from claude_sandbox import util
 class Clock:
     def __init__(self):
         self.now = 0.0
@@ -113,36 +113,36 @@ def test_label_for(cmd, label):
 
 def test_run_counts_subprocesses_only_when_timing_is_on(monkeypatch):
     calls = []
-    monkeypatch.setattr(sandbox_util.subprocess, "run", lambda *a, **k: calls.append(a) or "r")
+    monkeypatch.setattr(util.subprocess, "run", lambda *a, **k: calls.append(a) or "r")
     clock_reads = []
-    monkeypatch.setattr(sandbox_util.time, "perf_counter",
+    monkeypatch.setattr(util.time, "perf_counter",
                         lambda: clock_reads.append(1) or 0.0)
-    assert sandbox_util.run(["incus", "exec", "c"]) == "r"
+    assert util.run(["incus", "exec", "c"]) == "r"
     assert clock_reads == []                       # off: the clock isn't even read
     t = st.Timings(Clock())
     st.install(t)
-    sandbox_util.run(["incus", "exec", "c"])
+    util.run(["incus", "exec", "c"])
     assert t.to_dict()["counters"]["incus exec"]["calls"] == 1 and clock_reads
 
 
 def test_a_failing_subprocess_is_still_counted(monkeypatch):
     def boom(*a, **k):
         raise OSError("nope")
-    monkeypatch.setattr(sandbox_util.subprocess, "run", boom)
+    monkeypatch.setattr(util.subprocess, "run", boom)
     t = st.Timings(Clock())
     st.install(t)
     with pytest.raises(OSError):
-        sandbox_util.run(["git", "x"])
+        util.run(["git", "x"])
     assert t.to_dict()["counters"]["git"]["calls"] == 1
 
 
 def test_gh_calls_are_counted(monkeypatch):
-    from claude_sandbox.github import gh as sandbox_github
+    from claude_sandbox.github import gh as gh
     class Ctx:
         def run(self, *a, **k):
             return type("R", (), {"failed": False, "stdout": "{}"})()
-    monkeypatch.setattr(sandbox_github, "Context", Ctx)
+    monkeypatch.setattr(gh, "Context", Ctx)
     t = st.Timings(Clock())
     st.install(t)
-    sandbox_github._gh(["api", "user"])
+    gh._gh(["api", "user"])
     assert t.to_dict()["counters"]["gh"]["calls"] == 1

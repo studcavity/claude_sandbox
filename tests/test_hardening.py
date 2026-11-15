@@ -1,13 +1,16 @@
-"""sandbox_hardening: the Actions settings check, offers, and where the
+"""hardening: the Actions settings check, offers, and where the
 findings go. GitHub is faked; the gh wire format is in tests/integration."""
 import os
 
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox import render
+from claude_sandbox import sandbox
 from claude_sandbox.backends import github as bg
 from claude_sandbox.github import hardening as sh
 from claude_sandbox.github.gh import GitHubError
+from claude_sandbox import sessions
 
 WF = "/repos/o/r/actions/permissions/workflow"
 
@@ -126,7 +129,7 @@ def test_a_personal_repo_has_no_organisation_secrets_endpoint():
 # --- the launcher ----------------------------------------------------------- #
 @pytest.fixture
 def box(make_args, monkeypatch):
-    b = cs.Sandbox(make_args(repo="o/r"))
+    b = sandbox.Sandbox(make_args(repo="o/r"))
     monkeypatch.setattr(cs.sys.stdin, "isatty", lambda: True)
     return b
 
@@ -182,7 +185,7 @@ def test_the_preflight_runs_the_check(box, monkeypatch):
     monkeypatch.setattr(box.backend, "protect_default_branch", lambda: seen.append("protect"))
     monkeypatch.setattr(box.backend, "harden_actions", lambda: seen.append("harden"))
     monkeypatch.setattr(cs.Container, "list_names", staticmethod(lambda cli: set()))
-    monkeypatch.setattr(cs.sandbox_sessions, "reap_stale_keys", lambda *a: [])
+    monkeypatch.setattr(sessions, "reap_stale_keys", lambda *a: [])
     box.backend.preflight(lambda: cs.Container.list_names("incus"), box.name)
     assert seen == ["protect", "harden"]
 
@@ -192,16 +195,16 @@ def test_nothing_the_check_found_reaches_the_sessions_claude_md(box, repo_root, 
     the rendered CLAUDE.md is the same with a clean repo and a bad one."""
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
 
-    def render():
-        return cs.render_claude_md(
+    def rendered():
+        return render.render_claude_md(
             t, {"sudo": True, "tools": [], "branch": "", "usb": set()},
             "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper")
     use(monkeypatch, Gh("read", False), [])
     box.backend.harden_actions()
-    clean = render()
+    clean = rendered()
     box.backend.host_warnings.clear()
     use(monkeypatch, Gh("write", True, 3, 1), [False, False])
     box.backend.harden_actions()
-    assert box.backend.host_warnings and render() == clean
+    assert box.backend.host_warnings and rendered() == clean
     for word in ("secrets exist", "can write to the repo", "default workflow token"):
         assert word not in clean

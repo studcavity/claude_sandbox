@@ -4,7 +4,7 @@ stand-alone checker.
 Stdlib only, on purpose: `sandbox_check.py` runs in CI and (planned) inside the
 sandbox, where the launcher's third-party dependencies (invoke, via the gh
 wrapper) are not installed. Anything the checker needs to agree on with the
-launcher belongs here, not in `sandbox_sessions`, which imports `sandbox_github`.
+launcher belongs here, not in `sessions`, which imports `gh`.
 """
 import re
 

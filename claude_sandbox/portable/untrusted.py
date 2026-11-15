@@ -3,7 +3,7 @@
 Commit messages, branch names and `todo/` briefs come from a sandboxed agent
 and end up pasted into GitHub issues and PRs under the *user's* identity. Two
 modules used to carry their own near-copies of the cleaning code
-(`sandbox_land.clean_text`, `sandbox_issues.clean_block`); both now build on
+(`land.clean_text`, `issues.clean_block`); both now build on
 the primitives here so a fix lands once. Stdlib only (the checker imports it).
 
 Two jobs:
@@ -19,14 +19,14 @@ is no way to mark a match as allowed: a fixture is assembled at runtime
 (`"ghp_" + "x" * 40`) so nothing token-shaped is in the source.
 
 Where it runs, and why each place needs it:
-  * `sandbox_check` on commit messages and on every line a commit adds: the
+  * `check` on commit messages and on every line a commit adds: the
     one scan on the way in, before anything is merged;
-  * `sandbox_land.safe_line` on PR titles and bodies: the text is copied from
+  * `land.safe_line` on PR titles and bodies: the text is copied from
     commits, but a PR body is mailed to everyone watching the repo, which a
     pushed commit is not;
-  * `sandbox_issues` on a `todo/` file before it is published as an issue (a
+  * `issues` on a `todo/` file before it is published as an issue (a
     repo without the checker workflow never scanned it);
-  * `sandbox_provenance.override_description` on the reason a person types,
+  * `provenance.override_description` on the reason a person types,
     which becomes a public status description.
 GitHub push protection (README) is the preferred first line where it exists.
 """

@@ -1,9 +1,9 @@
-"""Tests for sandbox_host: host-side requests/approval (no containers)."""
+"""Tests for host: host-side requests/approval (no containers)."""
 import os
 
 import pytest
 
-from claude_sandbox.container import deps as sandbox_deps
+from claude_sandbox.container import deps
 from claude_sandbox.container import host as sh
 GOOD = {"name": "probe", "vendor_id": "2E8A", "product_id": "000C",
         "description": "Pico debug probe (CMSIS-DAP), SWD"}
@@ -31,32 +31,32 @@ def test_parse_normalises_and_defaults():
     {"extra": "x"},
 ])
 def test_parse_rejects(over):
-    with pytest.raises(sandbox_deps.DepsError):
+    with pytest.raises(deps.DepsError):
         sh.parse(_doc(**over))
 
 
 def test_parse_rejects_unknown_top_level_key_and_dupes_and_too_many():
-    with pytest.raises(sandbox_deps.DepsError):
+    with pytest.raises(deps.DepsError):
         sh.parse("apt: [git]")
     entry = "  - {name: %s, vendor_id: '2e8a', product_id: '%s', description: d}\n"
-    with pytest.raises(sandbox_deps.DepsError, match="names"):
+    with pytest.raises(deps.DepsError, match="names"):
         sh.parse("usb:\n" + entry % ("a", "0001") + entry % ("a", "0002"))
-    with pytest.raises(sandbox_deps.DepsError, match="vid:pid"):
+    with pytest.raises(deps.DepsError, match="vid:pid"):
         sh.parse("usb:\n" + entry % ("a", "0001") + entry % ("b", "0001"))
-    with pytest.raises(sandbox_deps.DepsError, match="at most"):
+    with pytest.raises(deps.DepsError, match="at most"):
         sh.parse("usb:\n" + "".join(entry % (f"n{i}", f"{i:04x}")
                                     for i in range(9)))
 
 
 def test_deps_file_rejects_usb_and_host_file_never_touches_cache_key():
     """usb: lives only in the host file, so it cannot reach the image cache."""
-    with pytest.raises(sandbox_deps.DepsError):
-        sandbox_deps.parse("usb: []")
-    base = sandbox_deps.parse("apt: [git]")
+    with pytest.raises(deps.DepsError):
+        deps.parse("usb: []")
+    base = deps.parse("apt: [git]")
     import inspect
-    from claude_sandbox.container import images as sandbox_images
-    assert "sandbox_host" not in inspect.getsource(sandbox_images)
-    assert sandbox_deps.cache_key(base)
+    from claude_sandbox.container import images as images
+    assert "container import host" not in inspect.getsource(images)
+    assert deps.cache_key(base)
 
 
 @pytest.mark.parametrize("spec", ["2e8a:000c", "2E8A:000C"])

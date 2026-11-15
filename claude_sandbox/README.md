@@ -17,15 +17,26 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 - **`github/` is everything that talks to GitHub from the host.** Code that
   writes to GitHub (`github/issues.py`, `land.py`) stays out of `portable/`.
 - **Locations come from `paths.py`**, never from `__file__` elsewhere.
-- Modules still import each other under their old names
-  (`from claude_sandbox.github import protect as sandbox_protect`); dropping
-  the `sandbox_` alias prefix is PR 2 of spec 09.
+- **Layering** (`tests/test_layering.py`): `container/` imports only the leaf
+  modules (`paths`, `timing`, `util`, `portable/`); `github/` may also use
+  `container/` and `sessions`; `backends/` may use those and `provenance`;
+  nothing below `cli`, `sandbox` and `options` imports them.
+- Modules are imported by their own name (`from claude_sandbox.github import
+  protect`). Where that would clash with a local variable the import is
+  aliased `<package>_<module>` (`container_deps`, `github_land`).
 
 ## Modules
 | file | role |
 | --- | --- |
 | `__main__.py` | entry point (`run.sh` execs it; `python -m claude_sandbox` too): puts the repo root on `sys.path`, runs the venv bootstrap, calls `cli.main()` |
-| `cli.py` | CLI arguments and defaults, the `Sandbox` lifecycle, pure rendering helpers (to be split, spec 09 PR 2) |
+| `cli.py` | `main()` and the launch sequence (`_launch`), the background image refresh |
+| `options.py` | command-line defaults, the argument parser, normalising and validating arguments |
+| `sandbox.py` | `Sandbox`: one container's lifecycle (create, secrets, clone, session, teardown), backend choice, the USB prompt |
+| `render.py` | render the session `CLAUDE.md` and the deps reference from their templates |
+| `resume.py` | the final check's failure text and resume prompt, and running check output streams |
+| `shell.py` | the shell snippets run in the container (marker file, git config, secrets, the session command) |
+| `session_tool.py` | install the commit checker in the sandbox as `sandbox-check` |
+| `credentials.py` | the Claude OAuth token file and the secrets piped into a session |
 | `paths.py` | where the checkout's directories are (root, `data/`, `rulesets/`) |
 | `bootstrap.py` | stdlib-only: create `venv/`, install requirements, re-exec |
 | `update.py` | offer to `git pull` when this checkout is behind |

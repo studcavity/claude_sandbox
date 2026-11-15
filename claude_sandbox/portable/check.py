@@ -5,7 +5,7 @@
 Prints GitHub annotations (`::error::` and `::warning::`) for every
 commit in BASE..HEAD that breaks a rule, and exits 1 if there is any error
 (with --strict, any warning too). The format of a follow-up request
-(`todo/<name>.md`) lives in `sandbox_todo`; the other rules are below. This
+(`todo/<name>.md`) lives in `todo`; the other rules are below. This
 file is git plumbing plus small pure rules, and is stdlib-only.
 
 Rules and severities
@@ -14,7 +14,7 @@ Rules and severities
   error  a commit touching a file that needs a real-environment run (see
          NEEDS_REAL_RUN) with no `Verified` / `Not verified` line (a `:` is optional)
   error  a `todo/*.md` file a commit adds or changes that isn't a valid follow-up
-         request (see `sandbox_todo`: name, size, a heading)
+         request (see `todo`: name, size, a heading)
   error  `Resolves follow-up from <sha>` naming a commit that doesn't exist
   error  a credential-shaped string in a commit message, or in a line the
          commit ADDS (checked per commit, so a secret added and later removed
@@ -37,8 +37,8 @@ import collections
 import re
 import subprocess
 
-from claude_sandbox.portable import todo as sandbox_todo
-from claude_sandbox.portable import untrusted as sandbox_untrusted
+from claude_sandbox.portable import todo
+from claude_sandbox.portable import untrusted
 Finding = collections.namedtuple("Finding", "sha severity text path line")
 ERROR, WARNING = "error", "warning"
 
@@ -94,7 +94,7 @@ def resolves_findings(message, exists):
 
 
 def message_secret_findings(message):
-    kinds = sandbox_untrusted.find_secrets(message[:MAX_SCAN_CHARS * 5])
+    kinds = untrusted.find_secrets(message[:MAX_SCAN_CHARS * 5])
     return [(ERROR, "the commit message appears to contain "
                     + ", ".join(kinds) + " (rephrase "
                     "it)")] if kinds else []
@@ -125,7 +125,7 @@ def added_secret_findings(added):
             out.append((WARNING, f"secret scan stopped after {MAX_ADDED_LINES} "
                                  "added lines in this commit", None, None))
             break
-        kinds = sandbox_untrusted.find_secrets(text[:MAX_SCAN_CHARS])
+        kinds = untrusted.find_secrets(text[:MAX_SCAN_CHARS])
         if not kinds:
             continue
         out.append((ERROR, "added line appears to contain "
@@ -160,15 +160,15 @@ def todo_findings(git, sha, files):
     """Problems with the `todo/` follow-up requests a commit adds or changes
     -> [str]. `git` runs git in the right repository."""
     out = []
-    for path in sorted(f for f in files if sandbox_todo.is_candidate(f)):
+    for path in sorted(f for f in files if todo.is_candidate(f)):
         ref = f"{sha}:{path}"
         try:
             size = int(git("cat-file", "-s", ref))
-            text = git("show", ref) if size <= sandbox_todo.MAX_BYTES else None
+            text = git("show", ref) if size <= todo.MAX_BYTES else None
         except subprocess.CalledProcessError:
             out.append(f"{path}: not a regular file")
             continue
-        out.extend(sandbox_todo.problems(path, size, text))
+        out.extend(todo.problems(path, size, text))
     return out
 
 

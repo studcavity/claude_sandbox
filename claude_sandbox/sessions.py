@@ -14,7 +14,7 @@ default branch is a GitHub ruleset (see `rulesets/protect-main.json`);
 `check_protection` only *reports* whether one is in place.
 
 Pure helpers plus thin gh_api callers; no dependency on the rest of the
-launcher beyond sandbox_github.
+launcher beyond gh.
 """
 import random
 import re
@@ -23,7 +23,7 @@ from typing import Optional
 import urllib.parse
 
 from claude_sandbox.github.gh import GitHubError, gh_api
-# Defined in sandbox_names (stdlib-only, shared with sandbox_check); re-exported.
+# Defined in names (stdlib-only, shared with check); re-exported.
 from claude_sandbox.portable.names import BRANCH_ROOT, SESSION_RE  # noqa: F401
 
 KEY_RE = re.compile(r"^ephemeral ([A-Za-z0-9.-]{1,63}):([A-Za-z0-9-]{1,40})$")

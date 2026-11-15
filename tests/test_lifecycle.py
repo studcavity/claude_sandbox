@@ -12,19 +12,23 @@ import types
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox.container import incus
+from claude_sandbox import resume
+from claude_sandbox import sandbox
 from claude_sandbox.backends import github as bg
-from claude_sandbox.github import gh as sandbox_github
-from claude_sandbox.github import land as sandbox_land
-from claude_sandbox import sessions as sandbox_sessions
+from claude_sandbox import sessions
+from claude_sandbox.container import pool
+from claude_sandbox.github import gh as github_gh
+from claude_sandbox.github import land as github_land
 from claude_sandbox.github.gh import GitHubError
 
 
 def test_no_instance_attribute_shadows_a_method(make_args):
     """Regression: `self.session = id` hid the `session()` method, so every
     launch died at the very end with "'str' object is not callable"."""
-    box = cs.Sandbox(make_args(repo="o/r"))
-    methods = {n for n in dir(cs.Sandbox)
-               if callable(getattr(cs.Sandbox, n, None))
+    box = sandbox.Sandbox(make_args(repo="o/r"))
+    methods = {n for n in dir(sandbox.Sandbox)
+               if callable(getattr(sandbox.Sandbox, n, None))
                and not n.startswith("__")}
     shadowed = methods & set(vars(box))
     assert not shadowed, f"instance attributes shadow methods: {shadowed}"
@@ -59,7 +63,7 @@ class FakeContainer:
         return lambda *a, **k: self._ok(what, *a, **k)
 
     def user_cmd(self, *argv, env=None):
-        return ["fake-exec", "--cwd", cs.HOME, "--", *argv]
+        return ["fake-exec", "--cwd", incus.HOME, "--", *argv]
 
 
 class FakeGitHub:
@@ -105,13 +109,14 @@ def world(monkeypatch, tmp_path):
     gh = FakeGitHub("quirky-hopper")
     ran = []
     monkeypatch.setattr(cs, "Container", FakeContainer)
-    for mod in (bg, sandbox_sessions, sandbox_land, sandbox_github):
+    monkeypatch.setattr(sandbox, "Container", FakeContainer)
+    for mod in (bg, sessions, github_land, github_gh):
         monkeypatch.setattr(mod, "gh_api", gh)
     monkeypatch.setattr(bg.GitHubBackend, "login", "studcavity", raising=False)
     monkeypatch.setattr(bg, "check_workflow_scope", lambda: None)
-    monkeypatch.setattr(cs.sandbox_pool, "check", lambda *a: None)
+    monkeypatch.setattr(pool, "check", lambda *a: None)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
-    monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     monkeypatch.setattr(cs.subprocess, "run",
                         lambda cmd, **k: ran.append(cmd))
@@ -128,7 +133,7 @@ def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     assert cs.main(argv(world)) == 0
     # the interactive session actually started, in the clone
     assert any("claude" in c for cmd in world.ran for c in cmd)
-    assert any(cs.HOME + "/claude_sandbox" == c or "o/r".split("/")[1] in c
+    assert any(incus.HOME + "/claude_sandbox" == c or "o/r".split("/")[1] in c
                for cmd in world.ran for c in cmd)
     methods = [(m, p) for m, p, _ in world.gh.calls]
     # key revoked (and container gone) BEFORE the host opens the PR, so the
@@ -150,7 +155,7 @@ def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
     """A process the session left running could push between the hold check
     and the PR; so nothing of the session may be alive when landing starts."""
     seen = []
-    real_land = cs.Sandbox.land
+    real_land = sandbox.Sandbox.land
 
     def land(self):
         box = FakeContainer.instances[-1]
@@ -158,7 +163,7 @@ def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
         keys = [(m, p) for m, p, _ in world.gh.calls if m == "DELETE"]
         seen.append(("DELETE", "/repos/o/r/keys/5") in keys)
         return real_land(self)
-    monkeypatch.setattr(cs.Sandbox, "land", land)
+    monkeypatch.setattr(sandbox.Sandbox, "land", land)
     assert cs.main(argv(world)) == 0
     assert seen == [True, True]
 
@@ -166,17 +171,17 @@ def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
 def test_the_sessions_signing_key_is_recorded_and_its_prs_get_provenance(world, monkeypatch):
     """The public signing key is kept on the host at launch; after teardown
     (the private half is gone) every PR the landing opened is checked."""
-    from claude_sandbox import provenance as sandbox_provenance
+    from claude_sandbox import provenance as provenance
     posted = []
 
     def post_session(repo, landed, **kw):
         box = FakeContainer.instances[-1]
         posted.append((repo, [l.outcome for l in landed],
                        ("delete", ()) in box.calls))
-        return [sandbox_provenance.Outcome(7, "success", "1 commit signed")]
-    monkeypatch.setattr(sandbox_provenance, "post_session", post_session)
+        return [provenance.Outcome(7, "success", "1 commit signed")]
+    monkeypatch.setattr(provenance, "post_session", post_session)
     assert cs.main(argv(world)) == 0
-    assert sandbox_provenance.load_key("o/r", "quirky-hopper") == PUB
+    assert provenance.load_key("o/r", "quirky-hopper") == PUB
     assert posted == [("o/r", ["opened"], True)]   # after the container is gone
     user_scripts = " ".join(str(c) for what, c in FakeContainer.instances[-1].calls
                             if what == "user")
@@ -184,9 +189,9 @@ def test_the_sessions_signing_key_is_recorded_and_its_prs_get_provenance(world, 
 
 
 def test_no_provenance_flag_skips_the_status(world, monkeypatch):
-    from claude_sandbox import provenance as sandbox_provenance
+    from claude_sandbox import provenance as provenance
     called = []
-    monkeypatch.setattr(sandbox_provenance, "post_session",
+    monkeypatch.setattr(provenance, "post_session",
                         lambda *a, **k: called.append(1) or [])
     assert cs.main(argv(world, "--no-provenance")) == 0
     assert called == []
@@ -194,19 +199,19 @@ def test_no_provenance_flag_skips_the_status(world, monkeypatch):
 
 def test_a_new_session_never_reuses_a_name_with_a_recorded_key(make_args, monkeypatch):
     """Its key would otherwise vouch for the old session's branches."""
-    from claude_sandbox import provenance as sandbox_provenance
-    sandbox_provenance.save_key("o/r", "quirky-hopper", PUB)
+    from claude_sandbox import provenance as provenance
+    provenance.save_key("o/r", "quirky-hopper", PUB)
     seen = []
-    monkeypatch.setattr(cs.sandbox_sessions, "pick_name",
+    monkeypatch.setattr(sessions, "pick_name",
                         lambda taken: seen.append(set(taken)) or "fresh-name")
-    assert cs.Sandbox(make_args(repo="o/r", name=None)).name == "fresh-name"
+    assert sandbox.Sandbox(make_args(repo="o/r", name=None)).name == "fresh-name"
     assert "quirky-hopper" in seen[0]
 
 
 def test_landing_still_runs_when_teardown_fails(world, monkeypatch):
     def broken_delete(self):
         raise RuntimeError("incus delete failed")
-    monkeypatch.setattr(cs.Sandbox, "teardown", broken_delete)
+    monkeypatch.setattr(sandbox.Sandbox, "teardown", broken_delete)
     with pytest.raises(RuntimeError):
         cs.main(argv(world))
     methods = [(m, p) for m, p, _ in world.gh.calls]
@@ -218,9 +223,9 @@ def test_launcher_waits_for_volume_delete_even_if_landing_is_interrupted(
     """Volume deletion runs beside landing; Ctrl-C during landing must still
     wait for it rather than exit with the cleanup half done."""
     waited = []
-    monkeypatch.setattr(cs.Sandbox, "wait_volumes",
+    monkeypatch.setattr(sandbox.Sandbox, "wait_volumes",
                         lambda self: waited.append(True))
-    monkeypatch.setattr(cs.Sandbox, "land",
+    monkeypatch.setattr(sandbox.Sandbox, "land",
                         lambda self: (_ for _ in ()).throw(KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
         cs.main(argv(world))
@@ -237,7 +242,7 @@ def test_no_pr_flag_skips_landing_but_still_cleans_up(world):
 def test_crash_after_launch_still_lands_and_tears_down(world, monkeypatch):
     def boom(self, workdir):
         raise RuntimeError("session blew up")
-    monkeypatch.setattr(cs.Sandbox, "session", boom)
+    monkeypatch.setattr(sandbox.Sandbox, "session", boom)
     assert cs.main(argv(world)) == 1
     methods = [(m, p) for m, p, _ in world.gh.calls]
     assert ("DELETE", "/repos/o/r/keys/5") in methods
@@ -245,8 +250,8 @@ def test_crash_after_launch_still_lands_and_tears_down(world, monkeypatch):
 
 
 def test_a_provenance_failure_never_breaks_landing_or_teardown(world, monkeypatch):
-    from claude_sandbox import provenance as sandbox_provenance
-    monkeypatch.setattr(sandbox_provenance, "post_session",
+    from claude_sandbox import provenance as provenance
+    monkeypatch.setattr(provenance, "post_session",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert cs.main(argv(world)) == 0
     assert ("DELETE", "/repos/o/r/keys/5") in [(m, p) for m, p, _ in world.gh.calls]
@@ -263,12 +268,12 @@ def test_timings_report_names_the_stages_and_the_prompt(world, capsys):
 
 
 def test_timings_are_off_by_default_and_leave_no_global_behind(world, capsys):
-    from claude_sandbox import timing as sandbox_timing
+    from claude_sandbox import timing as timing
     assert cs.main(argv(world)) == 0
     assert "timings" not in capsys.readouterr().err
-    assert sandbox_timing.ACTIVE is None
+    assert timing.ACTIVE is None
     cs.main(argv(world, "--timings"))
-    assert sandbox_timing.ACTIVE is None            # uninstalled even after a run
+    assert timing.ACTIVE is None            # uninstalled even after a run
 
 
 def test_timings_json_is_written_and_implies_the_report(world, capsys):
@@ -284,7 +289,7 @@ def test_timings_json_is_written_and_implies_the_report(world, capsys):
 def test_the_report_survives_a_crash(world, monkeypatch, capsys):
     def boom(self, workdir):
         raise RuntimeError("session blew up")
-    monkeypatch.setattr(cs.Sandbox, "session", boom)
+    monkeypatch.setattr(sandbox.Sandbox, "session", boom)
     assert cs.main(argv(world, "--timings")) == 1
     assert "teardown" in capsys.readouterr().err
 
@@ -296,20 +301,20 @@ def test_an_unwritable_json_path_is_a_warning_not_a_failure(world, capsys):
 
 # --- prefetch wiring (plan 1b) -------------------------------------------------- #
 def test_launch_starts_the_prefetch_and_always_clears_it(world, monkeypatch):
-    from claude_sandbox.github import gh as sandbox_github
+    from claude_sandbox.github import gh as github_gh
     seen = []
-    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
+    monkeypatch.setattr(github_gh, "start_prefetch", lambda specs: seen.append(list(specs)))
     cleared = []
-    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    monkeypatch.setattr(github_gh, "clear_prefetch", lambda: cleared.append(1))
     assert cs.main(argv(world)) == 0
     assert seen and ("login",) in seen[0] and cleared == [1]
 
 
 def test_no_prefetch_flag_starts_nothing_but_still_clears(world, monkeypatch):
-    from claude_sandbox.github import gh as sandbox_github
+    from claude_sandbox.github import gh as github_gh
     seen, cleared = [], []
-    monkeypatch.setattr(sandbox_github, "start_prefetch", lambda specs: seen.append(list(specs)))
-    monkeypatch.setattr(sandbox_github, "clear_prefetch", lambda: cleared.append(1))
+    monkeypatch.setattr(github_gh, "start_prefetch", lambda specs: seen.append(list(specs)))
+    monkeypatch.setattr(github_gh, "clear_prefetch", lambda: cleared.append(1))
     assert cs.main(argv(world, "--no-prefetch")) == 0
     assert seen == [[]] and cleared == [1]
 
@@ -401,8 +406,8 @@ def test_failed_final_check_resumes_the_same_session_before_teardown(
     def load_deps(self):
         self.deps = {"image": None, "apt": [], "scripts": [], "binaries": [],
                      "setup": [], "check": [check]}
-    monkeypatch.setattr(cs.Sandbox, "load_deps", load_deps)
-    monkeypatch.setattr(cs.Sandbox, "install_deps", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps", load_deps)
+    monkeypatch.setattr(sandbox.Sandbox, "install_deps", lambda self: None)
     events, outcomes = [], [(1, "FAILED tests/test_x.py::test_y"), (0, "ok")]
     monkeypatch.setattr(cs.subprocess, "run",
                         lambda cmd, **k: events.append(("claude", cmd)))
@@ -411,8 +416,8 @@ def test_failed_final_check_resumes_the_same_session_before_teardown(
         code, out = outcomes.pop(0)
         events.append(("check", code))
         return code, out
-    monkeypatch.setattr(cs, "run_streaming", stream)
-    monkeypatch.setattr(cs, "ask_resume", lambda names: True)
+    monkeypatch.setattr(resume, "run_streaming", stream)
+    monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     monkeypatch.setattr(FakeContainer, "delete",
                         lambda self, *a, **k: events.append(("delete", 0)),
                         raising=False)
@@ -428,13 +433,13 @@ def test_failed_final_check_resumes_the_same_session_before_teardown(
 
 
 def test_no_final_check_flag_goes_straight_to_teardown(world, monkeypatch):
-    monkeypatch.setattr(cs.Sandbox, "load_deps", lambda self: setattr(
+    monkeypatch.setattr(sandbox.Sandbox, "load_deps", lambda self: setattr(
         self, "deps", {"image": None, "apt": [], "scripts": [], "binaries": [],
                        "setup": [], "check": [{"name": "t", "path": "c.sh",
                                                "args": [], "env": {},
                                                "timeout": 5}]}))
-    monkeypatch.setattr(cs.Sandbox, "install_deps", lambda self: None)
-    monkeypatch.setattr(cs, "run_streaming",
+    monkeypatch.setattr(sandbox.Sandbox, "install_deps", lambda self: None)
+    monkeypatch.setattr(resume, "run_streaming",
                         lambda *a, **k: pytest.fail("ran the check"))
     assert cs.main(argv(world, "--no-final-check")) == 0
 
@@ -471,11 +476,12 @@ def local_world(monkeypatch, tmp_path):
     FakeContainer.instances = []
     events, ran = [], []
     monkeypatch.setattr(cs, "Container", FakeContainer)
-    for mod in (bg, sandbox_sessions, sandbox_land, sandbox_github):
+    monkeypatch.setattr(sandbox, "Container", FakeContainer)
+    for mod in (bg, sessions, github_land, github_gh):
         monkeypatch.setattr(mod, "gh_api", no_github)
-    monkeypatch.setattr(sandbox_github, "github_login", no_github)
+    monkeypatch.setattr(github_gh, "github_login", no_github)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
-    monkeypatch.setattr(cs.Sandbox, "attach_volumes", lambda self: None)
+    monkeypatch.setattr(sandbox.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     real_run = sp.run
 

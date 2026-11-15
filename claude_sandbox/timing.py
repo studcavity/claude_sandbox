@@ -4,8 +4,8 @@ A tiny, stdlib-only stopwatch for the launcher. Two kinds of measurement:
 
   stages    named, nestable spans of the launch (`with stage("clone"): ...`),
   counters  how many subprocess/GitHub calls were made and what they cost in
-            total, fed from the two real I/O edges (sandbox_util.run and
-            sandbox_github._gh), so the numbers are what actually ran.
+            total, fed from the two real I/O edges (util.run and
+            gh._gh), so the numbers are what actually ran.
 
 Off by default and free when off: every helper first checks ACTIVE, and the
 edges don't even read the clock. `mark("prompt")` is the headline number: how

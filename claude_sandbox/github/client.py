@@ -1,6 +1,6 @@
 """github/client.py - typed GitHub operations through PyGithub.
 
-Why a client AND the `gh` wrapper: `sandbox_github.gh_api` returns raw REST
+Why a client AND the `gh` wrapper: `gh.gh_api` returns raw REST
 dicts and exact bytes for file contents, and the launcher depends on both.
 PyGithub's low-level requester is not a drop-in for that (checked 2026-11-15
 against a real local server: it adds a `url` key to every dict, and mangles raw
@@ -20,7 +20,7 @@ import contextlib
 import dataclasses
 import os
 
-from claude_sandbox.github import gh as sandbox_github
+from claude_sandbox.github import gh
 from claude_sandbox.github.gh import GitHubError
 
 TIMEOUT = 30
@@ -50,7 +50,7 @@ def ca_bundle(environ=None):
 
 def gh_token():
     """The token of the user's `gh` login. Never logged or stored."""
-    r = sandbox_github._gh(["auth", "token"])
+    r = gh._gh(["auth", "token"])
     token = (r.stdout or "").strip()
     if r.failed or not token:
         raise GitHubError("gh is not logged in: run `gh auth login` (or set "

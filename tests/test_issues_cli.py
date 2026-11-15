@@ -1,4 +1,4 @@
-"""The sandbox_issues command line (`run` and `main`): real git, fake GitHub."""
+"""The github_issues command line (`run` and `main`): real git, fake GitHub."""
 import pytest
 
 from claude_sandbox.github import issues as si
