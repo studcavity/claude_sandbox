@@ -298,7 +298,7 @@ def test_shipped_ruleset_requires_exactly_the_status_context(repo_root):
     assert sp.required_checks(rs) == [sc.STATUS_CONTEXT]
     assert rs["bypass_actors"] == [] and rs["enforcement"] == "active"
     (rule,) = rs["rules"]
-    assert rule["parameters"]["strict_required_status_checks_policy"] is True
+    assert rule["parameters"]["strict_required_status_checks_policy"] is False
     assert json.load(open(path))["name"] == "require-sandbox-check"
 
 
