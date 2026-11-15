@@ -6,10 +6,12 @@ refs/heads/sbx/<session>/* can be created) is checked against git itself.
 """
 import io
 import os
+import pathlib
 import subprocess
 
 import pytest
 
+import claude_sandbox as cs
 import sandbox_backend_local as lb
 import sandbox_provenance
 
@@ -214,3 +216,196 @@ def test_the_in_bundle_carries_only_the_named_branch(repos):
                                check=True, capture_output=True).stdout)
     heads = git("bundle", "list-heads", str(tmp / "b"), text=True).stdout
     assert heads.split()[1::2] == ["refs/heads/main"]
+
+
+# --------------------------------------------------------------------------- #
+# the backend end to end, with the "container" run locally
+# --------------------------------------------------------------------------- #
+class LocalBox:
+    """Stands in for a Container: runs every command here, as us. The
+    backend only ever reaches the container through these four methods."""
+
+    def __init__(self, home):
+        self.home, self.calls = home, []
+
+    def user_cmd(self, *argv, env=None):
+        return list(argv)
+
+    def user_argv(self, argv, env=None, cwd=None, **kw):
+        self.calls.append(argv)
+        kw.pop("capture", None)
+        return subprocess.run(argv, cwd=cwd or self.home, check=True,
+                              capture_output=True, **kw)
+
+    def user(self, script, **kw):
+        return self.user_argv(["bash", "-c", script])
+
+
+@pytest.fixture
+def local(tmp_path, monkeypatch, make_args):
+    """A primary repo on `main` and a LocalBackend over it, with git's global
+    config shut out and the key store under tmp."""
+    for k, v in dict(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                     GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@e",
+                     GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@e").items():
+        monkeypatch.setenv(k, v)
+    primary = tmp_path / "my proj"
+    git("init", "-q", "-b", "main", str(primary))
+    (primary / "a.txt").write_text("1")
+    (primary / "claude_sandbox_deps.yaml").write_text("apt: [jq]\n")
+    git("add", "-A", cwd=primary)
+    git("commit", "-q", "-m", "base", cwd=primary)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"CLAUDE_SANDBOX_STATE_DIR": str(tmp_path / "state")}
+    args = make_args(local=lb.resolve_local(str(primary / ".")))
+    return lb.LocalBackend(args, environ=env, home=str(home)), LocalBox(str(home))
+
+
+def test_resolve_local_finds_the_top_level_and_refuses_non_repos(tmp_path):
+    (tmp_path / "r" / "sub").mkdir(parents=True)
+    git("init", "-q", str(tmp_path / "r"))
+    assert lb.resolve_local(str(tmp_path / "r" / "sub")) == str(tmp_path / "r")
+    with pytest.raises(ValueError):
+        lb.resolve_local(str(tmp_path))
+    with pytest.raises(ValueError):
+        lb.resolve_local(str(tmp_path / "nope"))
+
+
+def test_base_is_the_checked_out_branch_unless_given(local):
+    be, _ = local
+    assert be.check_host() is None
+    assert be.base == "main" and len(be.base_sha) == 40
+    be2 = lb.LocalBackend(type(be.args)(**{**vars(be.args), "base": "nope"}))
+    assert "no branch" in be2.check_host()
+    be3 = lb.LocalBackend(type(be.args)(**{**vars(be.args), "base": "-x"}))
+    assert "not a valid branch" in be3.check_host()
+
+
+def test_a_detached_head_needs_base(local):
+    be, _ = local
+    git("checkout", "-q", "--detach", cwd=be.primary)
+    assert "detached" in be.check_host()
+
+
+def test_files_are_read_from_the_base_commit_only(local):
+    be, _ = local
+    assert be.read_file("claude_sandbox_deps.yaml") == b"apt: [jq]\n"
+    assert be.read_file("missing.yaml") is None
+    with open(os.path.join(be.primary, "untracked.yaml"), "w") as f:
+        f.write("x")
+    assert be.read_file("untracked.yaml") is None   # the work tree is not read
+
+
+def test_populate_clones_the_base_onto_the_work_branch(local):
+    be, box = local
+    wd = be.populate(box, S)
+    assert wd == os.path.join(box.home, "my-proj")
+    assert git("branch", "--show-current", cwd=wd, text=True).stdout.strip() == f"sbx/{S}/work"
+    assert git("rev-parse", "origin/HEAD", cwd=wd, text=True).stdout.strip() == be.base_sha
+    assert git("fetch", "-q", "origin", cwd=wd).returncode == 0   # offline, from the bundle
+    assert "push" in " ".join(be.access_lines(wd, f"sbx/{S}/work"))
+
+
+def test_round_trip_through_the_backend(local, capsys):
+    be, box = local
+    wd = be.populate(box, S)
+    commit(pathlib.Path(wd), "w.txt", f"sbx/{S}/work")
+    commit(pathlib.Path(wd), "evil.txt", "main")
+    be.export(box, S)
+    assert be.exported and os.stat(be.exported).st_mode & 0o077 == 0
+    main_before = git("rev-parse", "main", cwd=be.primary, text=True).stdout
+    be.land(S)
+    assert git("rev-parse", "main", cwd=be.primary, text=True).stdout == main_before
+    assert git("show", f"sbx/{S}/work:w.txt", cwd=be.primary, text=True).stdout == "w.txt"
+    err = capsys.readouterr().err
+    assert f"sbx/{S}/work  1 commit" in err and "no signing key recorded" in err
+    assert not os.path.exists(be.exported)   # imported, so not kept
+
+
+def test_nothing_new_means_nothing_to_import(local, capsys):
+    be, box = local
+    be.populate(box, S)
+    be.export(box, S)
+    assert be.exported is None and not be.export_failed
+    be.land(S)   # a no-op
+    assert "nothing to import" in capsys.readouterr().err
+
+
+def test_export_failure_is_reported_never_raised(local, capsys):
+    be, box = local
+    be.populate(box, S)
+    be.base_sha = "f" * 40   # not in the repo: git bundle create fails
+    be.export(box, S)
+    assert be.export_failed and be.exported is None
+    assert "couldn't export" in capsys.readouterr().err
+
+
+def test_signed_commits_pass_provenance_in_the_report(local, tmp_path, capsys):
+    be, box = local
+    key = tmp_path / "sign"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+                   check=True)
+    sandbox_provenance.save_key(be.key_repo, S, (tmp_path / "sign.pub").read_text(),
+                                root=be.key_root)
+    wd = be.populate(box, S)
+    for k, v in (("gpg.format", "ssh"), ("user.signingkey", str(key)),
+                 ("commit.gpgsign", "true")):
+        git("config", k, v, cwd=wd)
+    commit(pathlib.Path(wd), "w.txt", f"sbx/{S}/work")
+    be.export(box, S)
+    be.land(S)
+    err = capsys.readouterr().err
+    assert "1 commit signed by session" in err and "✔" in err
+
+
+def test_report_flags_privileged_files_and_sanitises_session_text():
+    row = dict(branch=f"sbx/{S}/work", commits=2, provenance_ok=True,
+               provenance="2 commits signed", checker_errors=0,
+               sensitive=[".github/workflows/x.yml"],
+               synopsis=("abc1234", "Title \x1b[31mred @someone", []),
+               not_verified=[("abc1234", "Not verified: on real hw")])
+    text = lb.format_report("/p", "main", S, [row])
+    assert "privilege" in text and ".github/workflows/x.yml" in text
+    assert "\x1b" not in text and "@someone" not in text
+    assert "Not verified: on real hw" in text
+    assert "⚠" not in text.split("\n")[1]   # the branch line itself is clean
+
+
+# --------------------------------------------------------------------------- #
+# the launcher's side: flags and backend choice
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def a_repo(tmp_path):
+    git("init", "-q", "-b", "main", str(tmp_path / "r"))
+    return str(tmp_path / "r")
+
+
+def test_local_picks_the_local_backend(a_repo):
+    args = cs.normalize_args(cs.build_parser().parse_args(["--local", a_repo]))
+    assert args.local == os.path.realpath(a_repo) and args.repo is None
+    assert isinstance(cs.make_backend(args), lb.LocalBackend)
+    assert not isinstance(cs.make_backend(cs.normalize_args(
+        cs.build_parser().parse_args(["o/r"]))), lb.LocalBackend)
+
+
+@pytest.mark.parametrize("extra", [["o/r"], ["--repo", "o/r"], ["--account-key"],
+                                   ["--land-all"], ["--read-only"]])
+def test_local_refuses_github_only_modes(a_repo, extra):
+    with pytest.raises(ValueError, match="--local can't be combined"):
+        cs.normalize_args(cs.build_parser().parse_args(["--local", a_repo, *extra]))
+
+
+def test_base_needs_local():
+    with pytest.raises(ValueError, match="--base"):
+        cs.normalize_args(cs.build_parser().parse_args(["o/r", "--base", "dev"]))
+
+
+def test_the_background_refresh_keeps_the_local_source(make_args):
+    argv = cs.refresh_argv(make_args(local="/p", base="dev"), "py", "s")
+    assert argv[argv.index("--local") + 1] == "/p" and "--base" in argv
+
+
+def test_no_github_rewrite_without_a_key():
+    assert "insteadOf" not in cs.git_config_script("a", "b", github_ssh=False)
+    assert "insteadOf" in cs.git_config_script("a", "b")
