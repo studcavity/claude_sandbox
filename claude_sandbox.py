@@ -74,7 +74,6 @@ import sandbox_deps
 import sandbox_host
 import sandbox_pool
 import sandbox_volumes
-import sandbox_actions
 import sandbox_land
 import sandbox_protect
 import sandbox_provenance
@@ -134,9 +133,7 @@ DEPS_REF_TEMPLATE = "sandbox_ref_deps.md"
 DEPS_REF_PATH = "~/.claude/ref/deps.md"
 SESSION_TOOL_DIR = f"{HOME}/.local/share/claude-sandbox"
 SESSION_TOOL_BIN = f"{HOME}/.local/bin/sandbox-check"
-SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_actions", "sandbox_labels",
-                        "sandbox_names", "sandbox_templates", "sandbox_todo",
-                        "sandbox_untrusted")
+SESSION_TOOL_MODULES = ("sandbox_check", "sandbox_todo", "sandbox_untrusted")
 SESSION_TOOL_WRAPPER = """#!/bin/sh
 # Installed by claude_sandbox. Lints this session's own commits (everything
 # since the remote's default branch) with the same rules CI and the launcher
@@ -553,21 +550,9 @@ def refresh_images(args):
     return 0
 
 
-def action_limits(args):
-    """The caps for follow-up filing, from --max-actions / --max-issues."""
-    return {"actions": args.max_actions, "issues": args.max_issues}
-
-
 def report_provenance(outcomes):
     """Print the exit summary of `sandbox/provenance` statuses (to stderr)."""
     text = sandbox_provenance.format_outcomes(outcomes)
-    if text:
-        print("\n" + text, file=sys.stderr)
-
-
-def report_actions(outcomes):
-    """Print the exit summary of follow-up actions (to stderr)."""
-    text = sandbox_actions.format_outcomes(outcomes)
     if text:
         print("\n" + text, file=sys.stderr)
 
@@ -1131,13 +1116,6 @@ class Sandbox:
             except Exception as e:
                 log(f"warning: couldn't post {sandbox_provenance.CONTEXT} "
                     f"for {self.session_id}: {e}")
-        if not a.no_actions:
-            try:
-                report_actions(sandbox_actions.run(
-                    a.repo, self.session_id, limits=action_limits(a)))
-            except Exception as e:
-                log(f"warning: couldn't run follow-up actions for "
-                    f"{self.session_id}: {e}")
 
     def teardown(self):
         if self._torn_down:
@@ -1207,17 +1185,6 @@ def build_parser():
                    help=f"don't post the `{sandbox_provenance.CONTEXT}` commit "
                         "status (every commit signed by the session's own key "
                         "or yours) on the session's PRs")
-    p.add_argument("--max-actions", type=int, metavar="N",
-                   default=sandbox_actions.MAX_ACTIONS,
-                   help="most follow-up requests to file per run "
-                        "(default %(default)s)")
-    p.add_argument("--max-issues", type=int, metavar="N",
-                   default=sandbox_actions.MAX_ISSUES_PER_SESSION,
-                   help="most issues one session may have in a repo, counting "
-                        "ones already filed (default %(default)s)")
-    p.add_argument("--no-actions", action="store_true",
-                   help="don't file the `todo/` follow-up requests in the "
-                        "session's commits as issues")
     p.add_argument("--no-protect-prompt", action="store_true",
                    help="don't offer to apply the default-branch protection "
                         "ruleset when the repo lacks one (the warning still "
@@ -1403,9 +1370,6 @@ def _launch(args):
             if landed and not args.no_provenance:
                 report_provenance(sandbox_provenance.post_session(
                     args.repo, landed))
-            if not args.no_actions:
-                report_actions(sandbox_actions.run(
-                    args.repo, limits=action_limits(args)))
         except GitHubError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
@@ -1508,7 +1472,7 @@ def _launch(args):
             with sandbox_timing.stage("teardown"):
                 box.teardown()
         finally:
-            with sandbox_timing.stage("land: PRs, statuses, actions"):
+            with sandbox_timing.stage("land: PRs, provenance"):
                 box.land()
     return 0
 

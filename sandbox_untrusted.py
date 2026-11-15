@@ -3,7 +3,7 @@
 Commit messages, branch names and `todo/` briefs come from a sandboxed agent
 and end up pasted into GitHub issues and PRs under the *user's* identity. Two
 modules used to carry their own near-copies of the cleaning code
-(`sandbox_land.clean_text`, `sandbox_actions.clean_block`); both now build on
+(`sandbox_land.clean_text`, `sandbox_issues.clean_block`); both now build on
 the primitives here so a fix lands once. Stdlib only (the checker imports it).
 
 Two jobs:

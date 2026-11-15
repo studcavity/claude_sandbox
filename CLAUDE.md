@@ -9,9 +9,9 @@ module table; module docstrings say what each file is for.
   commands (a test enforces this).
 - `sandbox_check.py` (the commit linter; also run in CI and copied into the
   sandbox as `sandbox-check`) is **stdlib-only**, and so is everything it
-  imports at module level (`sandbox_actions`, `sandbox_labels`,
-  `sandbox_names`, `sandbox_templates`, `sandbox_untrusted`): a test pins the
-  list the launcher copies into the sandbox to that import graph.
+  imports at module level (`sandbox_todo`, `sandbox_untrusted`): a test pins
+  the list the launcher copies into the sandbox to that import graph. Code
+  that writes to GitHub (`sandbox_issues`) must stay out of that graph.
 - Session text is untrusted: sanitise it with `sandbox_untrusted`, never paste
   it into GitHub raw.
 - `sandbox_provenance.py`: the container makes the signing key and signs every

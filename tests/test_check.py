@@ -95,7 +95,7 @@ def test_checker_imports_without_third_party_dependencies():
     import subprocess
     import sys
     code = ("import sys; sys.modules['invoke'] = None; sys.path.insert(0, %r); "
-            "import sandbox_check, sandbox_actions, sandbox_todo; print('ok')"
+            "import sandbox_check, sandbox_todo; print('ok')"
             % os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     r = subprocess.run([sys.executable, "-I", "-c", code],
                        capture_output=True, text=True)

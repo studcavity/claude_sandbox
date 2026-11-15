@@ -1,0 +1,56 @@
+name: file-issues
+
+# Files a GitHub issue for each todo/<name>.md that a commit ADDS to the
+# default branch (see sandbox_todo.py and sandbox_issues.py). It runs only on
+# pushes to main, so the text it publishes has been through review, and the
+# code it runs is main's own: no PR, fork or session branch ever reaches this
+# job. Issues are created by github-actions[bot].
+on:
+  push:
+    branches: [main]
+
+# The only write permission is the one this job exists for.
+permissions:
+  contents: read
+  issues: write
+
+# Strict shell, as in tests.yml (GitHub's default has no pipefail).
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+# One run at a time and none cancelled, so two quick merges can't both look
+# for a marker before either has written one.
+concurrency:
+  group: file-issues
+  cancel-in-progress: false
+
+jobs:
+  file-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # sandbox_issues talks to GitHub through `gh` (preinstalled), driven by
+      # invoke.
+      - run: pip install "invoke>=2"
+      - name: File issues for new todo/ files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Context values go through env, never into the script text.
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A new branch has an all-zero `before`, and a force push can leave
+          # one that isn't in this clone: scan the last commits instead. The
+          # ledger (a marker on each issue) makes any overlap harmless.
+          if [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
+              && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range=(--since "$BEFORE")
+          else
+            range=(--last 50)
+          fi
+          python sandbox_issues.py "$GITHUB_REPOSITORY" "${range[@]}"

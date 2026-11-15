@@ -115,9 +115,10 @@ verify or do (and why), and follow-ups someone must action later.
   edit one.
 - **To have a GitHub issue filed**, add `todo/<name>.md` to a commit
   (`<name>`: lowercase letters, digits and `-`). Its first heading is the
-  issue title and the whole file is the issue text. The launcher files it
-  when the session ends; deleting the file before then withdraws the request,
-  and deleting it later closes nothing. It is NOT a work order: describe a
+  issue title and the whole file is the issue text. It is filed
+  as an issue only once the file reaches the default branch (unmerged work
+  files nothing), so deleting it before merge withdraws the request, and
+  deleting it later closes nothing. It is NOT a work order: describe a
   problem and some potential solutions, and don't dictate which one gets
   implemented. Write it for a fresh agent with no context from this session:
   the problem and why it matters; what you tried or ruled out; exact files,
