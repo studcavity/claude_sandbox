@@ -68,7 +68,8 @@ class FakeGitHub:
         if method == "POST" and path.endswith("/keys"):
             return {"id": 5}
         if method == "POST" and path.endswith("/pulls"):
-            return {"html_url": "https://github.com/o/r/pull/7"}
+            return {"html_url": "https://github.com/o/r/pull/7", "number": 7,
+                    "head": {"sha": "c" * 40}}
         if path == "/repos/o/r":
             return {"default_branch": "main",
                     "owner": {"login": self.owner}}
@@ -81,9 +82,10 @@ class FakeGitHub:
         if "/matching-refs/" in path:
             return [{"ref": f"refs/heads/sbx/{self.session}/work"}]
         if "/compare/" in path:
-            return {"ahead_by": 1, "status": "ahead",
+            return {"ahead_by": 1, "status": "ahead", "total_commits": 1,
                     "files": [{"filename": "a.py"}],
-                    "commits": [{"commit": {"message": "do it"}}]}
+                    "commits": [{"sha": "c" * 40,
+                                 "commit": {"message": "do it"}}]}
         if "/pulls?" in path:
             return []
         return None  # DELETE key
@@ -121,10 +123,11 @@ def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     assert any(cs.HOME + "/claude_sandbox" == c or "o/r".split("/")[1] in c
                for cmd in world.ran for c in cmd)
     methods = [(m, p) for m, p, _ in world.gh.calls]
-    # PR opened by the host, then the key revoked, then the container gone
+    # key revoked (and container gone) BEFORE the host opens the PR, so the
+    # session can't move its branch between the hold check and the PR
     i_pr = methods.index(("POST", "/repos/o/r/pulls"))
     i_key = methods.index(("DELETE", "/repos/o/r/keys/5"))
-    assert i_pr < i_key
+    assert i_key < i_pr
     box = FakeContainer.instances[-1]
     assert ("delete", ()) in box.calls
     # the work branch was created inside the container
@@ -133,6 +136,33 @@ def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     # the exit summary was printed
     err = capsys.readouterr().err
     assert "pull requests for session quirky-hopper" in err and "#7" in err
+
+
+def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
+    """A process the session left running could push between the hold check
+    and the PR; so nothing of the session may be alive when landing starts."""
+    seen = []
+    real_land = cs.Sandbox.land
+
+    def land(self):
+        box = FakeContainer.instances[-1]
+        seen.append(("delete", ()) in box.calls)
+        keys = [(m, p) for m, p, _ in world.gh.calls if m == "DELETE"]
+        seen.append(("DELETE", "/repos/o/r/keys/5") in keys)
+        return real_land(self)
+    monkeypatch.setattr(cs.Sandbox, "land", land)
+    assert cs.main(argv(world)) == 0
+    assert seen == [True, True]
+
+
+def test_landing_still_runs_when_teardown_fails(world, monkeypatch):
+    def broken_delete(self):
+        raise RuntimeError("incus delete failed")
+    monkeypatch.setattr(cs.Sandbox, "teardown", broken_delete)
+    with pytest.raises(RuntimeError):
+        cs.main(argv(world))
+    methods = [(m, p) for m, p, _ in world.gh.calls]
+    assert ("POST", "/repos/o/r/pulls") in methods
 
 
 def test_no_pr_flag_skips_landing_but_still_cleans_up(world):

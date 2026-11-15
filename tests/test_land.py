@@ -41,6 +41,7 @@ class Api:
         self.compares, self.pulls, self.posted = compares, list(pulls), []
         self.branches = list(branches)
         self.label_calls, self.fail_labels = [], False
+        self.head_sha, self.patched = TIP, []
 
     def __call__(self, method, path, body=None, raw=False):
         if path == "/repos/o/r":
@@ -60,14 +61,22 @@ class Api:
         if method == "POST":
             self.posted.append(body)
             n = len(self.posted)
-            return {"html_url": f"https://github.com/o/r/pull/{n}", "number": n}
+            return {"html_url": f"https://github.com/o/r/pull/{n}", "number": n,
+                    "head": {"sha": self.head_sha}}
+        if method == "PATCH":
+            self.patched.append((path, body))
+            return {}
         raise AssertionError(path)
 
 
+TIP = "a" * 40
+
+
 def cmp_(files=("a.py",), ahead=1, status="ahead"):
-    return {"ahead_by": ahead, "status": status,
+    return {"ahead_by": ahead, "status": status, "total_commits": ahead,
             "files": [{"filename": f} for f in files],
-            "commits": [{"commit": {"message": "do it\n\nbody"}}] * ahead}
+            "commits": [{"sha": TIP, "commit": {"message": "do it\n\nbody"}}]
+            * ahead}
 
 
 def main_cmp(c, head="sbx/s/work"):
@@ -218,3 +227,40 @@ def test_pr_number_falls_back_to_the_url_and_unlabelable_prs_are_skipped(monkeyp
     assert api.label_calls == []
     sl.label_pr("o/r", {"number": 5}, "bad session!")      # only the generic label
     assert api.label_calls[-1][1] == {"labels": ["sandbox"]}
+
+
+def test_a_branch_that_moves_while_landing_gets_its_pr_closed(monkeypatch):
+    """The PR's head is a branch name: if another key pushes between the hold
+    check and the POST, the PR would merge something nobody checked."""
+    api = Api({})
+    api.head_sha = "b" * 40
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s")
+    assert r.outcome == "held" and "moved while landing" in r.detail
+    assert "closed" in r.detail
+    assert api.patched == [("/repos/o/r/pulls/1", {"state": "closed"})]
+    assert api.label_calls == []
+
+
+def test_a_pr_response_without_a_head_sha_fails_closed(monkeypatch):
+    api = Api({})
+    api.head_sha = None
+    monkeypatch.setattr(sl, "gh_api", api)
+    assert sl.land("o/r", "s")[0].outcome == "held"
+
+
+def test_a_compare_that_doesnt_list_every_commit_is_held_unopened(monkeypatch):
+    c = cmp_()
+    c["total_commits"] = 251
+    api = Api(main_cmp(c))
+    monkeypatch.setattr(sl, "gh_api", api)
+    (r,) = sl.land("o/r", "s")
+    assert r.outcome == "held" and "pin" in r.detail
+    assert api.posted == []
+
+
+def test_checked_tip_is_the_last_listed_commit():
+    c = {"total_commits": 2, "commits": [{"sha": "1" * 40}, {"sha": "2" * 40}]}
+    assert sl.checked_tip(c) == "2" * 40
+    assert sl.checked_tip({"commits": [{"sha": "nope"}]}) is None
+    assert sl.checked_tip({}) is None
