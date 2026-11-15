@@ -106,19 +106,18 @@ Any number of sandboxes can run on one repo at once.
   ┌ pull requests for session quirky-hopper ───────────────
   │ ✔ opened    #12   sbx/quirky-hopper/1-api → main  [3 commits]
   │             https://github.com/o/r/pull/12
-  │ ✔ opened    #13   sbx/quirky-hopper/2-tests → sbx/quirky-hopper/1-api (stacked)  [1 commit]
+  │ ✔ opened    #13   sbx/quirky-hopper/2-tests → main  [1 commit]
+  │             https://github.com/o/r/pull/13
   │ ⚠ HELD      sbx/quirky-hopper/ci
-  └ 2 opened. Merge stacked PRs bottom-up (parents first). The launcher never merges.
+  └ 2 opened. The launcher never merges.
   ```
-- **Stacked PRs.** A session may build each branch on its own previous one.
-  The launcher targets each PR at the closest of that session's own branches it
-  contains, so the diff shows only that step. Merge bottom-up; after a
-  squash/rebase merge the next branch needs
-  `git rebase --onto origin/HEAD <old-parent-tip>`. PRs into a non-default base
-  may not trigger CI that is filtered to the default branch.
+- **One base.** Every PR targets the default branch. Workflows are filtered
+  to PRs into it, so a PR into another branch would get no CI, and the
+  launcher no longer opens those. A branch built on another of a session's
+  branches shows its parent's commits too; merge the parent first and rebase.
 - **Held, not opened:** a branch that changes `.github/`, `.githooks/`,
   `CODEOWNERS`, the deps/host files or a `setup:` script (and any branch
-  stacked above one) gets no PR; review it by hand. In an interactive
+  built on one) gets no PR; review it by hand. In an interactive
   terminal the launcher instead asks `Open a PR for it anyway? [y/N]` (default
   no; non-interactive runs stay held). A branch whose tip can't be pinned or
   that moves while landing is never overridable. Those files run with extra
