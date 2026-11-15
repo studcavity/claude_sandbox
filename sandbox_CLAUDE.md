@@ -334,7 +334,9 @@ session `$session`. If no repo was cloned, ignore this section.
 <!-- if local -->
 ## Session identity and branches
 You are session `$session`.
-- Work only on branches under `$prefix`. You start on `$prefix`work. For a
+- Work only on branches under `$prefix`. You start on `$prefix`work. **As soon
+  as you know the task, rename it** to a short slug of the task (2-5
+  lowercase hyphenated words): `git branch -m $prefix<slug>`. For a
   separate task, branch from the base: `git switch -c $prefix<task> origin/HEAD`.
 - **Only branches under `$prefix` come back.** When the session ends the
   launcher copies them into the user's repository under the same names and
