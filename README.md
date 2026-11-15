@@ -199,8 +199,9 @@ renames or removes a CI job (renaming a required job strands open PRs). Also:
   branch's workflow code *with* secrets; put real secrets in an Environment
   restricted to the default branch.
 - Not provided: GitHub's merge queue (unavailable on personal-account repos)
-  and auto-merge. Enable "require branches up to date" and use "Update branch"
-  when PRs collide.
+  and auto-merge. The shipped rulesets leave "require branches to be up to date"
+  off (a PR passes on its own checks, not against the latest default branch);
+  turn `strict_required_status_checks_policy` on if you want that.
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
 
