@@ -100,6 +100,9 @@ session is lost when the sandbox ends, and it protects nobody afterwards.
   user rather than hiding it.
 - If the repo has CI, make sure new tests run there too. If it has none and
   the user agrees, add a workflow so the tests keep running after this session.
+  GitHub rejects pushes that create or change `.github/workflows/*` from this
+  sandbox (the key lacks the `workflow` scope). Commit the workflow somewhere
+  else (e.g. `ci/`) and give the user the `git mv` to run on their host.
 - Be pragmatic, not exhaustive: cover the logic that can actually break
   (edge cases, validation, error handling, security-relevant code) and skip
   trivial glue. A few meaningful tests beat many brittle ones.
