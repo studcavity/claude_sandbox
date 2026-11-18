@@ -1559,10 +1559,10 @@ def test_a_branch_that_wont_land_resumes_even_with_no_check_scripts(
         make_args, monkeypatch):
     box = sandbox.Sandbox(make_args(repo="o/r"))
     box.deps = None
-    _merge(monkeypatch, [("sbx/s/x", "1 commit(s) behind the base")])
+    _merge(monkeypatch, [("sbx/s/x", "conflicts with the base in: a.txt")])
     monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = box.final_check("/w")
-    assert "sbx/s/x" in prompt and "behind the base" in prompt
+    assert "sbx/s/x" in prompt and "conflicts with the base" in prompt
 
 
 def test_clean_branches_and_no_checks_means_no_resume(make_args, monkeypatch):
