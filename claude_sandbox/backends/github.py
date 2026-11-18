@@ -385,7 +385,7 @@ class GitHubBackend(Backend):
         if not ask_protect(a.repo, branch, protect.describe(ruleset,
                                                                     branch)):
             return "unprotected", []
-        checks = protect.discover_checks(a.repo, branch)
+        checks = protect.offerable_checks(a.repo, branch)
         if checks and not ask_checks(branch, checks):
             checks = []
         protect.apply_ruleset(

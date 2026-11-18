@@ -235,7 +235,8 @@ ruleset.json`, add this rule to its `rules`, and
 `{"type": "required_status_checks", "parameters":
 {"strict_required_status_checks_policy": false, "required_status_checks":
 [{"context": "<check name>"}]}}`. Use names that have passed (they must match
-the job's displayed name, matrix values expanded, e.g. `test (3.12)`). Renaming
+the job's displayed name). The launcher offers only static names, never matrix
+entries like `test (3.12)`, and warns you (exit summary too) when CI has them. Renaming
 a required job strands every open PR, so update the ruleset in step. For a
 matrix job, require an aggregator job instead (this repo's `tests-passed`: it
 `needs` the others, runs `if: always()` and fails unless all succeeded), so

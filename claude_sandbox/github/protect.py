@@ -50,6 +50,50 @@ def existing_ruleset_names(repo):
         "GET", f"/repos/{repo}/rulesets?per_page=100") or []}
 
 
+_MATRIX_RE = re.compile(r"^.+ \(.+\)$")
+
+AGGREGATOR_HINT = (
+    "Matrix jobs report one check per entry (e.g. `test (ubuntu-24.04)`), so a "
+    "ruleset that names them breaks the day an entry is dropped (an OS going "
+    "end-of-life): the old name never reports and every PR waits forever. "
+    "Add an aggregator job to the workflow instead: `needs: [<the matrix "
+    "jobs>]`, `if: always()`, failing unless every needed result is "
+    "`success`, and require only its (static) name in the ruleset.")
+
+
+def is_matrix_name(name):
+    """Whether a check name looks like one entry of a matrix job. GitHub names
+    those `<job> (<values>)`; a static job has no such suffix. A static job
+    that happens to be named that way is treated as a matrix one: it just isn't
+    offered, and the user is told (the safe direction)."""
+    return bool(_MATRIX_RE.match(name))
+
+
+def split_matrix(names):
+    """(static names, matrix-entry names), each sorted."""
+    names = sorted(names)
+    return ([n for n in names if not is_matrix_name(n)],
+            [n for n in names if is_matrix_name(n)])
+
+
+def matrix_warning(repo, branch, matrix, required):
+    """Warning for the user about matrix-entry checks, or None. Only when the
+    fragile thing is actually so: a matrix name is itself required, or no
+    static CI check is required (nothing stable gates the matrix; `required`
+    None means unknown: stay quiet)."""
+    if not matrix or required is None:
+        return None
+    hardcoded = sorted(set(matrix) & required)
+    if not hardcoded and any(not is_matrix_name(n) for n in required):
+        return None
+    shown = ", ".join(f"`{c}`" for c in matrix)
+    lead = (f"required checks for `{branch}` of {repo} name matrix entries "
+            f"({', '.join(f'`{c}`' for c in hardcoded)}); " if hardcoded else
+            f"CI jobs of {repo} that are matrix builds: {shown}; not "
+            "offered as required checks. ")
+    return lead + AGGREGATOR_HINT
+
+
 def discover_checks(repo, branch):
     """Check names that succeeded on the branch's head commit (candidates for
     required_status_checks). Empty on any trouble: this is only a suggestion."""
@@ -61,6 +105,12 @@ def discover_checks(repo, branch):
         return []
     return sorted({c["name"] for c in (data or {}).get("check_runs", [])
                    if c.get("conclusion") == "success"})
+
+
+def offerable_checks(repo, branch):
+    """discover_checks minus matrix entries: only static names are offered as
+    required checks (see AGGREGATOR_HINT)."""
+    return split_matrix(discover_checks(repo, branch))[0]
 
 
 def rule_checks(rules):
@@ -116,7 +166,9 @@ def gap_warnings(repo, branch, state, required, ci):
     elif state == "unknown":
         out.append(f"couldn't verify whether `{branch}` of {repo} is protected")
     if state in ("protected", "applied") and required is not None:
-        ci, missing = sorted(ci), sorted(set(ci) - required)
+        ci, matrix = split_matrix(ci)
+        missing = sorted(set(ci) - required)
+        mw = matrix_warning(repo, branch, matrix, required)
         how = (" To require them, add a required_status_checks rule to the "
                f"ruleset (`gh api repos/{repo}/rulesets` lists its id; README: "
                "Required status checks).")
@@ -130,6 +182,8 @@ def gap_warnings(repo, branch, state, required, ci):
             out.append(f"CI jobs not required to merge into `{branch}` of "
                        f"{repo}: " + ", ".join(f"`{c}`" for c in missing)
                        + "." + how)
+        if mw:
+            out.append(mw)
     return out
 
 
