@@ -78,6 +78,17 @@ class Container:
              f"usb-{vid}-{pid}", "usb", f"vendorid={vid}", f"productid={pid}",
              f"uid={UID}", f"gid={UID}", "mode=0660"])
 
+    def add_mount(self, index, source, path, readonly=True):
+        """Bind-mount a host path into the container (host side, no shell).
+
+        `shift=true` maps ownership so the session user can use (and, with
+        readonly=False, write) files owned by the host user. The device is
+        read-only unless the caller says otherwise.
+        """
+        run([self.cli, "config", "device", "add", self.name, f"bind-{index}",
+             "disk", f"source={source}", f"path={path}",
+             f"readonly={'true' if readonly else 'false'}", "shift=true"])
+
     def self_check(self):
         """Round-trip a file through put_file; raises if the container's exec
         and stdin plumbing can't do what image/deps installs rely on."""

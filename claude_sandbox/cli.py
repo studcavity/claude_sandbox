@@ -194,6 +194,8 @@ def _launch(args):
             box.install_deps()  # before any credential is in the container
             box.setup_nesting()
             box.attach_usb()
+        with timing.stage("bind mounts"):
+            box.attach_mounts(box.backend.workdir())
         with timing.stage("ssh key + deploy key + git config"):
             box.provision_key()
         with timing.stage("claude install check"):

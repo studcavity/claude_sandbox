@@ -240,6 +240,9 @@ On a 404, 401/403 or rate limit, say plainly that you can't watch CI; never
 report CI as passing unseen. Mention anything you suspect CI will catch.
 
 <!-- end -->
+## Host directories (bind mounts)
+$mounts
+
 ## Host hardware (USB)
 $usb
 

@@ -134,3 +134,16 @@ def test_user_argv_sets_cwd_and_passes_argv_unparsed(calls):
     assert cmd[cmd.index("--cwd") + 1] == "/w"
     assert cmd[cmd.index("--") + 1:] == ["bash", "-l", "./x.sh", "a b; rm"]
     assert "K=v" in cmd and kw["check"] is False
+
+
+def test_add_mount_is_read_only_by_default_and_has_no_shell(monkeypatch):
+    from claude_sandbox.container import incus
+    ran = []
+    monkeypatch.setattr(incus, "run", lambda cmd, **k: ran.append(cmd))
+    c = incus.Container("incus", "box")
+    c.add_mount(0, "/h/d", "/mnt/d")
+    c.add_mount(1, "/h/w", "/mnt/w", readonly=False)
+    assert ran[0] == ["incus", "config", "device", "add", "box", "bind-0",
+                      "disk", "source=/h/d", "path=/mnt/d", "readonly=true",
+                      "shift=true"]
+    assert "readonly=false" in ran[1]

@@ -5,6 +5,7 @@ import string
 from claude_sandbox import sessions
 from claude_sandbox.container import deps
 from claude_sandbox.container import host
+from claude_sandbox.container.mounts import mounts_section
 from claude_sandbox.container.incus import HOME, UID, USER
 from claude_sandbox.backends.github import access_lines
 
@@ -63,12 +64,13 @@ def select_variant(template, kind):
 
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
-                     disk_note="", session=None, access=None, kind="github"):
+                     disk_note="", session=None, access=None, kind="github",
+                     mounts=()):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $disk, $session, $prefix, $repo); write $$ for a
+    $deps_file, $host_file, $usb, $mounts, $disk, $session, $prefix, $repo); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -91,6 +93,8 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         deps_file=deps.DEPS_FILE,
         host_file=host.HOST_FILE,
         disk=disk_note or "- Disk limits are unknown; check `df -h`.",
+        mounts=mounts_section(mounts, cli, container)
+        or "No host directories are mounted.",
         usb=host.usb_section(usb_devices, cli, container,
                                      facts["usb"]) or "No USB devices were requested.",
     )
