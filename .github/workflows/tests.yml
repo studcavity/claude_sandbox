@@ -116,3 +116,19 @@ jobs:
             echo "smoke test was skipped" >&2
             exit 1
           fi
+
+  # The ONE name to require in the ruleset (plus nothing else): matrix entries
+  # (`test (3.12)`, ...) can then change without stranding open PRs. `always()`
+  # matters: without it a failed `needs` job would skip this one, and GitHub
+  # counts a skipped required check as passing. Skipped jobs (fork PRs) fail it.
+  tests-passed:
+    if: always()
+    needs: [test, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every needed job must have succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | jq -e 'all(. == "success")' >/dev/null

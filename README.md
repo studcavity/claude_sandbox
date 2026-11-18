@@ -233,10 +233,13 @@ the ruleset's id), save it with `gh api repos/OWNER/REPO/rulesets/<id> >
 ruleset.json`, add this rule to its `rules`, and
 `gh api -X PUT repos/OWNER/REPO/rulesets/<id> --input ruleset.json`:
 `{"type": "required_status_checks", "parameters":
-{"strict_required_status_checks_policy": true, "required_status_checks":
+{"strict_required_status_checks_policy": false, "required_status_checks":
 [{"context": "<check name>"}]}}`. Use names that have passed (they must match
 the job's displayed name, matrix values expanded, e.g. `test (3.12)`). Renaming
-a required job strands every open PR, so update the ruleset in step.
+a required job strands every open PR, so update the ruleset in step. For a
+matrix job, require an aggregator job instead (this repo's `tests-passed`: it
+`needs` the others, runs `if: always()` and fails unless all succeeded), so
+matrix entries can change freely.
 
 Also:
 - Keep repo Actions secrets minimal. A PR from a same-repo branch runs the
@@ -245,7 +248,8 @@ Also:
 - Not provided: GitHub's merge queue (unavailable on personal-account repos)
   and auto-merge. The shipped rulesets leave "require branches to be up to date"
   off (a PR passes on its own checks, not against the latest default branch);
-  turn `strict_required_status_checks_policy` on if you want that.
+  turn `strict_required_status_checks_policy` on if you want that (it makes
+  concurrent sessions' PRs go stale one after another).
 - A session can still force-push or add commits to *another* session's branch,
   which is why the diff, not the branch name, is what you review.
 

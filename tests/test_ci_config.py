@@ -189,3 +189,13 @@ def test_package_init_files_stay_empty(repo_root):
 def test_nothing_but_the_package_lives_at_the_root_as_python(repo_root):
     """The root is for entry shims, docs and config, not modules."""
     assert glob.glob(os.path.join(repo_root, "*.py")) == []
+
+
+def test_ci_has_a_stable_gate_job_over_the_matrix(workflow):
+    """Branch protection requires `tests-passed`, not `test (3.12)` etc., so the
+    matrix can change. It must run `if: always()`: otherwise a failed needed
+    job skips it, and a skipped required check counts as passing."""
+    jobs = workflow["jobs"]
+    gate = jobs["tests-passed"]
+    assert set(gate["needs"]) == set(jobs) - {"tests-passed"}
+    assert "always()" in str(gate["if"])
