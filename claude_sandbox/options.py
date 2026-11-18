@@ -211,8 +211,8 @@ def build_parser():
                         "(mouse scrolling, 100k-line history)")
     p.add_argument("--nesting", action="store_true",
                    help="allow containers inside the sandbox "
-                        "(security.nesting=true) and set up incus if the "
-                        "repo's deps installed it")
+                        "(security.nesting=true), install incus and "
+                        "set it up")
     p.add_argument("--no-cache", action="store_true",
                    help="launch --image directly and install everything at "
                         "boot instead of using the cached base image")

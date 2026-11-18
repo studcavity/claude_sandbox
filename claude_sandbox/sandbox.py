@@ -64,7 +64,7 @@ def choose_image(flag, repo_image):
 # small one; the socket is world-accessible because the sandbox is throwaway
 # and `ubuntu` already has passwordless sudo.
 NESTING_SETUP = r"""
-command -v incus >/dev/null || exit 0
+command -v incus >/dev/null || { echo "incus is not installed" >&2; exit 1; }
 sed -i '/^root:/d' /etc/subuid /etc/subgid
 echo root:100000:65536 | tee -a /etc/subuid >> /etc/subgid
 mkdir -p /etc/systemd/system/incus.socket.d
@@ -73,6 +73,25 @@ systemctl daemon-reload
 systemctl restart incus.socket incus
 incus admin init --minimal
 """
+
+
+# --nesting installs these itself, whatever the repo's deps file says. apt runs
+# with --no-install-recommends, and `incus admin init --minimal` creates a
+# bridge that needs the dnsmasq binary (only a Recommends of incus).
+NESTING_APT = ("incus", "dnsmasq-base")
+
+
+def with_nesting(deps):
+    """`deps` (parsed deps or None) plus the packages nested incus needs.
+
+    Pure; the packages join the deps' apt section so they are baked into the
+    cached deps image (its key covers apt) rather than fetched per launch."""
+    deps = dict(deps) if deps else {
+        "image": None, "apt": [], "scripts": [], "binaries": [],
+        "setup": [], "check": [], "last_generated": None, "platform": None}
+    deps["apt"] = list(deps["apt"]) + [
+        p for p in NESTING_APT if p not in deps["apt"]]
+    return deps
 
 
 def launch_config(args):
@@ -160,10 +179,21 @@ class Sandbox:
     def setup_nesting(self):
         """With --nesting, make a preinstalled incus usable inside the sandbox."""
         if self.args.nesting:
-            log("configuring nested incus (skipped if incus isn't installed)")
+            log("configuring nested incus")
             self.box.root(NESTING_SETUP, capture=True)
 
     def load_deps(self):
+        """The deps to install: the repo's file (see `_read_deps`) plus, with
+        --nesting, the packages nested incus needs (even under --no-deps)."""
+        deps = self._read_deps()
+        if self.args.nesting:
+            deps = with_nesting(deps)
+            self.deps_note += ("\n`--nesting` also installed: "
+                               + ", ".join(f"`{p}`" for p in NESTING_APT) + ".")
+            self.deps = deps
+        return deps
+
+    def _read_deps(self):
         """Fetch and validate the repo's claude_sandbox_deps.yaml (host only).
 
         Returns the parsed deps, or None when there is nothing to install.

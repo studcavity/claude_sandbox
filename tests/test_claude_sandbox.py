@@ -342,9 +342,32 @@ def test_setup_nesting_is_noop_without_flag(make_args, monkeypatch, fake_box):
     assert fake_box.calls == [("root", sandbox.NESTING_SETUP)]
 
 
+def test_with_nesting_adds_packages_without_duplicates():
+    out = sandbox.with_nesting(None)
+    assert out["apt"] == ["incus", "dnsmasq-base"]
+    assert container_deps.cache_key(out) is not None  # baked into the image
+    repo = container_deps.parse("apt: [incus, shfmt]")
+    merged = sandbox.with_nesting(repo)
+    assert merged["apt"] == ["incus", "shfmt", "dnsmasq-base"]
+    assert repo["apt"] == ["incus", "shfmt"]  # input untouched
+    assert container_deps.cache_key(merged) != container_deps.cache_key(repo)
+
+
+@pytest.mark.parametrize("no_deps", [False, True])
+def test_load_deps_with_nesting_installs_nesting_packages(
+        make_args, monkeypatch, gh, no_deps):
+    box = _sandbox(make_args, monkeypatch, repo="me/p", nesting=True,
+                   no_deps=no_deps)
+    deps = box.load_deps()
+    assert deps["apt"] == ["incus", "dnsmasq-base"] and box.deps is deps
+    assert "--nesting" in box.deps_note
+
+
 def test_nesting_setup_script_shape():
     s = sandbox.NESTING_SETUP
-    assert s.index("command -v incus") < s.index("subuid")  # guarded first
+    # fails loudly (not a silent skip) when incus is missing, before any change
+    assert s.index("command -v incus") < s.index("subuid")
+    assert "exit 1" in s.split("subuid")[0]
     assert "root:100000:65536" in s and "incus admin init --minimal" in s
     assert "SocketMode=0666" in s
 

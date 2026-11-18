@@ -5,7 +5,7 @@
 
 # Where/when this toolchain was resolved, so it can be reproduced later.
 # Refresh both whenever you edit this file (inert metadata, never executed).
-last_generated: "2026-11-15T20:21:22Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
+last_generated: "2026-11-18T03:56:33Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
 platform: |                              # lsb_release -a; uname -m
   Distributor ID: Ubuntu
   Description:    Ubuntu 26.04.1 LTS
@@ -16,9 +16,7 @@ platform: |                              # lsb_release -a; uname -m
 # Debian/Ubuntu packages (optionally pinned: name=version).
 apt:
   - shfmt
-  # Nested containers for tests/integration (launch with --nesting; the
-  # launcher then fixes subuid/socket and runs `incus admin init --minimal`).
-  - incus
+  # (incus for nested containers is installed by `--nesting` itself.)
   # tests/integration/test_gh.py drives the real gh binary against a local fake
   # API. It is never logged in here, so it cannot call GitHub.
   - gh
