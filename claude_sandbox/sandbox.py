@@ -417,7 +417,9 @@ class Sandbox:
                               usb_devices=self.usb_devices, cli=self.cli,
                               mounts=self.bind_mounts,
                               declined_mounts=self.declined_mounts,
-                              disk_note=self.disk_note())
+                              disk_note=self.disk_note(),
+                              ci_note=(render.MATRIX_CI_NOTE
+                                       if self.backend.matrix_ci else ""))
         self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
                       input=md)
         with open(os.path.join(paths.DATA, render.DEPS_REF_TEMPLATE)) as f:

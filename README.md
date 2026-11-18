@@ -222,10 +222,12 @@ launch (a `warning:` line) and again in the exit summary ("repo warnings"), so
 a long session doesn't scroll them away. They are: the default branch isn't
 protected, or that couldn't be verified; no status check is required to merge;
 and CI jobs that passed on the default branch but aren't required. The
-session's CLAUDE.md is identical whatever the state (a test checks it): a list
-of a repo's weak points is a map for a prompt-injected session. It only says to
-use PRs, never push to the default branch, and tell you before changing a CI
-job's name.
+session's CLAUDE.md is identical whatever the state (a test checks it), with
+one exception: a list of a repo's weak points is a map for a prompt-injected
+session, but required matrix-entry checks (`test (3.12)`) are something it can
+fix, so then (and only then) it is told to ask you about adding an aggregator
+job. Otherwise it only says to use PRs, never push to the default branch, and
+tell you before changing a CI job's name.
 
 **Required status checks.** A CI job only blocks a merge if a ruleset lists it.
 To add the ones the launcher named: `gh api repos/OWNER/REPO/rulesets` (note
