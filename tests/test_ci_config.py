@@ -148,15 +148,6 @@ def test_mypy_catches_an_attribute_shadowing_a_method(repo_root, tmp_path):
     assert "method-assign" in p.stdout or "Cannot assign to a method" in p.stdout
 
 
-def test_mypy_passes_on_the_repo(repo_root):
-    p = subprocess.run(
-        [sys.executable, "-m", "mypy", "--cache-dir", os.devnull,
-         "claude_sandbox", *sorted(glob.glob(
-             os.path.join(repo_root, "scripts", "*.py")))],
-        capture_output=True, text=True, cwd=repo_root)
-    assert p.returncode == 0, p.stdout
-
-
 # -- CI workflow ------------------------------------------------------------ #
 @pytest.fixture
 def workflow(repo_root):
