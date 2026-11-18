@@ -159,6 +159,7 @@ def _launch(args):
         if not args.setup_token:
             with timing.stage("usb requests + deps file"):
                 box.resolve_usb()  # prompt now, not after a long image build
+                box.resolve_mounts()
                 box.load_deps()  # before the image: it may pick the base OS
             with timing.stage("preflight (protection, stale keys)"):
                 box.backend.preflight(lambda: Container.list_names(args.cli),

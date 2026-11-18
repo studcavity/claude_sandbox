@@ -276,8 +276,16 @@ def build_parser():
                         "(repeatable): HOST[:CONTAINER][:ro|rw]. CONTAINER "
                         "defaults to /mnt/<name>; the mount is READ-ONLY "
                         "unless you add :rw, which lets the session change "
-                        "your host files directly. Only this flag grants "
-                        "mounts; the repo can't request them")
+                        "your host files directly. The repo's "
+                        f"{host.HOST_FILE} may only request mounts "
+                        "(see --allow-mounts)")
+    p.add_argument("--allow-mounts", action="store_true",
+                   help="attach the mounts the repo requests in "
+                        f"{host.HOST_FILE} without the confirmation prompt "
+                        "(without a terminal they are otherwise not attached)")
+    p.add_argument("--no-mounts", action="store_true",
+                   help="attach no bind mounts, ignoring --mount and the "
+                        "repo's requests")
     p.add_argument("--claude-md", metavar="PATH",
                    default=os.path.join(paths.DATA, "sandbox_CLAUDE.md"),
                    help="template for ~/.claude/CLAUDE.md in the sandbox "

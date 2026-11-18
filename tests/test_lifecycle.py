@@ -541,3 +541,56 @@ def test_mounts_are_attached_and_described_in_claude_md(world, tmp_path):
              if w == "add_mount"]
     assert (0, str(d), "/mnt/ref", True) in calls
     assert (1, str(d), "/srv/w", False) in calls
+
+
+class _Tty:
+    def isatty(self):
+        return True
+
+
+def _box_with_request(monkeypatch, make_args, tmp_path, **kw):
+    d = tmp_path / "ds"
+    d.mkdir(exist_ok=True)
+    box = sandbox.Sandbox(make_args(repo="o/r", **kw))
+    monkeypatch.setattr(box.backend, "read_file", lambda p: (
+        f"mounts:\n  - {{source: {d}, path: /mnt/ds, mode: rw, "
+        "description: Data}\n").encode())
+    return box
+
+
+def test_repo_mount_request_is_prompted_and_attached_on_yes(
+        monkeypatch, make_args, tmp_path):
+    box = _box_with_request(monkeypatch, make_args, tmp_path)
+    monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
+    asked = []
+    monkeypatch.setattr(sandbox, "ask_mount",
+                        lambda m, d: asked.append((m.path, m.mode, d)) or True)
+    assert [m.path for m in box.resolve_mounts()] == ["/mnt/ds"]
+    assert asked == [("/mnt/ds", "rw", "Data")]
+
+
+def test_repo_mount_request_declined_is_not_attached_but_reported(
+        monkeypatch, make_args, tmp_path):
+    box = _box_with_request(monkeypatch, make_args, tmp_path)
+    monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
+    monkeypatch.setattr(sandbox, "ask_mount", lambda m, d: False)
+    assert box.resolve_mounts() == []
+    assert [m.path for m in box.declined_mounts] == ["/mnt/ds"]
+
+
+def test_repo_mount_request_without_tty_needs_the_flag(
+        monkeypatch, make_args, tmp_path):
+    box = _box_with_request(monkeypatch, make_args, tmp_path)  # stdin is not a tty
+    monkeypatch.setattr(sandbox, "ask_mount", lambda m, d: pytest.fail("asked"))
+    assert box.resolve_mounts() == []
+    box = _box_with_request(monkeypatch, make_args, tmp_path, allow_mounts=True)
+    monkeypatch.setattr(sandbox, "ask_mount", lambda m, d: pytest.fail("asked"))
+    assert [m.path for m in box.resolve_mounts()] == ["/mnt/ds"]
+
+
+def test_no_mounts_ignores_requests_and_flags(monkeypatch, make_args, tmp_path):
+    from claude_sandbox.container.mounts import BindMount
+    box = _box_with_request(monkeypatch, make_args, tmp_path, no_mounts=True,
+                            allow_mounts=True,
+                            mount=[BindMount("/x", "/mnt/x", "ro")])
+    assert box.resolve_mounts() == [] and box.declined_mounts == []

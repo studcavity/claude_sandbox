@@ -62,3 +62,54 @@ def test_section_states_mode_and_source():
     assert "`/mnt/d`  (host `/h/d`): **read-only**" in s
     assert "`/mnt/w`  (host `/h/w`): **read-write**" in s
     assert "not protected by git" in s
+
+
+# ---- repo requests -------------------------------------------------------- #
+def req(src, path=None, mode="ro", desc="d"):
+    return {"source": str(src), "path": path, "mode": mode, "description": desc}
+
+
+def test_repo_request_needs_a_yes_or_the_flag(tmp_path):
+    asked = []
+
+    def yes(m, d):
+        asked.append((m.path, d))
+        return True
+
+    g, dec, sk = mounts.resolve_requests([req(tmp_path, "/mnt/a")], [], False, yes)
+    assert [m.path for m in g] == ["/mnt/a"] and asked == [("/mnt/a", "d")]
+    g, dec, _ = mounts.resolve_requests([req(tmp_path, "/mnt/a")], [], False,
+                                        lambda m, d: False)
+    assert g == [] and [m.path for m in dec] == ["/mnt/a"]
+    # no terminal: not attached; the flag attaches without asking
+    g, dec, _ = mounts.resolve_requests([req(tmp_path, "/mnt/a")], [], False, None)
+    assert g == [] and len(dec) == 1
+    g, _, _ = mounts.resolve_requests([req(tmp_path, "/mnt/a")], [], True, None)
+    assert len(g) == 1
+
+
+def test_flag_mounts_are_never_asked_and_win_a_clash(tmp_path):
+    flag = BindMount(str(tmp_path), "/mnt/a", "rw")
+    g, dec, sk = mounts.resolve_requests(
+        [req(tmp_path, "/mnt/a")], [flag], False,
+        lambda m, d: pytest.fail("asked"))
+    assert g == [flag] and dec == [] and len(sk) == 1  # overlap -> skipped
+
+
+def test_unusable_requests_are_skipped_not_fatal(tmp_path):
+    g, dec, sk = mounts.resolve_requests(
+        [req(tmp_path / "missing"), req(tmp_path, "/etc/x")], [], True, None)
+    assert g == [] and dec == [] and len(sk) == 2
+
+
+def test_requested_rw_is_kept_as_rw(tmp_path):
+    g, _, _ = mounts.resolve_requests([req(tmp_path, "/mnt/w", "rw")], [], True, None)
+    assert g[0].mode == "rw"
+
+
+def test_section_lists_declined_requests():
+    s = mounts.mounts_section([], declined=[BindMount("/h", "/mnt/x", "rw")])
+    assert "`/mnt/x` (rw) was requested by the repo but **not approved**" in s
+    both = mounts.mounts_section([BindMount("/h", "/mnt/y", "ro")],
+                                 declined=[BindMount("/h", "/mnt/x", "ro")])
+    assert "`/mnt/y`" in both and "not approved" in both

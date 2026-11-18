@@ -85,7 +85,7 @@ def make_args(tmp_path):
                     cli="incus", name="claude-test", git_name=None,
                     git_email=None, shell=False, tmux=False, no_cache=False,
                     rebuild=False, nesting=False, max_age=7, model="default", no_deps=False, no_final_check=False,
-                    usb=[], no_usb=False, mount=[],
+                    usb=[], no_usb=False, mount=[], allow_mounts=False, no_mounts=False,
                     usb_allow=str(tmp_path / "usb_allow"),
                     claude_md=os.path.join(REPO_ROOT, "claude_sandbox", "data", "sandbox_CLAUDE.md"),
                     setup_token=False, disk_size=None, volume_size=None,

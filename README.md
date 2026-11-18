@@ -366,12 +366,30 @@ launcher never offers them.
 `--mount HOST[:CONTAINER][:ro|rw]` (repeatable) bind-mounts a host directory
 into the sandbox. CONTAINER defaults to `/mnt/<name of HOST>`. Mounts are
 **read-only unless you add `:rw`**; a read-write mount lets the session change
-your host files directly, with no git or PR in between. Only this flag grants
-mounts: a repo can't request them. They are attached after the deps install and
-before any credential exists, and the sandbox `CLAUDE.md` lists each one (path,
-host source, read-only or read-write). Refused: `/`, system directories,
-`/tmp`, the session's `~/.ssh`, `~/.claude`, `~/.config`, the home directory
-itself, the work directory, and overlapping mounts.
+your host files directly, with no git or PR in between.
+
+A repo can also *request* mounts in `claude_sandbox_host.yaml` (the same
+request file as USB, so editing it never rebuilds an image):
+
+```yaml
+mounts:
+  - source: ~/datasets/reference     # absolute or ~/ path on YOUR machine
+    path: /mnt/reference             # optional; default /mnt/<name>
+    mode: ro                         # optional; ro (default) or rw
+    description: Reference data the tests read   # plain text, <=200
+```
+Requests are never granted by the repo. Each one is shown at startup with a
+`[y/N]` prompt (default no; read-write ones are marked) unless you pass
+`--allow-mounts`; without a terminal and without that flag they are not
+attached. `--mount` is your own grant and is never prompted. `--no-mounts`
+ignores both. A request whose source is missing or whose path is unsafe is
+logged and skipped.
+
+Mounts are attached after the deps install and before any credential exists,
+and the sandbox `CLAUDE.md` lists each one (path, host source, mode) plus any
+request you declined. Refused: `/`, system directories, `/tmp`, the session's
+`~/.ssh`, `~/.claude`, `~/.config`, the home directory itself, the work
+directory, and overlapping mounts.
 
 ## USB passthrough
 Sandboxes get no host hardware by default. Two repo files are kept separate on

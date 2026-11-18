@@ -102,6 +102,8 @@ class Sandbox:
         self.deps_baked = False
         self.image = None
         self.usb_devices = []
+        self.bind_mounts = []       # granted: --mount plus approved repo requests
+        self.declined_mounts = []
         self.volumes = volumes.Volumes(self.cli, self.box, [], None)
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{container_deps.DEPS_FILE}`.")
@@ -228,6 +230,29 @@ class Sandbox:
                 f" ({d['source']})")
         return self.usb_devices
 
+    def resolve_mounts(self):
+        """Decide which bind mounts to attach (host only, before any build).
+
+        --mount grants directly. The repo's claude_sandbox_host.yaml can only
+        request: each request needs --allow-mounts or a yes at the prompt
+        (no TTY and no flag means not attached). --no-mounts ignores both.
+        """
+        a = self.args
+        self.bind_mounts, self.declined_mounts = [], []
+        if a.no_mounts:
+            return []
+        requests = []
+        raw = self.backend.read_file(host.HOST_FILE)
+        if raw is not None:
+            requests = host.parse(raw)["mounts"]
+        granted, declined, skipped = mounts.resolve_requests(
+            requests, a.mount, a.allow_mounts,
+            ask_mount if sys.stdin.isatty() else None)
+        for src, why in skipped:
+            log(f"mount request {src!r} ignored: {why}")
+        self.bind_mounts, self.declined_mounts = granted, declined
+        return granted
+
     def attach_usb(self):
         """Attach approved devices. Runs after install_deps so repo-supplied
         installers never run with hardware present, and before any credential
@@ -239,7 +264,7 @@ class Sandbox:
     def attach_mounts(self, workdir):
         """Bind-mount the --mount directories (host-granted only). Same slot
         as USB: after install_deps, before any credential exists."""
-        mnts = mounts.check_set(self.args.mount, workdir)
+        mnts = mounts.check_set(self.bind_mounts, workdir)
         for i, m in enumerate(mnts):
             log(f"mount: {m.source} -> {m.path} ({m.mode})")
             self.box.add_mount(i, m.source, m.path, m.readonly)
@@ -360,7 +385,8 @@ class Sandbox:
                               deps_note=self.deps_note,
                               session=self.session_id,
                               usb_devices=self.usb_devices, cli=self.cli,
-                              mounts=self.args.mount,
+                              mounts=self.bind_mounts,
+                              declined_mounts=self.declined_mounts,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
                       input=md)
@@ -569,6 +595,23 @@ def ask_usb(req):
           file=sys.stderr)
     try:
         return input("Attach? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def ask_mount(mount, description):
+    """Interactive approval of one repo-requested bind mount (default: no)."""
+    kind = ("\033[1mREAD-WRITE\033[0m: the session can change or delete "
+            "these files" if not mount.readonly else "read-only")
+    print(f"\nThe repo requests a host directory mount:\n"
+          f"  host:      {host.display_text(mount.source)}\n"
+          f"  container: {mount.path}  ({kind})\n"
+          f"Its description (from the repo, untrusted): "
+          f"{host.display_text(description)}\n"
+          "Only approve directories you are happy for the session to see.",
+          file=sys.stderr)
+    try:
+        return input("Mount? [y/N] ").strip().lower() in ("y", "yes")
     except EOFError:
         return False
 

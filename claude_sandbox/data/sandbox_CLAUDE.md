@@ -243,6 +243,9 @@ report CI as passing unseen. Mention anything you suspect CI will catch.
 ## Host directories (bind mounts)
 $mounts
 
+To ask for one, add `mounts:` (`source`, `path`, `mode`, `description`) to
+`$host_file`; the user must approve it at the next launch.
+
 ## Host hardware (USB)
 $usb
 

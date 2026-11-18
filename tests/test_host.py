@@ -110,3 +110,33 @@ def test_resolve_flag_wins_but_keeps_repo_text_and_does_not_prompt():
 
 def test_display_text_strips_control_chars():
     assert sh.display_text("a\x1b[31mb\n") == "a?[31mb?"
+
+
+def test_mounts_parse_with_defaults_and_validation():
+    doc = sh.parse("mounts:\n  - {source: ~/data, description: Ref data}\n"
+                     "  - {source: /srv/x, path: /mnt/x, mode: rw, "
+                     "description: Scratch}\n")
+    assert doc["usb"] == []
+    assert doc["mounts"][0] == {"source": "~/data", "path": None, "mode": "ro",
+                                "description": "Ref data"}
+    assert doc["mounts"][1]["mode"] == "rw"
+
+
+@pytest.mark.parametrize("entry", [
+    "{source: relative/dir, description: d}",           # not absolute or ~
+    "{source: '/a:b', description: d}",                 # delimiter
+    "{source: /a, mode: wr, description: d}",           # bad mode
+    "{source: /a, path: relative, description: d}",
+    "{source: /a, description: 'has `tick`'}",          # markup in text
+    "{source: /a}",                                      # no description
+    "{source: /a, description: d, extra: 1}",
+])
+def test_bad_mount_entries_are_rejected(entry):
+    with pytest.raises(deps.DepsError):
+        sh.parse(f"mounts:\n  - {entry}\n")
+
+
+def test_too_many_mounts_rejected():
+    many = "".join(f"  - {{source: /a{i}, description: d}}\n" for i in range(9))
+    with pytest.raises(deps.DepsError):
+        sh.parse("mounts:\n" + many)
