@@ -12,6 +12,7 @@ from claude_sandbox import sessions
 from claude_sandbox import timing
 from claude_sandbox.container import deps as container_deps
 from claude_sandbox.container import host
+from claude_sandbox.container import mounts
 from claude_sandbox.container import volumes
 from claude_sandbox import paths
 from claude_sandbox.container.incus import Container
@@ -235,6 +236,14 @@ class Sandbox:
             if d["approved"]:
                 self.box.add_usb(d["vendor_id"], d["product_id"])
 
+    def attach_mounts(self, workdir):
+        """Bind-mount the --mount directories (host-granted only). Same slot
+        as USB: after install_deps, before any credential exists."""
+        mnts = mounts.check_set(self.args.mount, workdir)
+        for i, m in enumerate(mnts):
+            log(f"mount: {m.source} -> {m.path} ({m.mode})")
+            self.box.add_mount(i, m.source, m.path, m.readonly)
+
     def install_deps(self):
         """Install the deps into this container unless the image has them.
 
@@ -351,6 +360,7 @@ class Sandbox:
                               deps_note=self.deps_note,
                               session=self.session_id,
                               usb_devices=self.usb_devices, cli=self.cli,
+                              mounts=self.args.mount,
                               disk_note=self.disk_note())
         self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
                       input=md)

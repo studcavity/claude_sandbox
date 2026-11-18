@@ -530,3 +530,14 @@ def test_local_launch_exports_tears_down_then_imports(local_world, capsys):
     assert "commit.gpgsign true" in scripts                            # still signed
     err = capsys.readouterr().err
     assert "branches imported from session quirky-hopper" in err
+
+
+def test_mounts_are_attached_and_described_in_claude_md(world, tmp_path):
+    d = tmp_path / "ref"
+    d.mkdir()
+    assert cs.main(argv(world, "--mount", str(d),
+                        "--mount", f"{d}:/srv/w:rw")) == 0
+    calls = [a for c in FakeContainer.instances for w, a in c.calls
+             if w == "add_mount"]
+    assert (0, str(d), "/mnt/ref", True) in calls
+    assert (1, str(d), "/srv/w", False) in calls

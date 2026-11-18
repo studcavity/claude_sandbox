@@ -61,6 +61,7 @@ from claude_sandbox import provenance
 from claude_sandbox import sessions
 from claude_sandbox.container import deps
 from claude_sandbox.container import host
+from claude_sandbox.container import mounts
 from claude_sandbox.backends.local import resolve_local
 from claude_sandbox.github.gh import resolve_repo, validate_repo
 
@@ -269,6 +270,14 @@ def build_parser():
                    help="allowlist of repo-requested devices attached without "
                         "a prompt: lines of 'VID:PID [owner/repo]' "
                         f"(default: {DEFAULT_USB_ALLOW})")
+    p.add_argument("--mount", action="append", default=[], metavar="SPEC",
+                   type=mount_spec,
+                   help="bind-mount a host directory into the sandbox "
+                        "(repeatable): HOST[:CONTAINER][:ro|rw]. CONTAINER "
+                        "defaults to /mnt/<name>; the mount is READ-ONLY "
+                        "unless you add :rw, which lets the session change "
+                        "your host files directly. Only this flag grants "
+                        "mounts; the repo can't request them")
     p.add_argument("--claude-md", metavar="PATH",
                    default=os.path.join(paths.DATA, "sandbox_CLAUDE.md"),
                    help="template for ~/.claude/CLAUDE.md in the sandbox "
@@ -321,6 +330,14 @@ def normalize_args(args):
         sessions.validate_session(args.name)
     args.git_name = args.git_name or args.github_user
     return args
+
+
+def mount_spec(text):
+    """argparse type for --mount: a mounts.BindMount."""
+    try:
+        return mounts.parse_mount_spec(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
 
 
 def usb_spec(text):

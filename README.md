@@ -361,6 +361,18 @@ gh api -X POST repos/OWNER/REPO/rulesets --input rulesets/optional/no-tag-pushes
 They have an admin bypass, which repo-supplied rulesets may not have, so the
 launcher never offers them.
 
+## Extra bind mounts
+
+`--mount HOST[:CONTAINER][:ro|rw]` (repeatable) bind-mounts a host directory
+into the sandbox. CONTAINER defaults to `/mnt/<name of HOST>`. Mounts are
+**read-only unless you add `:rw`**; a read-write mount lets the session change
+your host files directly, with no git or PR in between. Only this flag grants
+mounts: a repo can't request them. They are attached after the deps install and
+before any credential exists, and the sandbox `CLAUDE.md` lists each one (path,
+host source, read-only or read-write). Refused: `/`, system directories,
+`/tmp`, the session's `~/.ssh`, `~/.claude`, `~/.config`, the home directory
+itself, the work directory, and overlapping mounts.
+
 ## USB passthrough
 Sandboxes get no host hardware by default. Two repo files are kept separate on
 purpose: `claude_sandbox_deps.yaml` says what to *install* (baked into cached
