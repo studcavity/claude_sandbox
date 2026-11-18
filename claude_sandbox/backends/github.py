@@ -328,6 +328,8 @@ class GitHubBackend(Backend):
             ci = protect.discover_checks(a.repo, branch)
         self.add_host_warnings(protect.gap_warnings(
             a.repo, branch, state, required, ci or []))
+        self.matrix_ci = bool(protect.matrix_warning(
+            a.repo, branch, protect.split_matrix(ci or [])[1], required))
 
     def harden_actions(self):
         """Report whether the repo's Actions settings keep session code's CI

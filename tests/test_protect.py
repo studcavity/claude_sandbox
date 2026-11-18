@@ -272,6 +272,30 @@ def test_the_sessions_claude_md_is_the_same_whatever_the_protection_state(
         assert gap not in md
 
 
+def test_only_the_matrix_fragility_reaches_the_session(flow, repo_root):
+    """The one exception to the test above: matrix-named required checks are
+    something the session can fix, so it is told (and nothing else about the
+    repo's protection)."""
+    box, st = flow
+    ci = ["tests-passed", "test (3.12)"]
+    st.update(state="protected", required={"test (3.12)"}, checks=ci,
+              answers=[False, False], asked=[])
+    box.backend.protect_default_branch()
+    assert box.backend.matrix_ci is True
+    md = render.render_claude_md(
+        open(os.path.join(repo_root, "claude_sandbox", "data",
+                          "sandbox_CLAUDE.md")).read(),
+        {"sudo": True, "tools": [], "branch": "", "usb": set()},
+        "quirky-hopper", "/h/r", "o/r", False, "", session="quirky-hopper",
+        ci_note=render.MATRIX_CI_NOTE)
+    assert "ask the user straight away" in md and "aggregator job" in md
+    assert "are required to merge" in md and "tests-passed" not in md
+    # fixed (a static gate is required, no matrix name is): not flagged
+    st.update(required={"tests-passed"})
+    box.backend.protect_default_branch()
+    assert box.backend.matrix_ci is False
+
+
 def test_render_claude_md_takes_no_protection_input():
     import inspect
     assert "protection_note" not in inspect.signature(render.render_claude_md).parameters

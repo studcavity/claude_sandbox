@@ -403,13 +403,9 @@ branches reach the user only as an import for review.
 Changes reach the default branch only through pull requests: never push to it,
 whatever the repo's settings are. CI job names may be required status checks:
 before you add, rename or remove a CI job, tell the user in your final
-message, because renaming a required job strands every open PR. A matrix job
-(`test (ubuntu-24.04)`) must never be required by its expanded names: dropping
-an entry would strand every PR. When you add or change one, also add an
-aggregator job (`needs:` the matrix jobs, `if: always()`, fails unless every
-result is `success`) and tell the user to require only that. Don't assume a
+message, because renaming a required job strands every open PR. Don't assume a
 check is required or enforced. The launcher tells the user about the repo's
-protection settings; it doesn't tell you.
+protection settings; it doesn't tell you.$ci_note
 
 <!-- end -->
 ## Git: linear history is paramount

@@ -40,6 +40,21 @@ VARIANT_RE = re.compile(r"^<!-- if ([a-z]+) -->$")
 VARIANT_END = "<!-- end -->"
 
 
+# The one repo-state fact the session is told (see Sandbox.write_claude_md):
+# matrix-named required checks are a fragility it can fix itself, with the
+# user's say-so. Every other protection gap stays host-side only.
+MATRIX_CI_NOTE = (
+    "\n\n**Fix needed, ask the user straight away:** the launcher found that "
+    "this repo's CI has matrix jobs whose per-entry names (e.g. `test "
+    "(ubuntu-24.04)`) are required to merge, or that nothing stable gates "
+    "them. When an entry is dropped (an OS going end-of-life) the old name "
+    "never reports and every PR waits forever. Offer to add an aggregator job "
+    "on a branch of its own (`needs:` the matrix jobs, `if: always()`, fails "
+    "unless every result is `success`); the user then requires only its name "
+    "in the ruleset (you can't change rulesets) and drops the per-entry "
+    "names. That branch changes `.github/`, so it is held for their review.")
+
+
 def select_variant(template, kind):
     """Keep the `<!-- if KIND -->` ... `<!-- end -->` blocks for this
     backend's kind and drop the others (markers on lines of their own; no
@@ -65,12 +80,13 @@ def select_variant(template, kind):
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
                      disk_note="", session=None, access=None, kind="github",
-                     mounts=(), declined_mounts=()):
+                     mounts=(), declined_mounts=(), ci_note=""):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
-    $deps_file, $host_file, $usb, $mounts, $disk, $session, $prefix, $repo); write $$ for a
+    $deps_file, $host_file, $usb, $mounts, $disk, $session, $prefix, $repo,
+    $ci_note); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -90,6 +106,7 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         tools=", ".join(f"`{t}`" for t in facts["tools"]) or "(minimal image)",
         branch=f" (`{branch}`)" if branch else "",
         deps=deps_note,
+        ci_note=ci_note,
         deps_file=deps.DEPS_FILE,
         host_file=host.HOST_FILE,
         disk=disk_note or "- Disk limits are unknown; check `df -h`.",

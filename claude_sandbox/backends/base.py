@@ -31,6 +31,9 @@ class Backend(abc.ABC):
         # For the user, printed at launch and again at exit; never put in
         # the session's CLAUDE.md.
         self.host_warnings: list = []
+        # The one exception: matrix-named required checks, which the session
+        # can fix itself (render.MATRIX_CI_NOTE goes in its CLAUDE.md).
+        self.matrix_ci = False
 
     # -- identity --------------------------------------------------------------
     kind = ""   # selects the `<!-- if KIND -->` blocks of the CLAUDE.md template
