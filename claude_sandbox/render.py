@@ -65,7 +65,7 @@ def select_variant(template, kind):
 def render_claude_md(template, facts, container, workdir, repo, read_only,
                      deps_note, usb_devices=(), cli="incus",
                      disk_note="", session=None, access=None, kind="github",
-                     mounts=()):
+                     mounts=(), declined_mounts=()):
     """Fill the sandbox CLAUDE.md template.
 
     The template is plain Markdown with string.Template placeholders
@@ -93,7 +93,7 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         deps_file=deps.DEPS_FILE,
         host_file=host.HOST_FILE,
         disk=disk_note or "- Disk limits are unknown; check `df -h`.",
-        mounts=mounts_section(mounts, cli, container)
+        mounts=mounts_section(mounts, cli, container, declined_mounts)
         or "No host directories are mounted.",
         usb=host.usb_section(usb_devices, cli, container,
                                      facts["usb"]) or "No USB devices were requested.",

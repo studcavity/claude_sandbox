@@ -13,8 +13,9 @@ purpose:
     launchers reject the whole file).
 
 Everything in the file is a REQUEST. The repo controls the file, so it can
-never grant itself hardware: a request is attached only if the host user
-approves it (--usb flag, interactive prompt, or the host allowlist file).
+never grant itself hardware or host files: a request is attached only if the
+host user approves it (--usb flag, interactive prompt, or the host allowlist
+file for USB; --mount, --allow-mounts or an interactive prompt for mounts).
 """
 import os
 import re
@@ -28,6 +29,11 @@ HOST_FILE = "claude_sandbox_host.yaml"
 MAX_HOST_FILE = 64 * 1024
 MAX_USB = 8
 MAX_TOOLS = 8
+MAX_MOUNTS = 8
+# Host path, in-container path: plain path characters only (no `:` or `,`,
+# which the --mount spec and incus options use as delimiters).
+MOUNT_SOURCE_RE = re.compile(r"^(~|/)[A-Za-z0-9._/+@ -]{0,300}$")
+MOUNT_PATH_RE = re.compile(r"^/[A-Za-z0-9._/+-]{1,200}$")
 
 HEX4_RE = re.compile(r"^[0-9a-fA-F]{4}$")
 USB_SPEC_RE = re.compile(r"^([0-9a-fA-F]{4}):([0-9a-fA-F]{4})$")
@@ -46,7 +52,8 @@ def parse_usb_spec(spec):
 
 
 def parse(raw):
-    """bytes/str -> {"usb": [{name, vendor_id, product_id, description, tools}]}"""
+    """bytes/str -> {"usb": [{name, vendor_id, product_id, description, tools}],
+    "mounts": [{source, path|None, mode, description}]}"""
     if isinstance(raw, bytes):
         if len(raw) > MAX_HOST_FILE:
             raise DepsError(f"{HOST_FILE} is larger than {MAX_HOST_FILE} bytes")
@@ -59,7 +66,7 @@ def parse(raw):
     except yaml.YAMLError as e:
         raise DepsError(f"{HOST_FILE}: invalid YAML: {e}") from None
     doc = doc or {}
-    _check_keys(doc, HOST_FILE, (), ("usb",))
+    _check_keys(doc, HOST_FILE, (), ("usb", "mounts"))
 
     usb = []
     for i, d in enumerate(_section(doc, "usb")):
@@ -85,7 +92,23 @@ def parse(raw):
         vals = [u[key] if isinstance(key, str) else key(u) for u in usb]
         if len(set(vals)) != len(vals):
             raise DepsError(f"usb: duplicate {what}")
-    return {"usb": usb}
+
+    mounts = []
+    for i, d in enumerate(_section(doc, "mounts")):
+        w = f"mounts[{i}]"
+        _check_keys(d, w, ("source", "description"), ("path", "mode"))
+        mode = d.get("mode", "ro")
+        if mode not in ("ro", "rw"):
+            raise DepsError(f"{w}: mode must be ro or rw")
+        mounts.append({
+            "source": _str(d, "source", w, MOUNT_SOURCE_RE),
+            "path": _str(d, "path", w, MOUNT_PATH_RE) if "path" in d else None,
+            "mode": mode,
+            "description": _str(d, "description", w, DESCRIPTION_RE),
+        })
+    if len(mounts) > MAX_MOUNTS:
+        raise DepsError(f"mounts: at most {MAX_MOUNTS} entries")
+    return {"usb": usb, "mounts": mounts}
 
 
 # --------------------------------------------------------------------------- #

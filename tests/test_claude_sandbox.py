@@ -642,6 +642,7 @@ def main_env(monkeypatch):
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
     monkeypatch.setattr(sandbox.Sandbox, "load_deps", lambda self: None)
     monkeypatch.setattr(sandbox.Sandbox, "resolve_usb", lambda self: [])
+    monkeypatch.setattr(sandbox.Sandbox, "resolve_mounts", lambda self: [])
     monkeypatch.setattr(sandbox.Sandbox, "launch",
                         lambda self, image: seen.__setitem__("launched", True)
                         or (_ for _ in ()).throw(RuntimeError("stop here")))
