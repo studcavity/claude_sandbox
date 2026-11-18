@@ -61,7 +61,7 @@ fixtures in `tests/conftest.py` (`FakeBox`, `make_args`, a fixed `now`).
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest               # ~3s, includes a mypy run (hermetic gh tests need gh + openssl)
+python -m pytest               # fast (hermetic gh tests need gh + openssl); no lint or mypy, run those below
 ruff check claude_sandbox scripts tests
 python -m mypy claude_sandbox scripts/*.py   # pyproject.toml sets check_untyped_defs
 shellcheck run.sh scripts/*.sh .githooks/*
