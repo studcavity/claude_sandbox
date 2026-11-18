@@ -87,7 +87,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest
 ```
-CI runs the suite (plus pyflakes, mypy and shellcheck) on pushes to `main` and
+CI runs the suite (plus ruff, mypy and shellcheck) on pushes to `main` and
 on PRs from branches in this repo, and a real-container smoke test of the whole
 launch lifecycle (`tests/integration/test_launch.py`; run it on a host with
 `./scripts/smoke.sh`). See `CLAUDE.md` for testing conventions.

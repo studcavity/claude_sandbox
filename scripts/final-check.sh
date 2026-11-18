@@ -8,7 +8,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck disable=SC1091
 . .venv/bin/activate
 pip install -q -r requirements-dev.txt
-python -m pyflakes claude_sandbox scripts/*.py tests/
+ruff check claude_sandbox scripts tests
 python -m mypy claude_sandbox scripts/*.py
 shellcheck run.sh scripts/*.sh .githooks/*
 python -m pytest -q -p no:cacheprovider

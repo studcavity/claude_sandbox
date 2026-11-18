@@ -62,7 +62,7 @@ fixtures in `tests/conftest.py` (`FakeBox`, `make_args`, a fixed `now`).
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 python -m pytest               # ~3s, includes a mypy run (hermetic gh tests need gh + openssl)
-python -m pyflakes claude_sandbox scripts tests/
+ruff check claude_sandbox scripts tests
 python -m mypy claude_sandbox scripts/*.py   # pyproject.toml sets check_untyped_defs
 shellcheck run.sh scripts/*.sh .githooks/*
 ```
@@ -73,7 +73,7 @@ Unit tests never touch real containers, GitHub or the network: they mock
 run both before every commit and judge them by exit status (`pytest | tail`
 hides a failure).
 
-CI (`.github/workflows/tests.yml`) runs pyflakes, mypy, shellcheck and pytest
+CI (`.github/workflows/tests.yml`) runs ruff, mypy, shellcheck and pytest
 on Python 3.12 and 3.14 (the versions in Ubuntu 24.04 and 26.04 LTS), on pushes to `main` and PRs from this repo (not
 forks). Its `integration` job installs incus and runs `tests/integration` for
 real (failing if they are skipped), including `test_launch.py` as a "Smoke"
