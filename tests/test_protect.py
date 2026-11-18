@@ -20,13 +20,13 @@ def base(repo_root):
                                         "protect-main.json"))
 
 
-def test_with_checks_adds_strict_required_rule_without_mutating(base):
+def test_with_checks_adds_non_strict_required_rule_without_mutating(base):
     n = len(base["rules"])
     rs = sp.with_checks(base, ["test (3.12)", "lint"])
     assert len(base["rules"]) == n  # original untouched
     rule = rs["rules"][-1]
     assert rule["type"] == "required_status_checks"
-    assert rule["parameters"]["strict_required_status_checks_policy"] is True
+    assert rule["parameters"]["strict_required_status_checks_policy"] is False
     assert rule["parameters"]["required_status_checks"] == [
         {"context": "lint"}, {"context": "test (3.12)"}]
     assert sp.with_checks(base, []) == base

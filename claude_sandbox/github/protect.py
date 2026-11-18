@@ -32,12 +32,14 @@ def load_ruleset(path):
 
 
 def with_checks(ruleset, checks):
-    """Copy of ruleset that also requires `checks` (names) to pass, on a
-    branch that is up to date. No checks: unchanged copy."""
+    """Copy of ruleset that also requires `checks` (names) to pass. The branch
+    need not be up to date with the base (strict policy off): with several
+    sessions landing PRs at once, that would make every PR stale in turn.
+    No checks: unchanged copy."""
     rs = copy.deepcopy(ruleset)
     if checks:
         rs["rules"].append({"type": "required_status_checks", "parameters": {
-            "strict_required_status_checks_policy": True,
+            "strict_required_status_checks_policy": False,
             "required_status_checks": [{"context": c} for c in sorted(checks)]}})
     return rs
 
