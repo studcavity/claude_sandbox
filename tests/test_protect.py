@@ -116,12 +116,12 @@ def test_yes_applies_ruleset_without_checks_by_default(flow):
 
 def test_yes_to_checks_requires_the_discovered_names(flow):
     box, st = flow
-    st["checks"], st["answers"] = ["test (3.12)"], [True, True]
+    st["checks"], st["answers"] = ["lint"], [True, True]
     box.backend.protect_default_branch()
     (rs,) = st["applied"]
     assert rs["rules"][-1]["parameters"]["required_status_checks"] == [
-        {"context": "test (3.12)"}]
-    assert "`test (3.12)`" not in warned(box)  # required now, so no gap
+        {"context": "lint"}]
+    assert "`lint`" not in warned(box)  # required now, so no gap
 
 
 def test_no_to_checks_still_applies_base_ruleset(flow):
@@ -180,8 +180,8 @@ def test_gap_warnings_wording_and_the_suggested_fix():
     gw = sp.gap_warnings
     assert gw("o/r", "main", "protected", {"lint"}, ["lint"]) == []
     assert gw("o/r", "main", "protected", None, ["lint"]) == []      # can't tell
-    (w,) = gw("o/r", "main", "protected", set(), ["lint", "test (3.12)"])
-    assert "no status check is required" in w and "`lint`, `test (3.12)`" in w
+    (w,) = gw("o/r", "main", "protected", set(), ["lint", "docs"])
+    assert "no status check is required" in w and "`docs`, `lint`" in w
     assert "gh api repos/o/r/rulesets" in w
     (w,) = gw("o/r", "main", "applied", {"lint"}, ["lint", "docs"])
     assert "CI jobs not required" in w and "`docs`" in w and "`lint`" not in w
@@ -538,3 +538,45 @@ def test_linear_history_is_not_something_the_launcher_initialises(repo_root):
     with pytest.raises(ValueError):
         sp.validate_repo_ruleset(
             {**base, "rules": [{"type": "required_linear_history"}]})
+
+
+# -- matrix entries are never offered; an aggregator is advised ---------------- #
+def test_matrix_names_are_told_apart_from_static_ones():
+    assert sp.split_matrix(["lint", "test (3.12)", "test (3.14)",
+                            "caller / build", "sandbox/provenance"]) == (
+        ["caller / build", "lint", "sandbox/provenance"],
+        ["test (3.12)", "test (3.14)"])
+
+
+def test_offerable_checks_drops_matrix_entries(monkeypatch):
+    monkeypatch.setattr(sp, "gh_api", lambda *a, **k: {"check_runs": [
+        {"name": "lint", "conclusion": "success"},
+        {"name": "test (3.12)", "conclusion": "success"}]})
+    assert sp.offerable_checks("o/r", "main") == ["lint"]
+
+
+def test_matrix_warning_when_a_matrix_name_is_required_or_nothing_gates_it():
+    gw = sp.gap_warnings
+    ci = ["tests-passed", "test (3.12)", "test (3.14)"]
+    # hard-coded matrix names: fragile
+    ws = gw("o/r", "main", "protected", {"test (3.12)", "tests-passed"}, ci)
+    (w,) = [w for w in ws if "matrix" in w]
+    assert "`test (3.12)`" in w and "aggregator" in w and "if: always()" in w
+    # nothing static required: told too, and never offered the matrix names
+    ws = gw("o/r", "main", "protected", set(), ci)
+    assert any("matrix builds: `test (3.12)`, `test (3.14)`" in w for w in ws)
+    assert "`test (3.12)`, " not in ws[0]   # the 'no check required' list is static only
+    # a static (aggregator) check is required and no matrix name is: quiet
+    assert gw("o/r", "main", "protected", {"tests-passed"}, ci) == []
+    # unknown requirements: quiet
+    assert gw("o/r", "main", "protected", None, ci) == []
+
+
+def test_launcher_offers_only_static_checks(flow):
+    box, st = flow
+    st["checks"] = ["lint", "test (3.12)"]
+    st["answers"] = [True, True]
+    box.backend.protect_default_branch()
+    names = [c["context"] for c in
+             st["applied"][0]["rules"][-1]["parameters"]["required_status_checks"]]
+    assert names == ["lint"]
