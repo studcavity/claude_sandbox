@@ -88,3 +88,21 @@ Run `./scripts/smoke.sh` on a real host for the local backend: `./run.sh --local
 appears under `sbx/<session>/` with a review report; then kill a container
 mid-session and check that `./run.sh --local <repo> --recover` imports its
 work.
+
+## Update (session brave-godel, November 2026)
+
+Partly addressed on `sbx/brave-godel/01-nesting-installs-its-packages`:
+`--nesting` now installs `incus` and `dnsmasq-base` itself (merged into the
+deps, so baked into the cached deps image, even under `--no-deps`), and
+`NESTING_SETUP` fails loudly when incus is missing instead of skipping. A new
+smoke test, `test_nesting_installs_and_initialises_incus`, covers `--nesting`
+through the real `--no-install-recommends` path.
+
+Still open:
+- Not verified against real incus: neither the new smoke test nor a nested
+  container actually starting in a `--nesting` sandbox has been run. Run
+  `./scripts/smoke.sh` on a host with incus. `init --minimal` may need more
+  packages than `dnsmasq-base` (e.g. nftables); add them to `NESTING_APT`.
+- `NESTING_SETUP` does not repair a half-initialised default profile.
+- `scripts/final-check.sh`'s incus probe still uses `incus info`.
+- The spec 08 local-backend smoke run above.
