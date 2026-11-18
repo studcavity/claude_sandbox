@@ -445,13 +445,8 @@ class Sandbox:
             if prompt is None:
                 return
 
-    def merge_findings(self, workdir):
-        """Branches of this session that won't land cleanly on the base (see
-        mergecheck), run in the container. [] when all is well or there is
-        nothing to land; never raises."""
-        if not self.backend.has_commits:
-            return []
-
+    def _git(self, workdir):
+        """A `git(*args) -> (returncode, stdout)` running in the container."""
         def git(*args):
             argv = ["git", *args]
             if args[0] == "fetch":
@@ -459,6 +454,15 @@ class Sandbox:
             r = self.box.user_argv(argv, cwd=workdir, capture=True,
                                    check=False)
             return r.returncode, r.stdout or ""
+        return git
+
+    def merge_findings(self, workdir):
+        """Branches of this session that won't land cleanly on the base (see
+        mergecheck), run in the container. [] when all is well or there is
+        nothing to land; never raises."""
+        if not self.backend.has_commits:
+            return []
+        git = self._git(workdir)
         try:
             findings, notes = mergecheck.inspect(
                 git, self.session_id, remote=self.backend.can_push)
@@ -468,6 +472,58 @@ class Sandbox:
         for n in notes:
             log(f"mergeability: {n}")
         return findings
+
+    def check_branches(self, workdir):
+        """The branches to run the `check:` scripts on: [None] (the checkout
+        as it is) unless the session has several branches of its own, which
+        each become a PR or import and so each get the scripts. Never raises."""
+        if not self.backend.has_commits:
+            return [None]
+        try:
+            branches = mergecheck.session_branches(self._git(workdir),
+                                                   self.session_id)
+        except Exception as e:
+            log(f"warning: couldn't list the session's branches: {e}")
+            return [None]
+        return branches if len(branches) > 1 else [None]
+
+    def run_checks(self, workdir, checks):
+        """Run each script, on each session branch when there are several
+        (restoring the checkout after). -> [(entry, code, output, branch)] for
+        the failures; branch is None when run on the checkout as it is."""
+        branches = self.check_branches(workdir)
+        git = self._git(workdir)
+        restore = None
+        if branches != [None]:
+            name = git("symbolic-ref", "--short", "-q", "HEAD")[1].strip()
+            restore = (("switch", "-q", name) if name else
+                       ("switch", "-q", "--detach",
+                        git("rev-parse", "HEAD")[1].strip()))
+        failures = []
+        try:
+            for branch in branches:
+                if branch:
+                    log(f"final check: switching to {branch}")
+                    rc, out = git("switch", "-q", branch)
+                    if rc != 0:
+                        failures += [(s, rc, f"git switch failed (uncommitted "
+                                      f"changes?):\n{out}", branch)
+                                     for s in checks]
+                        continue
+                for s in checks:
+                    log(f"final check: running {s['path']}"
+                        + (f" on {branch}" if branch else "")
+                        + f" (timeout {s['timeout']}s; "
+                        "Ctrl-C skips it and tears down)")
+                    cmd = self.box.user_cmd(*shell.setup_argv(s), env=s["env"])
+                    cmd[cmd.index("--cwd") + 1] = workdir
+                    code, out = resume.run_streaming(cmd)
+                    if code != 0:
+                        failures.append((s, code, out, branch))
+        finally:
+            if restore:
+                git(*restore)
+        return failures
 
     def final_check(self, workdir):
         """Run the repo's `check:` scripts, and the launcher's own
@@ -479,21 +535,14 @@ class Sandbox:
         checks = (self.deps or {}).get("check") or []
         if a.shell or a.no_final_check:
             return None
-        failures = []
-        for s in checks:
-            log(f"final check: running {s['path']} (timeout {s['timeout']}s; "
-                "Ctrl-C skips it and tears down)")
-            cmd = self.box.user_cmd(*shell.setup_argv(s), env=s["env"])
-            cmd[cmd.index("--cwd") + 1] = workdir
-            code, out = resume.run_streaming(cmd)
-            if code != 0:
-                failures.append((s, code, out))
+        failures = self.run_checks(workdir, checks) if checks else []
         merge = self.merge_findings(workdir)
         if not failures and not merge:
             if checks:
                 log("final check passed")
             return None
-        names = [s["path"] for s, _, _ in failures]
+        names = [s["path"] + (f" on {br}" if br else "")
+                 for s, _, _, br in failures]
         if merge:
             names.append("mergeability: "
                          + ", ".join(sorted({b for b, _ in merge})))

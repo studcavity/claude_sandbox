@@ -120,6 +120,15 @@ def inspect(git, session, remote):
     return findings, notes
 
 
+def session_branches(git, session):
+    """The session's local branches with commits of their own on the base, in
+    name order: what the final check's scripts are run on, one by one."""
+    refs = parse_refs(git("for-each-ref", "--format=%(refname) %(objectname)",
+                          session_ns(session, False))[1])
+    return [r.removeprefix("refs/heads/") for r in sorted(refs)
+            if _count(git, f"{BASE}..{r}")]
+
+
 def resume_text(findings, can_push):
     """The part of the resume prompt that describes merge findings."""
     lines = ["## Branches that won't land cleanly",
@@ -134,5 +143,5 @@ def resume_text(findings, can_push):
               + ("then `git push --force-with-lease` (new commits for anything "
                  "never pushed). " if can_push else "")
               + "A clean rebase isn't proof: the final check re-runs the "
-              "tests after you stop, on the branch you leave checked out."]
+              "tests after you stop, on every branch of the session."]
     return "\n".join(lines) + "\n"

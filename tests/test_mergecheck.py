@@ -167,3 +167,14 @@ def test_resume_text_matches_the_backend():
     assert "--force-with-lease" in mc.resume_text(f, True)
     local = mc.resume_text(f, False)
     assert "--force-with-lease" not in local and "import" in local
+
+
+def test_session_branches_lists_local_branches_with_commits_of_their_own():
+    def git(*a):
+        if a[0] == "for-each-ref":
+            return 0, ("refs/heads/sbx/s/02-b bb\nrefs/heads/sbx/s/01-a aa\n"
+                       "refs/heads/sbx/s/03-empty cc\n")
+        if a[:2] == ("rev-list", "--count"):
+            return 0, "0\n" if a[2].endswith("03-empty") else "2\n"
+        return 1, ""
+    assert mc.session_branches(git, "s") == ["sbx/s/01-a", "sbx/s/02-b"]

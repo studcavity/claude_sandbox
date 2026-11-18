@@ -34,7 +34,8 @@ def check_failure_text(returncode):
 def resume_prompt(failures, can_push=True, merge_findings=()):
     """The prompt that reopens the session after a failed final check.
 
-    `failures`: [(check entry, returncode, output)], in run order. The text
+    `failures`: [(check entry, returncode, output[, branch])], in run order;
+    `branch` is set when the scripts ran on each session branch. The text
     is the project's own test output, handed back to the session that wrote
     the code, in the container it ran in. `can_push`: whether the session
     has a remote to push to (not with --local, where committed branches are
@@ -55,10 +56,13 @@ def resume_prompt(failures, can_push=True, merge_findings=()):
                  "bypass or weaken the check) and stop. There is no push: your "
                  "committed branches are copied out when you exit.\n")
     parts = [intro]
-    for s, code, out in failures:
-        parts.append(f"## `{s['path']}` ({s['name']}): "
+    for s, code, out, *rest in failures:
+        branch = rest[0] if rest and rest[0] else None
+        on = f" on branch `{branch}`" if branch else ""
+        switch = f"`git switch {branch}`, then run" if branch else "Run"
+        parts.append(f"## `{s['path']}` ({s['name']}){on}: "
                      f"{check_failure_text(code)}\n"
-                     f"Run it from the repo root: `./{s['path']}`\n"
+                     f"{switch} it from the repo root: `./{s['path']}`\n"
                      f"```\n{tail_text(out)}\n```\n")
     if merge_findings:
         parts.append(mergecheck.resume_text(merge_findings, can_push))
