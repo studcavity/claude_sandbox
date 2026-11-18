@@ -1340,7 +1340,12 @@ def checking(make_args, monkeypatch):
     # the launcher's mergeability check has its own tests below
     monkeypatch.setattr(mergecheck, "inspect",
                         lambda git, session, remote: ([], []))
-    return types.SimpleNamespace(box=box, ran=ran, results=results,
+    monkeypatch.setattr(mergecheck, "session_branches", lambda git, s: [])
+    gits = []
+    monkeypatch.setattr(sandbox.Sandbox, "_git",
+                        lambda self, wd: lambda *a: gits.append(a) or (
+                            (0, "main\n") if a[0] == "symbolic-ref" else (0, "")))
+    return types.SimpleNamespace(box=box, ran=ran, results=results, gits=gits,
                                  monkeypatch=monkeypatch)
 
 
@@ -1371,6 +1376,54 @@ def test_every_check_runs_even_after_one_fails(checking):
     checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
     prompt = checking.box.final_check("/w")
     assert len(checking.ran) == 2 and "one" in prompt and "two" in prompt
+
+
+def test_every_session_branch_is_checked_and_failures_name_their_branch(checking):
+    checking.monkeypatch.setattr(mergecheck, "session_branches",
+                                 lambda git, s: ["sbx/s/01-a", "sbx/s/02-b"])
+    checking.results += [(0, "ok"), (1, "FAILED test_b")]
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert len(checking.ran) == 2
+    assert ("switch", "-q", "sbx/s/01-a") in checking.gits
+    assert ("switch", "-q", "sbx/s/02-b") in checking.gits
+    assert checking.gits[-1] == ("switch", "-q", "main")   # checkout restored
+    assert "FAILED test_b" in prompt
+    assert "on branch `sbx/s/02-b`" in prompt and "01-a`" not in prompt
+
+
+def test_all_branches_passing_means_no_resume(checking):
+    checking.monkeypatch.setattr(mergecheck, "session_branches",
+                                 lambda git, s: ["a", "b"])
+    checking.results += [(0, "ok"), (0, "ok")]
+    assert checking.box.final_check("/w") is None
+
+
+def test_a_failed_switch_is_a_failure_of_that_branch_and_is_not_run(checking):
+    checking.monkeypatch.setattr(mergecheck, "session_branches",
+                                 lambda git, s: ["a", "b"])
+    checking.monkeypatch.setattr(
+        sandbox.Sandbox, "_git",
+        lambda self, wd: lambda *a: (1, "dirty") if a[:2] == ("switch", "-q") and a[2] == "a"
+        else (0, "main\n"))
+    checking.results += [(0, "ok")]
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert len(checking.ran) == 1 and "dirty" in prompt and "`a`" in prompt
+
+
+def test_one_branch_is_checked_where_it_stands(checking):
+    checking.monkeypatch.setattr(mergecheck, "session_branches",
+                                 lambda git, s: ["only"])
+    checking.results.append((0, "ok"))
+    assert checking.box.final_check("/w") is None
+    assert not any(g[0] == "switch" for g in checking.gits)
+
+
+def test_resume_prompt_attributes_a_failure_to_its_branch():
+    a = {"name": "tests", "path": "c.sh"}
+    p = resume.resume_prompt([(a, 1, "boom", "sbx/s/02-b"), (a, 1, "bang")])
+    assert "on branch `sbx/s/02-b`" in p and "`git switch sbx/s/02-b`" in p
 
 
 @pytest.mark.parametrize("deps, kw", [
