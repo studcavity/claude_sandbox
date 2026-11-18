@@ -56,13 +56,14 @@ def kv(text):
 
 
 @pytest.fixture
-def box(tmp_path, monkeypatch):
+def box(tmp_path, monkeypatch, request):
     name = f"cs-smoke-{uuid.uuid4().hex[:6]}"
     args = options.build_parser().parse_args([
         "o/r", "--name", name, "--shell", "--cli", CLI, "--no-update-check",
         "--no-usb", "--no-deps", "--disk-size", "0",  # dir pools have no quota
         "--token-file", str(tmp_path / "tok"),
-        "--usb-allow", str(tmp_path / "allow")])
+        "--usb-allow", str(tmp_path / "allow"),
+        *getattr(request, "param", [])])
     options.normalize_args(args)
 
     calls = []
@@ -95,6 +96,20 @@ def seed_origin(sb):
         "echo hello > README && git add README && "
         "git commit -qm init && git push -q origin main && cd / && "
         f'git config --global url."{ORIGIN}".insteadOf git@github.com:o/r.git')
+
+
+@pytest.mark.parametrize("box", [["--nesting"]], indirect=True)
+def test_nesting_installs_and_initialises_incus(box):
+    """--nesting alone (no repo deps) must yield a working nested incus. The
+    apt install uses --no-install-recommends, so this fails if a package that
+    `incus admin init --minimal` needs (dnsmasq) is missing."""
+    box.load_deps()
+    box.launch(IMAGE)
+    box.install_deps()   # the real --no-install-recommends path
+    box.setup_nesting()
+    out = box.box.user("incus network list --format csv",
+                       capture=True).stdout
+    assert "incusbr0" in out
 
 
 def test_full_lifecycle_in_a_real_container(box, monkeypatch):

@@ -462,8 +462,9 @@ pool makes launching a copy-on-write clone instead of an unpack.
 
 ## nested containers (`--nesting`)
 `--nesting` sets `security.nesting=true` so containers can run inside the
-sandbox (for example this repo's `tests/integration`). If the repo's deps
-installed `incus`, the launcher also gives root a small subuid/subgid range,
+sandbox (for example this repo's `tests/integration`). The launcher also installs
+`incus` and `dnsmasq-base` (even with `--no-deps`, and baked into the cached
+deps image), gives root a small subuid/subgid range,
 makes the incus socket world-accessible (the sandbox is throwaway and `ubuntu`
 already has passwordless sudo) and runs `incus admin init --minimal`. Nesting
 loosens the sandbox's isolation from the host a little; use it only for repos
