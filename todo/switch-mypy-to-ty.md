@@ -48,3 +48,16 @@ The type check runs with ty locally and in CI on Python 3.12 and 3.14 and exits
 attribute in unannotated code (revert the setting to prove it); `CLAUDE.md`
 names the new command; and the wall-clock saving is stated in the commit
 message with how it was measured.
+
+## Update: tried ty 0.0.105 (not adopted)
+ty does **not** flag `self.session = name` shadowing a `session()` method when
+`name` is unannotated: the value is `Unknown`, which is assignable to anything.
+It reports `invalid-assignment` only when the parameter is annotated
+(`name: str`). `--error all`, `--error unsound-assignment`, `conflicting-declarations`,
+`invalid-attribute-access` and `invalid-assignment` did not change that, and ty
+has no `check_untyped_defs` equivalent. On the repo it also reports 3 diagnostics
+(`container/images.py` `on_stale` possibly None, `github/issues.py`
+`api.writes` on a union). ruff was adopted separately (the pyflakes todo).
+`scripts/final-check.sh` must not pass what CI fails, so mypy stays the gate.
+Revisit when ty checks unannotated bodies the way mypy does; re-run the
+shadowing example first.

@@ -46,8 +46,8 @@ jobs:
           cache-dependency-path: requirements*.txt
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Lint (pyflakes)
-        run: python -m pyflakes claude_sandbox scripts/*.py tests/
+      - name: Lint (ruff)
+        run: ruff check claude_sandbox scripts tests
       - name: Types (mypy)
         run: python -m mypy claude_sandbox scripts/*.py
       - name: Lint (shellcheck)

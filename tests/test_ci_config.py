@@ -94,6 +94,36 @@ def test_hook_never_blocks_a_push_even_on_garbage(hook_repo):
     assert push("deadbeef" * 5, "cafebabe" * 5)[0] == 0  # unknown shas
 
 
+# -- ruff: replaces pyflakes with the same rule set ------------------------- #
+def test_ruff_config_selects_the_pyflakes_rules(repo_root):
+    with open(os.path.join(repo_root, "pyproject.toml"), "rb") as f:
+        cfg = tomllib.load(f)
+    assert "F" in cfg["tool"]["ruff"]["lint"]["select"]
+
+
+def test_ruff_flags_an_unused_import(repo_root, tmp_path):
+    src = tmp_path / "unused.py"
+    src.write_text("import os\n")
+    p = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--no-cache", "--config",
+         os.path.join(repo_root, "pyproject.toml"), str(src)],
+        capture_output=True, text=True, cwd=tmp_path)
+    assert p.returncode != 0 and "F401" in p.stdout
+
+
+def test_ruff_passes_on_the_repo(repo_root):
+    p = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--no-cache",
+         "claude_sandbox", "scripts", "tests"],
+        capture_output=True, text=True, cwd=repo_root)
+    assert p.returncode == 0, p.stdout
+
+
+def test_dev_requirements_use_ruff_not_pyflakes(repo_root):
+    reqs = open(os.path.join(repo_root, "requirements-dev.txt")).read()
+    assert "ruff" in reqs and "pyflakes" not in reqs
+
+
 # -- mypy: the setting that makes it catch the shadowing bug ---------------- #
 def test_mypy_config_checks_untyped_defs(repo_root):
     with open(os.path.join(repo_root, "pyproject.toml"), "rb") as f:
@@ -145,7 +175,7 @@ def test_ci_default_shell_is_strict(workflow):
 def test_ci_runs_mypy_and_the_smoke_step(workflow):
     steps = [s for j in workflow["jobs"].values() for s in j["steps"]]
     runs = "\n".join(s.get("run", "") for s in steps)
-    assert "mypy" in runs
+    assert "mypy" in runs and "ruff check" in runs and "pyflakes" not in runs
     assert "pytest -m smoke tests/integration/test_launch.py" in runs
     # no step overrides the strict default
     assert not [s for s in steps if "shell" in s]

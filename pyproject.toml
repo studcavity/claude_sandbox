@@ -32,6 +32,11 @@ markers = [
     "gh: drives the real gh binary (hermetic by default; CS_GH_LIVE=1 adds real GitHub)",
 ]
 
+[tool.ruff.lint]
+# Only pyflakes' rule set (unused imports/variables, undefined names), which is
+# what the repo linted with before ruff. Widen it one family at a time.
+select = ["F"]
+
 [tool.mypy]
 # check_untyped_defs is the point: most of this code is unannotated, and mypy
 # skips the bodies of unannotated functions by default. With it on, mypy
