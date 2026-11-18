@@ -17,7 +17,8 @@ Which branches, and against what, follows what landing does:
   is the bundle and never moves, so a branch is never behind, only ahead).
 
 Every branch is judged on its own, against the base, the way its PR or
-import will be: behind the base, or conflicting with it, is a finding.
+import will be: conflicting with the base is a finding. Merely being behind
+it is not (with several sessions landing PRs, every branch is behind soon).
 
 `inspect` takes a `git(*args) -> (returncode, stdout)` function, so the
 decisions are tested with a fake; `Sandbox.final_check` supplies the real one.
@@ -106,7 +107,6 @@ def inspect(git, session, remote):
         ahead = _count(git, f"{BASE}..{ref}")
         if not ahead:
             continue              # empty, or can't count: no PR/import anyway
-        behind = _count(git, f"{ref}..{BASE}")
         rc, out = git("merge-tree", "--write-tree", "--name-only",
                       "--no-messages", BASE, ref)
         conflicts = parse_conflicts(rc, out)
@@ -115,8 +115,6 @@ def inspect(git, session, remote):
             findings.append((name, f"conflicts with the base in: {shown}"))
         elif conflicts is None:
             notes.append(f"couldn't test whether {name} merges cleanly")
-        if behind:
-            findings.append((name, f"{behind} commit(s) behind the base"))
     return findings, notes
 
 

@@ -55,12 +55,11 @@ def test_a_branch_ahead_of_an_unmoved_base_is_fine(world):
     assert mc.inspect(git_in(clone), S, remote=True) == ([], [])
 
 
-def test_a_branch_behind_the_base_is_found_after_fetching(world):
+def test_a_branch_merely_behind_the_base_is_not_a_finding(world):
     up, clone = world
     branch(clone, "old", "b.txt", "x\n")
     commit(up, "c.txt", "later\n")
-    findings, _ = mc.inspect(git_in(clone), S, remote=True)
-    assert findings == [(f"sbx/{S}/old", "1 commit(s) behind the base")]
+    assert mc.inspect(git_in(clone), S, remote=True) == ([], [])
 
 
 def test_a_conflicting_branch_names_the_files(world):
@@ -79,10 +78,7 @@ def test_every_session_branch_is_judged_alone(world):
     branch(clone, "three", "c.txt", "y\n")
     commit(up, "a.txt", "theirs\n")
     findings, _ = mc.inspect(git_in(clone), S, remote=True)
-    assert sorted({b for b, _ in findings}) == [
-        f"sbx/{S}/one", f"sbx/{S}/three", f"sbx/{S}/two"]
-    assert [p for b, p in findings if b.endswith("/two")] == [
-        "1 commit(s) behind the base"]
+    assert [b for b, _ in findings] == [f"sbx/{S}/one"]
 
 
 def test_other_sessions_and_unrelated_branches_are_ignored(world):
@@ -109,15 +105,16 @@ def test_unpushed_and_diverged_local_branches_are_reported(world):
 
 
 def test_a_fetched_base_that_renamed_its_default_branch_is_followed(world):
+    """Only a refreshed base shows the conflict: the stale one has no x.txt."""
     up, clone = world
     sh(up, "branch", "-m", "trunk")
-    commit(up, "t.txt", "t\n")
+    commit(up, "x.txt", "theirs\n")
     branch_ok = sh(clone, "switch", "-q", "-c", f"sbx/{S}/x", "origin/main")
     assert branch_ok.returncode == 0
-    commit(clone, "x.txt", "x\n")
+    commit(clone, "x.txt", "mine\n")
     sh(clone, "push", "-q", "origin", "HEAD")
     findings, _ = mc.inspect(git_in(clone), S, remote=True)
-    assert findings == [(f"sbx/{S}/x", "1 commit(s) behind the base")]
+    assert findings == [(f"sbx/{S}/x", "conflicts with the base in: x.txt")]
 
 
 def test_local_mode_reads_local_branches_and_never_fetches(world):
@@ -163,7 +160,7 @@ def test_parse_conflicts(rc, out, want):
 
 
 def test_resume_text_matches_the_backend():
-    f = [("sbx/s/x", "1 commit(s) behind the base")]
+    f = [("sbx/s/x", "conflicts with the base in: a.txt")]
     assert "--force-with-lease" in mc.resume_text(f, True)
     local = mc.resume_text(f, False)
     assert "--force-with-lease" not in local and "import" in local

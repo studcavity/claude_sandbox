@@ -34,7 +34,7 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 | `sandbox.py` | `Sandbox`: one container's lifecycle (create, secrets, clone, session, teardown), backend choice, the USB prompt |
 | `render.py` | render the session `CLAUDE.md` and the deps reference from their templates |
 | `resume.py` | the final check's failure text and resume prompt, and running check output streams |
-| `mergecheck.py` | the final check's built-in test that each session branch merges cleanly into its base (conflicts, behind) |
+| `mergecheck.py` | the final check's built-in test that each session branch merges cleanly into its base (conflicts only; being behind is fine) |
 | `shell.py` | the shell snippets run in the container (marker file, git config, secrets, the session command) |
 | `session_tool.py` | install the commit checker in the sandbox as `sandbox-check` |
 | `credentials.py` | the Claude OAuth token file and the secrets piped into a session |
