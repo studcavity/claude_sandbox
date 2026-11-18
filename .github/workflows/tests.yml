@@ -55,7 +55,7 @@ jobs:
       - name: Run tests
         run: |
           set +e
-          python -m pytest -rs -rf 2>&1 | tee pytest.out
+          python -m pytest -n auto -rs -rf 2>&1 | tee pytest.out
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
             # Surface failures as annotations: visible in the checks UI and
