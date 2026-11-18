@@ -11,7 +11,7 @@ pip install -q -r requirements-dev.txt
 ruff check claude_sandbox scripts tests
 python -m mypy claude_sandbox scripts/*.py
 shellcheck run.sh scripts/*.sh .githooks/*
-python -m pytest -q -p no:cacheprovider
+python -m pytest -q -p no:cacheprovider -n auto
 # Real-container tests (what smoke.sh runs, minus its live-GitHub group, which
 # needs a logged-in gh). They need a working incus, i.e. a sandbox launched
 # with --nesting; without one they are skipped, never failed.
