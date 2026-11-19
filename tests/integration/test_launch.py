@@ -169,6 +169,83 @@ def test_full_lifecycle_in_a_real_container(box, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# pinned files: baked into a real deps image, and placed after a real clone
+# --------------------------------------------------------------------------- #
+def test_pinned_files_are_baked_into_the_image_and_placed_per_launch(
+        box, tmp_path, monkeypatch):
+    """A `downloads:` entry, an approved host `files:` entry and a fail-open
+    entry that works are baked into a real deps image; one that can't be
+    fetched is left out of it and placed after the clone once it can."""
+    import hashlib
+    from claude_sandbox.container import deps as container_deps
+    from claude_sandbox.container import files as pinned
+    from claude_sandbox.container import images
+
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    web, flaky, local = b"from the web\n", b"flaky\n", b"from the host\n"
+    host_file = tmp_path / "host.cfg"
+    host_file.write_bytes(local)
+    online = {"flaky": False}
+
+    def fetch(url, cap, want):
+        if url.endswith("/flaky") and not online["flaky"]:
+            raise container_deps.DepsError("offline")
+        return {"/web": web, "/flaky": flaky}[url[url.rindex("/"):]]
+    monkeypatch.setattr(container_deps, "fetch", fetch)
+    pinned._VERIFIED.clear()
+
+    def entry(name, dest, url=None, host_path=None, data=b"", **kw):
+        return {"name": name, "dest": dest, "url": url, "host_path": host_path,
+                "sha256": sha(data), "mode": "0644", "on_error": "fail", **kw}
+    downloads = [
+        entry("web", "~/.config/smoke/web.cfg", url="https://x.invalid/web",
+              data=web, mode="0600"),
+        entry("flaky", "~/.config/smoke/flaky.cfg",
+              url="https://x.invalid/flaky", data=flaky, on_error="skip")]
+    host_files = [entry("host", "~/.local/share/smoke/host.cfg",
+                        host_path=str(host_file), data=local)]
+    box.args.allow_files = True
+    box.deps = dict(container_deps.parse(""), downloads=downloads)
+    monkeypatch.setattr(box, "host_config", lambda: {"files": host_files})
+
+    box.resolve_files()
+    assert [e["name"] for e in box.deps["files"]] == ["web", "host"]
+    assert [e["name"] for e in box.launch_files] == ["flaky"]   # not baked
+
+    alias = images.ensure_deps_image(CLI, IMAGE, box.deps, 7, True)
+    try:
+        assert alias, "files-only deps must be cacheable"
+        box.deps_baked = True
+        box.launch(alias)
+        seed_origin(box)
+        box.install_deps()          # a no-op: the image has them
+        box.provision_key()
+        workdir = box.clone()
+
+        def stat(path):
+            r = box.box.user(f'stat -c "%U %a" {path} && cat {path}',
+                             capture=True, check=False)
+            return r.stdout if r.returncode == 0 else None
+        # baked: present before any per-launch placement, owned by the session user
+        assert stat("~/.config/smoke/web.cfg") == "ubuntu 600\n" + web.decode()
+        assert stat("~/.local/share/smoke/host.cfg") == \
+            "ubuntu 644\n" + local.decode()
+        assert stat("~/.config/smoke/flaky.cfg") is None
+
+        box.place_files(workdir)    # still offline: noted, launch carries on
+        assert stat("~/.config/smoke/flaky.cfg") is None
+        assert "`~/.config/smoke/flaky.cfg`: **not placed**" in box.deps_note
+
+        online["flaky"] = True      # the per-launch retry now works
+        pinned._VERIFIED.clear()
+        box.place_files(workdir)
+        assert stat("~/.config/smoke/flaky.cfg") == "ubuntu 644\n" + flaky.decode()
+    finally:
+        if alias:
+            images.delete_images(CLI, [alias], "smoke deps image")
+
+
+# --------------------------------------------------------------------------- #
 # --local: no GitHub at all; the base goes in and the work comes out as bundles
 # --------------------------------------------------------------------------- #
 LOCAL_PROBE = """\
