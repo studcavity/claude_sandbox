@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import uuid
 
 from claude_sandbox.container import deps as container_deps
@@ -142,6 +143,14 @@ def _age(created):
     return f"{age.days}d {age.seconds // 3600}h"
 
 
+def publish_argv(cli, name, alias, have_zstd):
+    """argv for `publish`. zstd compresses ~20x faster than the default gzip
+    and gives a smaller image, but incus shells out to the `zstd` binary, so
+    it is only requested when that exists on this host."""
+    argv = [cli, "publish", name, "--alias", alias]
+    return argv + ["--compression", "zstd"] if have_zstd else argv
+
+
 def build_image(cli, source, alias, prefix, provision, replace=False,
                 root_size=None):
     """Launch `source`, run provision(container), publish it as `alias`.
@@ -160,7 +169,8 @@ def build_image(cli, source, alias, prefix, provision, replace=False,
         if replace:
             run([cli, "image", "delete", alias], check=False, capture=True)
         log(f"publishing image {alias}")
-        run([cli, "publish", build.name, "--alias", alias], capture=True)
+        run(publish_argv(cli, build.name, alias, shutil.which("zstd") is not None),
+            capture=True)
     finally:
         build.delete()
 
