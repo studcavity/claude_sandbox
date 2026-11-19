@@ -91,13 +91,15 @@ twin, `files:` in `claude_sandbox_host.yaml`, does the same with a `host_path` o
 user's machine (same fields, `host_path` instead of `url`). Both require the `sha256` of
 the exact bytes, which the host checks before the container sees them.
 
-- **Cache:** entries with `on_error: fail` (the default) are installed with the deps
+- **Cache:** entries are installed with the deps
   (after `binaries`, before `scripts`) and baked into the cached image; each one's `dest`,
   `mode` and `sha256` are part of the cache key, so a changed pin rebuilds the image.
 - **Fail open:** `on_error: skip` turns any failure (download, missing host file, hash
-  mismatch, write error) into a logged note and an absent file. Those entries are placed
-  after the clone on every launch instead, so a transient failure is never frozen into an
-  image. Do not pick `skip` for a file the work cannot do without.
+  mismatch, write error) into a logged note and an absent file. The host tries each file
+  before building anything: if it loads and verifies, a `skip` entry is baked and keyed
+  like the rest; if not, it stays out of the image (so a transient failure is never frozen
+  into it) and is retried after the clone on every launch. Do not pick `skip` for a file
+  the work cannot do without.
 - **Approval:** a `downloads:` entry needs none (the pin is the approval, as for
   `binaries`; `--no-deps` skips it). A host `files:` entry reads the user's disk, so it is
   placed only with `--allow-files` or a yes at the launch prompt, otherwise skipped and

@@ -23,6 +23,13 @@ def host_entry(**kw):
     return entry(url=None, host_path="/host/c", **kw)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_memo():
+    f._VERIFIED.clear()
+    yield
+    f._VERIFIED.clear()
+
+
 def logs():
     out = []
     return out, out.append
@@ -48,6 +55,7 @@ def test_host_file_must_match_its_pin(fake_box):
                  read=lambda p: DATA)
     assert ok and fake_box.calls
     fake_box.calls.clear()
+    f._VERIFIED.clear()   # (a verified copy would be reused, never the tampered file)
     with pytest.raises(DepsError, match="sha256 mismatch"):
         f.place(fake_box, [host_entry()], None, lambda m: None,
                 read=lambda p: DATA + b"tampered")
@@ -149,22 +157,51 @@ def test_resolve_files_prompts_on_a_tty(monkeypatch, make_args):
     assert asked == ["h"] and [e["name"] for e in box.declined_files] == ["h"]
 
 
-def test_fail_entries_are_baked_with_the_deps_skip_entries_are_not(
+def test_skip_entry_that_loads_is_baked_and_keyed_one_that_fails_is_not(
         monkeypatch, make_args):
     from claude_sandbox.container import deps as cd
-    box = _box(monkeypatch, make_args,
-               [entry(), entry(name="s", dest="~/s", on_error="skip")],
-               [host_entry(name="h", dest="~/h")], allow_files=True)
-    before = cd.cache_key(box.deps)
+    good = entry(name="s", dest="~/s", on_error="skip")
+    bad = entry(name="b", dest="~/b", on_error="skip", url="https://x.test/b",
+                sha256="b" * 64)
+
+    def fetch(url, cap, sha):
+        if url.endswith("/b"):
+            raise cd.DepsError("download failed")
+        return DATA
+    monkeypatch.setattr(cd, "fetch", fetch)
+    box = _box(monkeypatch, make_args, [entry(), good, bad])
     box.resolve_files()
-    assert [e["name"] for e in box.deps["files"]] == ["cfg", "h"]
-    assert [e["name"] for e in box.launch_files] == ["s"]
-    assert cd.cache_key(box.deps) not in (None, before)
-    # an unapproved host file is never in the key, so can't be in the image
-    box2 = _box(monkeypatch, make_args, [entry()], [host_entry(name="h", dest="~/h")])
+    assert [e["name"] for e in box.deps["files"]] == ["cfg", "s"]   # baked
+    assert [e["name"] for e in box.launch_files] == ["b"]           # retried later
+    # the failed one is not in the key, so a later success builds a new image
+    key_without = cd.cache_key(box.deps)
+    monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
+    f._VERIFIED.clear()
+    box2 = _box(monkeypatch, make_args, [entry(), good, bad])
     box2.resolve_files()
-    assert [e["name"] for e in box2.deps["files"]] == ["cfg"]
-    assert cd.cache_key(box2.deps) != cd.cache_key(box.deps)
+    assert [e["name"] for e in box2.deps["files"]] == ["cfg", "s", "b"]
+    assert cd.cache_key(box2.deps) != key_without and box2.launch_files == []
+
+
+def test_unapproved_host_file_is_never_in_the_key(monkeypatch, make_args):
+    from claude_sandbox.container import deps as cd
+    monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
+    monkeypatch.setattr(f, "read_host_file", lambda p: DATA)
+    h = host_entry(name="h", dest="~/h")
+    approved = _box(monkeypatch, make_args, [entry()], [h], allow_files=True)
+    approved.resolve_files()
+    declined = _box(monkeypatch, make_args, [entry()], [h])
+    declined.resolve_files()
+    assert [e["name"] for e in declined.deps["files"]] == ["cfg"]
+    assert cd.cache_key(declined.deps) != cd.cache_key(approved.deps)
+
+
+def test_verified_bytes_are_fetched_once(monkeypatch):
+    calls = []
+    fetch = lambda u, c, s: calls.append(u) or DATA  # noqa: E731
+    f.load(entry(), fetch=fetch)
+    f.load(entry(url="https://other.test/c"), fetch=fetch)   # same pin
+    assert calls == ["https://x.test/c"]
 
 
 def test_host_files_alone_still_get_a_deps_image(monkeypatch, make_args):
@@ -188,10 +225,15 @@ def test_overlap_with_the_clone_fails_or_skips_per_on_error(monkeypatch, make_ar
 def test_place_files_reports_to_the_session(monkeypatch, make_args, fake_box):
     from claude_sandbox.container import deps as cd
     monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
+    def down(url, cap, sha):
+        raise cd.DepsError("offline")
+    monkeypatch.setattr(cd, "fetch", down)
     box = _box(monkeypatch, make_args,
                [entry(on_error="skip")], [host_entry(name="h", dest="~/h")])
     box.box = fake_box
     box.resolve_files()
+    assert box.deps is not None and not box.deps.get("files")
+    monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
     box.place_files("/home/ubuntu/repo")
     assert [c[1] for c in fake_box.calls] == [".config/tool/cfg"]
     assert "`~/.config/tool/cfg`: placed" in box.deps_note

@@ -4,8 +4,9 @@ Runs on the HOST. Entries come from the deps file's `downloads:` (url) and the
 host file's `files:` (host_path); the schema is deps.file_entry. Entries with
 `on_error: fail` are installed by images.apply_deps with the other deps (and
 so baked into the cached image, keyed by dest/mode/sha256); `on_error: skip`
-ones are placed here after the clone on every launch, since a failure that
-was skipped must not be frozen into an image.
+ones are checked on the host first (`load`): if that works they are baked like
+the others, if it fails they stay out of the image (a failure must not be
+frozen into it) and are placed here, after the clone, on every launch.
 
   * every entry is pinned: the sha256 is checked on the host against the exact
     bytes, whichever source they came from, before the container sees them
@@ -86,9 +87,24 @@ def read_host_file(path, max_bytes=container_deps.MAX_FILE):
     return data
 
 
+# Verified bytes by sha256. The pin makes the content identical wherever it
+# came from, so a file checked by the pre-flight (resolve_files) is not
+# downloaded or read a second time when the image build or placement needs it.
+_VERIFIED: dict = {}
+
+
 def load(entry, fetch=None, read=None):
     """The verified bytes of one entry; DepsError if it can't be had or its
     sha256 doesn't match."""
+    hit = _VERIFIED.get(entry["sha256"])
+    if hit is not None:
+        return hit
+    data = _load(entry, fetch, read)
+    _VERIFIED[entry["sha256"]] = data
+    return data
+
+
+def _load(entry, fetch, read):
     if entry["url"] is not None:
         fetch = fetch or container_deps.fetch  # looked up now, so tests can swap it
         return fetch(entry["url"], container_deps.MAX_FILE, entry["sha256"])
