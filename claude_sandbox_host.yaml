@@ -1,0 +1,10 @@
+# What this repo asks the host for (requests only: the host user approves them).
+# Format and rules: docs/host/guides/host-access.md.
+#
+# Nested Incus, so a sandbox of this repo can run the real-container tests
+# (tests/integration, ./scripts/smoke.sh), which scripts/final-check.sh then
+# runs on exit. Granted by `--allow-nesting`, `--nesting`, or a yes at the
+# prompt. It loosens the container's confinement (see the same guide), so it
+# is a request, never automatic.
+nesting:
+  description: tests/integration and the smoke test start real Incus containers

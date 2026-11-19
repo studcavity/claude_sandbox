@@ -105,8 +105,8 @@ at once.
   them with `Resolves follow-up from <sha>`.
 - **Changes to `container/incus.py`, `container/images.py` or
   `container/deps.py` need a real-container run**: `./scripts/smoke.sh` on a host with
-  incus, then `Verified: ./scripts/smoke.sh` in the commit message. In a sandbox (no
-  incus), write "Not verified against real incus" and tell the user to run it.
+  incus, then `Verified: ./scripts/smoke.sh` in the commit message. In a sandbox without
+  nesting (no incus), write "Not verified against real incus" and tell the user to run it.
 - New behaviour gets a test; test the logic that can break (validation,
   quoting and escaping, cache and freshness decisions, teardown guarantees,
   command construction) and skip trivial glue. If something needs incus, a real

@@ -13,11 +13,14 @@ python -m mypy claude_sandbox scripts/*.py
 shellcheck run.sh scripts/*.sh .githooks/*
 python -m pytest -q -p no:cacheprovider -n auto
 # Real-container tests (what smoke.sh runs, minus its live-GitHub group, which
-# needs a logged-in gh). They need a working incus, i.e. a sandbox launched
-# with --nesting; without one they are skipped, never failed.
+# needs a logged-in gh), including the launch lifecycle in test_launch.py. They
+# need a working incus: this repo's claude_sandbox_host.yaml requests nesting,
+# so a sandbox launched with --allow-nesting (or --nesting) has one. Without it
+# they are skipped, loudly: a green run then says nothing about them.
 if command -v incus >/dev/null && incus info >/dev/null 2>&1; then
   CS_INTEGRATION=1 python -m pytest -q -p no:cacheprovider -m incus tests/integration
 else
-  echo "[final-check] no usable incus (launch with --nesting to include the" \
-    "real-container tests); skipping them" >&2
+  echo "[final-check] WARNING: no usable incus, so the real-container tests did" \
+    "NOT run (relaunch with --allow-nesting; this repo requests it in" \
+    "claude_sandbox_host.yaml)" >&2
 fi

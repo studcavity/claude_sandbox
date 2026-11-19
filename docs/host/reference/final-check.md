@@ -44,8 +44,11 @@ Point `check:` at one script that runs the repo's whole lint and test suite and
 exits non-zero on any failure. Only the script's *path* comes from the default
 branch; its contents come from the session's checkout, so this catches honest
 mistakes. It is not a security boundary: the PR's CI is the real gate. This
-repo's `scripts/final-check.sh` also runs `tests/integration` when the sandbox was
-launched with `--nesting` (and says so when it skips them).
+repo's `scripts/final-check.sh` also runs the real-container tests in `tests/integration`
+(including the smoke test) when the sandbox has a working Incus, and warns loudly when
+it skips them. The repo's `claude_sandbox_host.yaml` requests nesting for that; launch
+with `--allow-nesting` (or `--nesting`) to grant it. The check's timeout is 3600s because
+the first nested run pulls images.
 
 [^resume]: Failure text and resume prompt
 [^merge]: Built-in branch merge check
