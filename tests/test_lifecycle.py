@@ -607,3 +607,59 @@ def test_no_mounts_ignores_requests_and_flags(monkeypatch, make_args, tmp_path):
                             allow_mounts=True,
                             mount=[BindMount("/x", "/mnt/x", "ro")])
     assert box.resolve_mounts() == [] and box.declined_mounts == []
+
+
+# --- nesting requested by the repo ------------------------------------------ #
+def _nesting_box(monkeypatch, make_args, host_yaml, **kw):
+    box = sandbox.Sandbox(make_args(repo="o/r", **kw))
+    monkeypatch.setattr(box.backend, "read_file",
+                        lambda p: host_yaml.encode() if p == "claude_sandbox_host.yaml" else None)
+    return box
+
+
+REQ = "nesting:\n  description: Tests start containers\n"
+
+
+def test_repo_nesting_request_is_prompted(monkeypatch, make_args):
+    box = _nesting_box(monkeypatch, make_args, REQ)
+    monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
+    asked = []
+    monkeypatch.setattr(sandbox, "ask_nesting",
+                        lambda r: asked.append(r["description"]) or True)
+    assert box.resolve_nesting() is True
+    assert asked == ["Tests start containers"]
+    assert box.args.nesting is True and box.nesting_source == "repo"
+    assert sandbox.launch_config(box.args) == {"security.nesting": "true"}
+
+
+def test_repo_nesting_request_needs_a_yes_or_the_flag(monkeypatch, make_args):
+    monkeypatch.setattr(sandbox, "ask_nesting", lambda r: pytest.fail("asked"))
+    box = _nesting_box(monkeypatch, make_args, REQ)       # no tty, no flag
+    assert box.resolve_nesting() is False
+    assert box.args.nesting is False and box.nesting_declined is not None
+    assert sandbox.launch_config(box.args) == {}
+    assert "did not grant" in (box.load_deps() and box.deps_note or box.deps_note)
+    box = _nesting_box(monkeypatch, make_args, REQ, allow_nesting=True)
+    assert box.resolve_nesting() is True and box.args.nesting is True
+    monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
+    monkeypatch.setattr(sandbox, "ask_nesting", lambda r: False)
+    box = _nesting_box(monkeypatch, make_args, REQ)
+    assert box.resolve_nesting() is False
+
+
+def test_no_request_and_the_flag_never_prompt(monkeypatch, make_args):
+    monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
+    monkeypatch.setattr(sandbox, "ask_nesting", lambda r: pytest.fail("asked"))
+    assert _nesting_box(monkeypatch, make_args, "").resolve_nesting() is False
+    box = _nesting_box(monkeypatch, make_args, REQ, nesting=True)
+    assert box.resolve_nesting() is True and box.nesting_source == "flag"
+
+
+def test_session_is_told_it_can_nest(monkeypatch, make_args):
+    box = _nesting_box(monkeypatch, make_args, REQ, allow_nesting=True)
+    box.resolve_nesting()
+    box.load_deps()
+    assert "Nested containers are ENABLED" in box.deps_note
+    assert "repo's `nesting:` request" in box.deps_note
+    assert "nesting.md" in box.deps_note and "incus" in box.deps_note
+    assert "incus" in box.deps["apt"]

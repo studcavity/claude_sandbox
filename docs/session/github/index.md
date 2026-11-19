@@ -18,5 +18,6 @@ here when its situation comes up.
 * [Asking for a GitHub issue](follow-up-requests.md) - How to leave a follow-up issue request by committing todo/<name>.md and what to put in it; read when you find work you cannot or should not do now.
 * [CI and workflows](ci.md) - How CI runs for a session's PRs, how to watch it, and the rules for editing workflows; read before touching .github/ or reporting CI status.
 * [Host directories and USB devices](host-access.md) - How to find out what host resources this sandbox has, and how to ask for a USB device or mount; read before a task that needs hardware or host files.
+* [Containers inside this sandbox](nesting.md) - Whether this sandbox can run nested containers (Incus), how to use them, and how to ask for the capability; read before a task that needs to start containers or VMs.
 * [When the sandbox lacks something](missing-capabilities.md) - What to do instead of faking or giving up when a task needs a device, permission, host service, credential or tool this sandbox cannot provide.
 * [Keeping documentation in the repo](documentation.md) - How to write and update project documentation as OKF bundles, and how the README and docs/ indexes stay in step; read at each milestone and before writing docs.

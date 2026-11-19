@@ -84,6 +84,14 @@ incus admin init --minimal
 NESTING_APT = ("incus", "dnsmasq-base")
 
 
+# Appended to the session's CLAUDE.md "Dependencies" text when nesting is on.
+NESTING_NOTE = (
+    "\nNested containers are ENABLED ({how}): `incus` ({pkgs}) is installed "
+    "and initialised, so you can run containers inside this sandbox, e.g. "
+    "`incus launch images:ubuntu/24.04 t1` then `incus exec t1 -- bash` "
+    "(read `nesting.md` first; delete what you create, the disk is shared).")
+
+
 def with_nesting(deps):
     """`deps` (parsed deps or None) plus the packages nested incus needs.
 
@@ -129,6 +137,8 @@ class Sandbox:
         self.declined_mounts = []
         self.launch_files, self.declined_files = [], []
         self._host_cfg = None
+        self.nesting_declined = None   # the repo's nesting request, if refused
+        self.nesting_source = "flag" if args.nesting else None
         self.volumes = volumes.Volumes(self.cli, self.box, [], None)
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{container_deps.DEPS_FILE}`.")
@@ -188,15 +198,50 @@ class Sandbox:
             log("configuring nested incus")
             self.box.root(NESTING_SETUP, capture=True)
 
+    def resolve_nesting(self):
+        """Decide whether containers may run inside this sandbox (host only,
+        before the instance config and deps are decided).
+
+        `--nesting` is the host user's own grant. The repo's
+        claude_sandbox_host.yaml can only request it: that needs
+        --allow-nesting or a yes at the prompt (no terminal and no flag means
+        not granted), because it loosens the container's confinement. Sets
+        `args.nesting`, which launch_config, load_deps and setup_nesting read.
+        """
+        a = self.args
+        self.nesting_source = "flag" if a.nesting else None
+        self.nesting_declined = None
+        if a.nesting:
+            return True
+        req = self.host_config()["nesting"]
+        if req is None:
+            return False
+        if getattr(a, "allow_nesting", False) or (
+                sys.stdin.isatty() and ask_nesting(req)):
+            a.nesting, self.nesting_source = True, "repo"
+            log("nesting: granted (requested by the repo)")
+            return True
+        self.nesting_declined = req
+        log("nesting: requested by the repo, NOT granted")
+        return False
+
     def load_deps(self):
         """The deps to install: the repo's file (see `_read_deps`) plus, with
-        --nesting, the packages nested incus needs (even under --no-deps)."""
+        nesting, the packages nested incus needs (even under --no-deps)."""
         deps = self._read_deps()
         if self.args.nesting:
             deps = with_nesting(deps)
-            self.deps_note += ("\n`--nesting` also installed: "
-                               + ", ".join(f"`{p}`" for p in NESTING_APT) + ".")
+            self.deps_note += (NESTING_NOTE.format(
+                how="`--nesting`" if self.nesting_source == "flag"
+                else "the repo's `nesting:` request (approved by the host user)",
+                pkgs=", ".join(f"`{p}`" for p in NESTING_APT)))
             self.deps = deps
+        elif self.nesting_declined is not None:
+            self.deps_note += (
+                "\nThe repo requests nested containers (`nesting:` in "
+                f"`{host.HOST_FILE}`) but the host user did not grant it, so "
+                "you cannot run containers here. If the task needs it, say so; "
+                "the user relaunches with `--allow-nesting` (see `nesting.md`).")
         return deps
 
     def _read_deps(self):
@@ -812,6 +857,23 @@ def ask_mount(mount, description):
           file=sys.stderr)
     try:
         return input("Mount? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def ask_nesting(request):
+    """Interactive approval of the repo's nesting request (default: no)."""
+    print("\nThe repo requests nested containers (containers inside the "
+          "sandbox):\n"
+          f"  its description (from the repo, untrusted): "
+          f"{host.display_text(request['description']) or '(none)'}\n"
+          "This sets security.nesting=true. It loosens the container's "
+          "confinement: more of the host kernel (mounts, user namespaces, "
+          "syscall filtering) is reachable by code running in the sandbox, so "
+          "a kernel or Incus bug is easier to exploit from inside. Approve "
+          "only for repos and sessions you trust.", file=sys.stderr)
+    try:
+        return input("Allow nesting? [y/N] ").strip().lower() in ("y", "yes")
     except EOFError:
         return False
 

@@ -41,6 +41,11 @@ are destroyed at exit. See [Secret scanning](secrets-scanning.md).
 | Hold for privileged files | `.github/`, hooks, CODEOWNERS, deps/host files merging unseen | A human approving without reading |
 | [Actions hardening checks](actions-hardening.md) | Session CI code approving PRs or using a writable token | Whether a deploy key can push workflow files (open question) |
 
+Nesting is different: the protections above assume a normally confined container, but with `--nesting` (or an
+approved `nesting:` request) the container's confinement is looser, so a kernel or Incus
+escape bug is easier to reach from inside. It is never granted by a repo alone. See
+[nested containers](../guides/host-access.md).
+
 # Where gaps are reported
 
 Protection gaps are reported to **you** and never to the session: at launch (a
