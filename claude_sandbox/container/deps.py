@@ -31,6 +31,8 @@ MAX_DEPS_FILE = 256 * 1024
 MAX_SCRIPT = 1024 * 1024
 MAX_BINARY = 256 * 1024 * 1024
 MAX_PLATFORM = 4096
+MAX_FILE = 16 * 1024 * 1024
+MAX_FILES = 16
 # Bump when the install steps in claude_sandbox/cli.py change, so cached
 # per-repo images built by the old steps are not reused.
 INSTALL_RECIPE_VERSION = "1"
@@ -50,6 +52,26 @@ SETUP_PATH_RE = re.compile(r"^[A-Za-z0-9_+][A-Za-z0-9._+-]*(/[A-Za-z0-9_+][A-Za-
 SETUP_TIMEOUT_DEFAULT, SETUP_TIMEOUT_MAX, MAX_SETUP = 1800, 3600, 8
 ENV_DENY = re.compile(r"^(LD_.*|PATH|IFS|ENV|BASH_ENV|BASHOPTS|SHELLOPTS|PS4|"
                       r"PROMPT_COMMAND|CDPATH|GLOBIGNORE)$")
+
+
+# `files:` destination: under the session user's home, written `~/<relative>`.
+# Plain path characters only; `.` / `..` segments are rejected in _files().
+FILE_DEST_RE = re.compile(r"^~/[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$")
+# Host path a `files:` entry may read (same alphabet as a mount source).
+FILE_HOST_RE = re.compile(r"^(~|/)[A-Za-z0-9._/+@ -]{1,300}$")
+FILE_MODE_RE = re.compile(r"^0[0-7]{3}$")
+ON_ERROR = ("fail", "skip")
+# Places under ~ where a dropped-in file is code or credentials the session (or
+# a later login) would run or use: shell startup, ssh/gpg/git/claude config,
+# autostart. Matched as a path or a directory prefix. Best effort, not a
+# sandbox: a session user can always edit its own home.
+FILE_DEST_DENY = (
+    ".ssh", ".gnupg", ".claude", ".claude.json", ".netrc", ".git-credentials",
+    ".gitconfig", ".config/git", ".config/gh", ".bashrc", ".bash_profile",
+    ".bash_login", ".bash_logout", ".profile", ".zshrc", ".zshenv",
+    ".zprofile", ".zlogin", ".zlogout", ".pam_environment", ".tmux.conf",
+    ".config/tmux", ".config/fish", ".config/systemd", ".config/autostart",
+    ".config/environment.d")
 
 
 # ISO 8601 date or date-time (UTC "Z" or numeric offset), nothing else.
@@ -148,8 +170,60 @@ def _repo_scripts(doc, key):
     return out
 
 
+def _files(doc):
+    """The `files:` section: pinned files placed under the session user's home.
+
+    Each entry has exactly one source (`url`, fetched by the host, or
+    `host_path`, read from the host and only with the host user's approval),
+    a required sha256 that the host checks before the bytes reach the
+    container, and a `~/` destination outside FILE_DEST_DENY. `on_error`
+    says what a failed placement does: `fail` (default) aborts the launch,
+    `skip` logs it and carries on without the file.
+    """
+    out = []
+    for i, f in enumerate(_section(doc, "files")):
+        w = f"files[{i}]"
+        _check_keys(f, w, ("name", "dest", "sha256"),
+                    ("url", "host_path", "mode", "on_error"))
+        if ("url" in f) == ("host_path" in f):
+            raise DepsError(f"{w}: give exactly one of url or host_path")
+        dest = _str(f, "dest", w, FILE_DEST_RE)
+        rel = dest[2:]
+        if any(seg in (".", "..") for seg in rel.split("/")):
+            raise DepsError(f"{w}: invalid dest: {dest!r}")
+        for bad in FILE_DEST_DENY:
+            if rel == bad or rel.startswith(bad + "/"):
+                raise DepsError(f"{w}: dest {dest!r} is not allowed (it is "
+                                f"under ~/{bad}: shell, credential or "
+                                "autostart config)")
+        mode = f.get("mode", "0644")
+        if not isinstance(mode, str) or not FILE_MODE_RE.match(mode):
+            raise DepsError(f"{w}: mode must be a quoted octal string such as "
+                            f"\"0644\", got {mode!r}")
+        on_error = f.get("on_error", "fail")
+        if on_error not in ON_ERROR:
+            raise DepsError(f"{w}: on_error must be one of "
+                            f"{', '.join(ON_ERROR)}, got {on_error!r}")
+        host_path = None
+        if "host_path" in f:
+            host_path = _str(f, "host_path", w, FILE_HOST_RE)
+            if "\0" in host_path:
+                raise DepsError(f"{w}: invalid host_path")
+        out.append({"name": _str(f, "name", w, NAME_RE), "dest": dest,
+                    "url": _url(f, w) if "url" in f else None,
+                    "host_path": host_path,
+                    "sha256": _sha(f, w, required=True),
+                    "mode": mode, "on_error": on_error})
+    if len(out) > MAX_FILES:
+        raise DepsError(f"files: at most {MAX_FILES} entries")
+    for key in ("name", "dest"):
+        if len({f[key] for f in out}) != len(out):
+            raise DepsError(f"files: duplicate {key}s")
+    return out
+
+
 def parse(raw):
-    """bytes/str -> {"apt", "scripts", "binaries", "setup", "check", + metadata}."""
+    """bytes/str -> {"apt", "scripts", "binaries", "files", "setup", "check", + metadata}."""
     if isinstance(raw, bytes):
         if len(raw) > MAX_DEPS_FILE:
             raise DepsError(f"{DEPS_FILE} is larger than {MAX_DEPS_FILE} bytes")
@@ -164,7 +238,7 @@ def parse(raw):
     if doc is None:
         doc = {}
     _check_keys(doc, DEPS_FILE, (),
-                ("image", "apt", "scripts", "binaries", "setup", "check",
+                ("image", "apt", "scripts", "binaries", "files", "setup", "check",
                  "last_generated", "platform"))
 
     last_generated = doc.get("last_generated")
@@ -220,10 +294,12 @@ def parse(raw):
     if len(set(names)) != len(names):
         raise DepsError("binaries: duplicate names")
 
+    files = _files(doc)
     setup = _repo_scripts(doc, "setup")
     check = _repo_scripts(doc, "check")
     return {"image": image, "apt": apt, "scripts": scripts,
-            "binaries": binaries, "setup": setup, "check": check,
+            "binaries": binaries, "files": files, "setup": setup,
+            "check": check,
             "last_generated": last_generated, "platform": platform}
 
 
@@ -232,7 +308,7 @@ def cache_key(deps):
     baked into a cached image.
 
     Only the install sections feed the key (comments, ordering of keys, the
-    metadata fields, `setup`/`check` (run in the container, never baked) and `image` don't;
+    metadata fields, `files` (placed per launch), `setup`/`check` (run in the container, never baked) and `image` don't;
     the image is already part of the deps image's alias via the base image). Scripts without a sha256 are whatever the URL
     serves at build time, and a cached image would freeze that with no way to
     notice, so such deps are never cached.
@@ -259,6 +335,10 @@ def summary(deps):
     if deps["binaries"]:
         out.append("binaries: " + ", ".join(
             f"`{b['name']}` (/usr/local/bin)" for b in deps["binaries"]))
+    if deps.get("files"):
+        out.append("files (placed under your home at the start of every "
+                   "launch, sha256-pinned): " + ", ".join(
+                       f"`{f['dest']}`" for f in deps["files"]))
     if deps.get("setup"):
         out.append("setup (run in the container at the start of every launch, "
                    "after the clone): " + ", ".join(

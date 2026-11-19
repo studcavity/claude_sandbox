@@ -61,6 +61,7 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 | `container/incus.py` | `Container`: thin wrapper over `incus` (or `lxc`) |
 | `container/images.py` | cached base/deps images, applying deps into a container |
 | `container/deps.py` | parse/validate/download `claude_sandbox_deps.yaml` |
+| `container/files.py` | approve, verify and place the deps file's `files:` entries |
 | `container/host.py` | parse/approve `claude_sandbox_host.yaml` (USB requests) |
 | `container/volumes.py` | size-capped volumes over `/tmp` and the clone dir; sweep of leaked ones |
 | `container/pool.py` | free-space check (and opt-in growth) of the incus storage pool |
