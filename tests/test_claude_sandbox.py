@@ -1592,3 +1592,13 @@ def test_a_crashing_mergecheck_never_traps_the_session(make_args, monkeypatch):
         raise RuntimeError("x")
     monkeypatch.setattr(mergecheck, "inspect", boom)
     assert sandbox.Sandbox(make_args(repo="o/r")).final_check("/w") is None
+
+
+@pytest.mark.parametrize("kind", ["github", "local"])
+def test_the_prompt_itself_asks_for_the_pr_synopsis(repo_root, kind):
+    """The launcher builds the PR title and summary from `PR-Title:` /
+    `PR-Summary:` lines. The rule must be in the always-loaded prompt, not
+    only in an on-demand page a session may never open (it went missing once)."""
+    md = _render_kind(repo_root, kind)
+    assert "PR-Title:" in md and "PR-Summary:" in md
+    assert "sandbox-check" in md
