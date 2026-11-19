@@ -99,8 +99,9 @@ def test_refresh_runs_one_quoted_non_prompting_submodule_update(monkeypatch):
     calls = fake_context(monkeypatch, res())
     assert skills.refresh("/r oot", "/r oot/claude_sandbox/data/skills") == (True, "")
     cmd, kw = calls[0]
-    assert cmd == ("git -C '/r oot' submodule update --init --remote --depth 1 "
+    assert cmd == ("git -C '/r oot' submodule update --init --depth 1 "
                    "-- claude_sandbox/data/skills")
+    assert "--remote" not in cmd          # pinned: upstream never moves us
     assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0" and kw["timeout"] == skills.TIMEOUT
     assert kw["warn"] is True and kw["in_stream"] is False
 

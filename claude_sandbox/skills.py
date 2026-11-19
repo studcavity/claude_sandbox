@@ -3,7 +3,9 @@
 Skills live as submodules under `data/skills/` (today: the Open Knowledge
 Format repo, whose `skills/` holds `okf-generate` and `okf-consume`). They are
 cached and versioned by git but not vendored. On every launch the host runs
-`git submodule update --init --remote` so they are present and current; the
+`git submodule update --init` so they are present at the commit this repo
+pins (never upstream's moving branch: upstream changes, including skill
+scripts, reach sessions only through a reviewed bump of the gitlink); the
 launch stops only when that fails AND no skill is checked out at all (a stale
 copy is better than none). `skill_files` then lists what to copy into the
 container's `~/.claude/skills/`.
@@ -35,11 +37,11 @@ MAX_DEPTH = 4             # <submodule>/skills/<name>/SKILL.md is depth 3
 
 
 def refresh(root=paths.ROOT, skills_dir=SKILLS_DIR):
-    """Init, fetch and update every submodule under `skills_dir` to its
-    remote branch. -> (ok, detail); never raises."""
+    """Init, fetch and update every submodule under `skills_dir` to the
+    commit this repo pins. -> (ok, detail); never raises."""
     rel = os.path.relpath(skills_dir, root)
     cmd = shlex.join(["git", "-C", root, "submodule", "update", "--init",
-                      "--remote", "--depth", "1", "--", rel])
+                      "--depth", "1", "--", rel])
     try:
         r = Context().run(cmd, hide=True, warn=True, timeout=TIMEOUT,
                           env=GIT_ENV, in_stream=False)

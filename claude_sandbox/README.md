@@ -43,7 +43,7 @@ issues by CI), `claude_sandbox_deps.yaml` (this repo's own sandbox deps).
 | `update.py` | offer to `git pull` when this checkout is behind |
 | `sessions.py` | session ids (Docker-style names), branch prefix, stale-key reaping, protection check |
 | `provenance.py` | per-session commit-signing keys (public half kept on the host) and the `sandbox/provenance` status |
-| `skills.py` | Claude skills shipped to every session, kept as git submodules under `data/skills/` (updated on each launch; the launch stops only if the update fails and none are checked out) and copied into the container's `~/.claude/skills/` |
+| `skills.py` | Claude skills shipped to every session, kept as git submodules under `data/skills/` (checked out at the pinned commit on each launch; the launch stops only if that fails and none are checked out) and copied into the container's `~/.claude/skills/` |
 | `claude_config.py` | pre-answers Claude Code's first-run dialogs (theme, onboarding, API key, trust for repos you own) |
 | `timing.py` | `--timings`: stages and call counts |
 | `util.py` | logging, subprocess and signal helpers |
