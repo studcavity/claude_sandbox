@@ -6,8 +6,8 @@ change under `.github/workflows/`. If it can, a session can push a branch with a
 new `on: push` workflow, which runs immediately, before any PR, hold or review,
 with whatever `permissions:` it declares and any repo-level Actions secret it
 names. That would break the rule "nothing runs in a trusted execution context
-before a human has reviewed it" (see `docs/specs/07-untrusted-ci-context.md` and
-the README section "Actions hardening").
+before a human has reviewed it" (see `docs/decisions/07-untrusted-ci-context.md` and
+docs/security/actions-hardening.md).
 
 Nothing in this repo has ever verified the assumption. Removing the `workflow`
 scope from the host's `gh` token only constrains the *host's* OAuth token. A
@@ -39,7 +39,7 @@ On a host, with a **scratch repo that has no secrets** (Actions enabled):
 4. Delete the scratch repo (or at least the key and the branch).
 
 ## Done when
-- The README section "Actions hardening" states the result (replace "Open
+- `docs/security/actions-hardening.md` states the result (replace "Open
   question, not verified") and `sandbox_CLAUDE.md`'s "normally" wording is
   corrected if the result differs.
 - If the push was ACCEPTED: treat it as fix-immediately, not hardening.

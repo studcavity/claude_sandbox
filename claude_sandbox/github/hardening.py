@@ -25,7 +25,7 @@ can't move them. An environment with a protected-branch deployment policy
 keeps a secret out of reach of an `sbx/` branch, but the workflow YAML has to
 opt in, so no setting does it.
 
-Open question, not settled here (see README): whether a deploy key can push
+Open question, not settled here (see docs/security/actions-hardening.md): whether a deploy key can push
 `.github/workflows/*`. `default_workflow_permissions` is only a default; a
 workflow that declares `permissions:` gets what it declares, so if such a push
 is accepted these settings do not contain it.

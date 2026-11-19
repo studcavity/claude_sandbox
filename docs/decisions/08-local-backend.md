@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 08: a local-repo backend (bundle in, bundle out)"
+description: "A local-repo backend: bundles in and out, with a Backend refactor."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 08: a local-repo backend (bundle in, bundle out)
 
 Source: user request (session gentle-germain). Status: implemented (steps

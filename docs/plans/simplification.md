@@ -1,3 +1,11 @@
+---
+type: Plan
+title: "Simplifying the trust and actions layer"
+description: "Proposal to simplify the trust and actions layer; its items became specs 01-07."
+tags: [plan]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Simplifying the trust and actions layer
 
 Status: proposal (written 2026-11-15 by session tender-lamport, after

@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 09: a package layout instead of 30 flat modules"
+description: "Group the flat modules into a claude_sandbox/ package with subpackages."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 09: a package layout instead of 30 flat modules
 
 Source: user request (session agile-hamilton). Status: **PR 1 and PR 2 implemented**

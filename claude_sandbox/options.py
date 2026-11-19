@@ -14,7 +14,7 @@ What it does:
      it is older than --max-age days, or on --rebuild. --no-cache disables it.
      A repo's claude_sandbox_deps.yaml is baked into a second per-repo image
      (claude-sandboxdeps-<hash>) the same way, unless it has an unpinned
-     install script; see README.md.
+     install script; see docs/reference/repo-deps-file.md.
   5. On exit (normal, error, Ctrl-C, SIGTERM, SIGHUP) deletes the GitHub key
      and destroys the container.
 
@@ -129,7 +129,7 @@ def build_parser():
                         "bundle, and the session's sbx/<session>/* branches "
                         "are imported back into it when the session ends "
                         "(no network credential; see "
-                        "docs/specs/08-local-backend.md)")
+                        "docs/decisions/08-local-backend.md)")
     p.add_argument("--base", metavar="BRANCH",
                    help="with --local: the branch to start from (default: "
                         "the repository's checked-out branch)")

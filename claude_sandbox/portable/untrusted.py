@@ -28,7 +28,7 @@ Where it runs, and why each place needs it:
     repo without the checker workflow never scanned it);
   * `provenance.override_description` on the reason a person types,
     which becomes a public status description.
-GitHub push protection (README) is the preferred first line where it exists.
+GitHub push protection (docs/security/secrets-scanning.md) is the preferred first line where it exists.
 """
 import re
 

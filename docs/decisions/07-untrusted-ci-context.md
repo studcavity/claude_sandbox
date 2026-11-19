@@ -1,7 +1,15 @@
+---
+type: Decision
+title: 'Spec 07: make "nothing trusted runs before review" checkable, and offer to apply it'
+description: "Check that CI runs of session code are untrusted and offer the settings that make them so."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 07: make "nothing trusted runs before review" checkable, and offer to apply it
 
 Source: a review discussion of specs 05 and 06, not
-`docs/plans/simplification.md`. Status: implemented, except the deploy-key workflow-push experiment, which needs a scratch repo and a host (see `todo/verify-deploy-key-workflow-push.md`; the README says it is unverified).
+`docs/plans/simplification.md`. Status: implemented, except the deploy-key workflow-push experiment, which needs a scratch repo and a host (see `todo/verify-deploy-key-workflow-push.md`; docs/security/actions-hardening.md says it is unverified).
 
 ## The principle
 

@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 03: file follow-up issues only after merge, from one ledger"
+description: "File follow-up issues only after the todo/ file reaches the default branch, from one ledger."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 03: file follow-up issues only after merge, from one ledger
 
 Source: `docs/plans/simplification.md` item 2. Status: implemented, option A (workflow on push to the default branch; the same `sandbox_issues.py` runs by hand). It depends on
