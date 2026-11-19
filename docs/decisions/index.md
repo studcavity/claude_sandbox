@@ -1,6 +1,6 @@
-# Improvement specs
+# Decisions (improvement specs)
 
-These specs are drawn from `docs/plans/simplification.md` after checking it
+These specs are drawn from [the simplification plan](../plans/simplification.md) after checking it
 against the code. Each one describes a problem, the options, what "done"
 looks like and how to verify it. All seven are implemented on one branch, one
 commit per spec (07 in three); each spec's `Status:` line says which option was

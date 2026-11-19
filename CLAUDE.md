@@ -1,8 +1,8 @@
 # claude_sandbox
 
 Host-side launcher that runs a Claude Code session in a throwaway Incus/LXD
-container with a repo-scoped GitHub deploy key. `README.md` has usage;
-`claude_sandbox/README.md` has the module table and the layout rules
+container with a repo-scoped GitHub deploy key. `README.md` introduces it and indexes `docs/`;
+`docs/architecture/package-layout.md` has the module table and the layout rules
 (import layering is a test: `tests/test_layering.py`); module
 docstrings say what each file is for.
 

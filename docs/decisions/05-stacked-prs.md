@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 05: stacked PRs: close the CI gap, or stop stacking"
+description: "Stacked PRs get no CI: close the gap or stop stacking."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 05: stacked PRs: close the CI gap, or stop stacking
 
 Source: `docs/plans/simplification.md` item 5 ("Stacked-PR base discovery").

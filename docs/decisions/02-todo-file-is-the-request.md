@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 02: one place per request (the `todo/` file is the request)"
+description: "The todo/ file itself is the follow-up request, replacing commit trailers."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 02: one place per request (the `todo/` file is the request)
 
 Source: `docs/plans/simplification.md` item 3. Status: implemented, option A. Settled: a request is the commit that ADDS the file (path + adding commit), edits are ignored, deleting closes nothing; see `sandbox_todo.py`. Do this before

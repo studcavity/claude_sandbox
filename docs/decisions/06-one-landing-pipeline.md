@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 06: one landing pipeline (and a review hold that depends on how you launched)"
+description: "Close the setup-script review hold gap and unify the landing pipeline."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 06: one landing pipeline (and a review hold that depends on how you launched)
 
 Source: not in `docs/plans/simplification.md`. Found while checking that

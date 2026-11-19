@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 01: one merge gate for the commit checker"
+description: "One merge gate for the commit checker: drop the host-posted status, keep the Actions job."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 01: one merge gate for the commit checker
 
 Source: `docs/plans/simplification.md` item 1. Status: implemented, option A (only the `commit-metadata` Actions job gates). Repos that applied `require-sandbox-check.json` must delete it (README has the commands).

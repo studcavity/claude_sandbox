@@ -1,5 +1,5 @@
 # Tooling installed into the sandbox before the session starts.
-# Format and rules: see "repo dependencies" in README.md. Any invalid entry
+# Format and rules: see docs/reference/repo-deps-file.md. Any invalid entry
 # aborts the launch; skip this file with --no-deps.
 # Install order: apt, binaries, scripts.
 
@@ -38,7 +38,7 @@ binaries:
 #     env: {BINDIR: /usr/local/bin}
 
 # Run when Claude exits, before teardown; a failure offers to resume the
-# session with the output (README: "final check:").
+# session with the output (docs/reference/final-check.md).
 check:
   - name: lint-and-tests
     path: scripts/final-check.sh

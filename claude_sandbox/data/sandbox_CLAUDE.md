@@ -207,6 +207,10 @@ freshness) before relying on them. Don't hand-roll the format.
   user whether they are out of date or need more detail about what changed;
   apply the answer with `okf-generate`. If the workstream has no docs, create
   them.
+- The top-level `README.md` is a short human front door: what the project is,
+  the problem it solves, and an index to `docs/`. Detail goes in single-topic
+  concepts under `docs/`, each listed in its directory's `index.md`; when you
+  add or move one, update that index and the README's index.
 - Keep them succinct, pragmatic and human-readable. Beyond technical
   specifics, record what code can't say: motivation, context, trade-offs,
   reference sources.

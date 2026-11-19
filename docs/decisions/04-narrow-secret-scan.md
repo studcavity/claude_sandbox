@@ -1,3 +1,11 @@
+---
+type: Decision
+title: "Spec 04: a narrower secret scan, aimed at what the sandbox actually holds"
+description: "Narrow the secret scan to the credentials a sandbox actually holds."
+tags: [decision, spec]
+generated: { by: "claude-code/claude-sonnet-5-5", at: "2026-11-19T01:06:00Z" }
+---
+
 # Spec 04: a narrower secret scan, aimed at what the sandbox actually holds
 
 Source: `docs/plans/simplification.md` item 4. Status: implemented, option A (option B, an exact-match tripwire on the host, not done; push protection unverified). It doesn't
