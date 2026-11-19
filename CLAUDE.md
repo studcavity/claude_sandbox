@@ -80,7 +80,10 @@ forks). Its `integration` job installs incus and runs `tests/integration` for
 real (failing if they are skipped), including `test_launch.py` as a "Smoke"
 step: the real launch lifecycle in an Ubuntu container with only GitHub faked.
 Locally, `./scripts/smoke.sh [owner/repo]` runs them, and a sandbox launched with
-`--nesting` can too. They are opt-in (marker `incus`, `CS_INTEGRATION=1`).
+`--nesting` can too (omit the live-GitHub `gh` tests there: they need a logged-in `gh`,
+which a sandbox lacks, so expect those 5 to fail). The full smoke run is the
+end-to-end test but is expensive (minutes of image building and I/O), so avoid it
+unless a change really needs it. They are opt-in (marker `incus`, `CS_INTEGRATION=1`).
 `tests/integration/test_gh.py` drives the real `gh` against a local HTTPS
 server (runs wherever `gh` and `openssl` exist); its read-only live-GitHub
 group needs `CS_GH_LIVE=1`. Enable the pre-push warning with
@@ -105,8 +108,9 @@ at once.
   them with `Resolves follow-up from <sha>`.
 - **Changes to `container/incus.py`, `container/images.py` or
   `container/deps.py` need a real-container run**: `./scripts/smoke.sh` on a host with
-  incus, then `Verified: ./scripts/smoke.sh` in the commit message. In a sandbox without
-  nesting (no incus), write "Not verified against real incus" and tell the user to run it.
+  incus, then `Verified: ./scripts/smoke.sh` in the commit message. A sandbox launched
+  with `--nesting` has incus and can run it. Without nesting (no incus), write
+  "Not verified against real incus" and tell the user to run it.
 - New behaviour gets a test; test the logic that can break (validation,
   quoting and escaping, cache and freshness decisions, teardown guarantees,
   command construction) and skip trivial glue. If something needs incus, a real
