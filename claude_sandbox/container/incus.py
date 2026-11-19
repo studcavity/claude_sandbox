@@ -64,6 +64,16 @@ class Container:
              '&& mv "$1.tmp" "$1"',
              "sh", path, mode], input=data)
 
+    def put_user_file(self, rel, data, mode="0644"):
+        """Write bytes to ~/<rel> as the session user (never as root, so a
+        symlink in the home can't redirect a root write), creating parent
+        directories. rel and mode are positional args, never interpolated.
+        The file appears at its final path only once complete (rename)."""
+        script = ('set -eu; umask 077; d="$HOME/$1"; mkdir -p "$(dirname "$d")"; '
+                  'cat > "$d.tmp"; chmod "$2" "$d.tmp"; mv -fT "$d.tmp" "$d"')
+        subprocess.run(self.user_cmd("sh", "-c", script, "sh", rel, mode),
+                       check=True, input=data, capture_output=True)
+
     def add_usb(self, vid, pid):
         """Pass host USB devices matching vid:pid into the container.
 

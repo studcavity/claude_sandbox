@@ -67,6 +67,21 @@ launch; it is logged and listed in the session's CLAUDE.md so the session can
 tell you. `setup:` is not part of the cache key, so scripts should be idempotent
 and fast when already done.
 
+# Placed files (`files:`)
+
+Pinned files copied under the session user's home at the start of every launch
+(after the clone, before Claude's credentials and `setup:`). Sources are `url`
+(fetched and checked on the host, like `binaries`) or `host_path` (read from
+your disk); both need a `sha256`, which must match before the container sees a
+byte. A `host_path` entry is a request: it is placed only with `--allow-files`
+or a yes at the prompt (no terminal and no flag means skipped), and `--no-files`
+ignores every entry. Destinations are `~/...` only and exclude shell startup,
+ssh/gpg/git/Claude config and autostart locations, so a file cannot trivially
+become a persistence hook. `on_error: skip` lets a failed entry (download, missing
+file, hash mismatch, write error) pass with a note in the session's CLAUDE.md
+instead of aborting the launch. Files are written as the session user, never
+cached in an image. Field details: [Editing the deps file](../../session/common/deps-file.md).
+
 # Hardening and remaining trust
 
 - The strict schema rejects unknown keys, odd names, `-`-prefixed apt specs and

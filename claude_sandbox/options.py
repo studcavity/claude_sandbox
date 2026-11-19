@@ -286,6 +286,13 @@ def build_parser():
     p.add_argument("--no-mounts", action="store_true",
                    help="attach no bind mounts, ignoring --mount and the "
                         "repo's requests")
+    p.add_argument("--allow-files", action="store_true",
+                   help="copy the host files the repo's deps file asks for "
+                        "(`files:` entries with host_path) without the "
+                        "confirmation prompt; the sha256 must still match "
+                        "(without a terminal they are otherwise skipped)")
+    p.add_argument("--no-files", action="store_true",
+                   help="place none of the deps file's `files:` entries")
     p.add_argument("--claude-md", metavar="PATH",
                    default=os.path.join(paths.DATA, "sandbox_CLAUDE.md"),
                    help="template for ~/.claude/CLAUDE.md in the sandbox "

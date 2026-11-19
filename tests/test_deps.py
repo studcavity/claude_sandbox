@@ -292,3 +292,78 @@ def test_check_is_never_baked_and_is_summarised():
     assert d.cache_key(d.parse("check:\n  - {name: a, path: x.sh}\n")) is None
     parsed = d.parse("check:\n  - {name: a, path: tools/final.sh}\n")
     assert any("tools/final.sh" in l and "exit" in l for l in d.summary(parsed))
+
+
+# --- files: ---------------------------------------------------------------- #
+def _file(**kw):
+    e = {"name": "cfg", "dest": "~/.config/tool/cfg", "sha256": SHA,
+         "url": "https://example.com/cfg"}
+    e.update(kw)
+    return e
+
+
+def _parse_files(*entries):
+    return d.parse(yaml.safe_dump({"files": list(entries)}))["files"]
+
+
+def test_files_defaults_and_host_path_source():
+    h = {k: v for k, v in _file().items() if k != "url"}
+    h.update(name="h", dest="~/x", host_path="~/dotfiles/x", mode="0600",
+             on_error="skip")
+    (a, b) = _parse_files(_file(), h)
+    assert (a["mode"], a["on_error"], a["host_path"]) == ("0644", "fail", None)
+    assert (b["url"], b["host_path"], b["mode"], b["on_error"]) == (
+        None, "~/dotfiles/x", "0600", "skip")
+    assert d.parse("files: []")["files"] == []
+    assert d.parse("")["files"] == []
+
+
+@pytest.mark.parametrize("entry", [
+    _file(sha256=None),                                  # pin is required
+    {k: v for k, v in _file().items() if k != "sha256"},
+    {k: v for k, v in _file().items() if k != "url"},    # no source
+    _file(host_path="/etc/hostname"),                    # two sources
+    _file(url="http://example.com/x"),                   # not https
+    _file(dest="/etc/passwd"), _file(dest="x"), _file(dest="~/../etc/x"),
+    _file(dest="~/a/./b"), _file(dest="~/"), _file(dest="~/a b"),
+    _file(mode=644), _file(mode="4755"), _file(mode="0o644"),
+    _file(on_error="ignore"), _file(on_error=True), _file(extra=1),
+])
+def test_files_rejects_bad_entries(entry):
+    entry = {k: v for k, v in entry.items() if v is not None}
+    with pytest.raises(DepsError):
+        _parse_files(entry)
+
+
+@pytest.mark.parametrize("dest", [
+    "~/.ssh/authorized_keys", "~/.claude/settings.json", "~/.claude.json",
+    "~/.bashrc", "~/.profile", "~/.gitconfig", "~/.config/git/config",
+    "~/.config/autostart/x.desktop", "~/.config/systemd/user/x.service",
+    "~/.zshrc", "~/.tmux.conf", "~/.netrc"])
+def test_files_denies_persistence_and_credential_destinations(dest):
+    with pytest.raises(DepsError, match="not allowed"):
+        _parse_files(_file(dest=dest))
+
+
+def test_files_allows_neighbours_of_denied_names():
+    # a prefix match on path segments, not on characters
+    _parse_files(_file(dest="~/.sshfoo"), _file(name="b", dest="~/.config/gitx/c"),
+                 _file(name="c", dest="~/.local/share/app/data"))
+
+
+def test_files_duplicates_and_limits():
+    with pytest.raises(DepsError, match="duplicate names"):
+        _parse_files(_file(), _file(dest="~/b"))
+    with pytest.raises(DepsError, match="duplicate dests"):
+        _parse_files(_file(), _file(name="b"))
+    with pytest.raises(DepsError, match="at most"):
+        _parse_files(*[_file(name=f"n{i}", dest=f"~/f{i}")
+                       for i in range(d.MAX_FILES + 1)])
+
+
+def test_files_do_not_change_the_image_cache_key_and_show_in_summary():
+    base = d.parse("apt: [jq]")
+    with_files = d.parse(yaml.safe_dump({"apt": ["jq"], "files": [_file()]}))
+    assert d.cache_key(base) == d.cache_key(with_files)
+    assert d.cache_key(d.parse(yaml.safe_dump({"files": [_file()]}))) is None
+    assert any("~/.config/tool/cfg" in l for l in d.summary(with_files))

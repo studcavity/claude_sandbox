@@ -182,6 +182,7 @@ def _launch(args):
                 box.resolve_usb()  # prompt now, not after a long image build
                 box.resolve_mounts()
                 box.load_deps()  # before the image: it may pick the base OS
+                box.resolve_files()  # prompt now, not after a long image build
             with timing.stage("preflight (protection, stale keys)"):
                 box.backend.preflight(lambda: Container.list_names(args.cli),
                                       box.name)
@@ -224,6 +225,8 @@ def _launch(args):
             box.install_claude()
         with timing.stage("clone"):
             workdir = box.clone()
+        with timing.stage("repo files"):
+            box.place_files(workdir)  # before setup (which may use them) and credentials
         with timing.stage("repo setup scripts"):
             box.run_setup(workdir)  # before Claude credentials reach the container
         with timing.stage("session tools + CLAUDE.md"):

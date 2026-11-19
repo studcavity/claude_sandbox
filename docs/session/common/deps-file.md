@@ -39,6 +39,13 @@ binaries:                  # installed to /usr/local/bin/<name>, mode 0755
     url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
     sha256: <64 hex>       # required
     archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
+files:                     # pinned files placed under ~ every launch (see below)
+  - name: tool-config      # [A-Za-z0-9._+-]
+    dest: ~/.config/tool/config.toml   # always ~/<relative>; some places are refused
+    url: https://example.com/config.toml   # OR host_path: ~/dotfiles/config.toml
+    sha256: <64 hex>       # required for both sources
+    mode: "0600"           # optional, quoted octal string (default "0644")
+    on_error: skip         # optional: fail (default, aborts the launch) or skip
 setup:                     # repo scripts run in the container every launch (see below)
   - name: toolchain        # [A-Za-z0-9._+-]
     path: tools/setup.sh   # relative to the repo root; no leading /, no ..
@@ -75,6 +82,26 @@ check:                     # final gate run when Claude exits (see below); same 
   pasted as a `|` block). Run the commands; never guess or copy old values. They
   record when and on what OS the toolchain was resolved so it can be reproduced.
   They are never executed and do not affect the image cache.
+
+# Placed files (`files:`)
+
+Each entry puts one file under the session user's home on **every** launch (after the
+clone, before Claude's credentials arrive and before `setup:`); they are never baked into
+an image and do not affect the cache key. Exactly one source: `url` (https, fetched by
+the host) or `host_path` (a file on the host user's machine). The `sha256` of the exact
+bytes is required for both and checked on the host before the container sees them.
+A `host_path` entry reads the user's disk, so it is placed only with `--allow-files` or
+a yes at the launch prompt; otherwise it is skipped and listed in your CLAUDE.md.
+`--no-files` places nothing.
+
+`dest` must be `~/<relative>`, with no `.`/`..`, and may not be under places that run
+code or hold credentials (`~/.ssh`, `~/.gnupg`, `~/.claude*`, shell startup files such
+as `~/.bashrc` and `~/.profile`, `~/.gitconfig`, `~/.config/{git,gh,systemd,autostart,...}`,
+`~/.netrc`, `~/.tmux.conf`; the list is `FILE_DEST_DENY` in `container/deps.py`) or
+overlap the clone. This is a guard rail, not a sandbox. `on_error: skip` makes a failure
+(download, missing host file, hash mismatch, write error) a logged note instead of
+aborting the launch; the file is simply absent. Do not pick `skip` for a file the
+work cannot do without.
 
 # Per-launch setup scripts (`setup:`)
 

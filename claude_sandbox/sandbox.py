@@ -11,6 +11,7 @@ from claude_sandbox import provenance
 from claude_sandbox import sessions
 from claude_sandbox import timing
 from claude_sandbox.container import deps as container_deps
+from claude_sandbox.container import files as deps_files
 from claude_sandbox.container import host
 from claude_sandbox.container import mounts
 from claude_sandbox.container import volumes
@@ -125,6 +126,7 @@ class Sandbox:
         self.usb_devices = []
         self.bind_mounts = []       # granted: --mount plus approved repo requests
         self.declined_mounts = []
+        self.granted_files, self.declined_files = [], []
         self.volumes = volumes.Volumes(self.cli, self.box, [], None)
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{container_deps.DEPS_FILE}`.")
@@ -284,6 +286,43 @@ class Sandbox:
             log(f"mount request {src!r} ignored: {why}")
         self.bind_mounts, self.declined_mounts = granted, declined
         return granted
+
+    def resolve_files(self):
+        """Decide which `files:` entries to place (host only, before any
+        build, so the prompt comes first). URL entries are pinned by sha256;
+        host_path entries read the host's disk, so they need --allow-files or
+        a yes at the prompt. --no-files ignores them all."""
+        a = self.args
+        self.granted_files, self.declined_files = [], []
+        entries = (self.deps or {}).get("files") or []
+        if not entries:
+            return []
+        if getattr(a, "no_files", False):
+            self.deps_note += "\n`--no-files`: the `files:` entries were not placed."
+            return []
+        self.granted_files, self.declined_files = deps_files.resolve(
+            entries, getattr(a, "allow_files", False),
+            ask_file if sys.stdin.isatty() else None)
+        for e in self.declined_files:
+            log(f"file {e['name']} (host path {e['host_path']!r}) not "
+                "approved: skipped")
+        return self.granted_files
+
+    def place_files(self, workdir):
+        """Put the approved `files:` entries under the session user's home.
+        Called after the clone and before Claude credentials are pushed, so
+        nothing placed here can read them. A failing entry aborts the launch
+        unless it says `on_error: skip`."""
+        granted = getattr(self, "granted_files", [])
+        declined = getattr(self, "declined_files", [])
+        if not granted and not declined:
+            return
+        notes = deps_files.place(self.box, granted, workdir, log)
+        notes += [f"`{e['dest']}`: **not placed**: it reads `{e['host_path']}` "
+                  "on the host and the host user did not approve that "
+                  "(`--allow-files`)" for e in declined]
+        self.deps_note += "\nFiles this launch:\n" + "\n".join(
+            f"  - {n}" for n in notes)
 
     def attach_usb(self):
         """Attach approved devices. Runs after install_deps so repo-supplied
@@ -714,6 +753,21 @@ def ask_mount(mount, description):
           file=sys.stderr)
     try:
         return input("Mount? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def ask_file(entry):
+    """Interactive approval of one repo-requested host file (default: no)."""
+    print(f"\nThe repo asks to copy a file from this machine into the sandbox:\n"
+          f"  host:      {host.display_text(entry['host_path'])}\n"
+          f"  sandbox:   {entry['dest']}  (mode {entry['mode']})\n"
+          f"  sha256:    {entry['sha256']}\n"
+          "The content must match that hash exactly. Only approve files you "
+          "are happy for the session (and anything it runs) to read.",
+          file=sys.stderr)
+    try:
+        return input("Copy it? [y/N] ").strip().lower() in ("y", "yes")
     except EOFError:
         return False
 
