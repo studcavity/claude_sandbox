@@ -75,11 +75,12 @@ disk. Both need a `sha256`, checked on the host before the container sees a byte
 `~/...` destination (shell startup, ssh/gpg/git/Claude config and autostart locations are
 refused), an optional quoted octal `mode` and `on_error: fail|skip`.
 
-They are part of the image cache: `fail` entries (the default) are installed with the
-deps and baked in, keyed by `dest`/`mode`/`sha256` (not by URL or host path), so a new
-pin builds a new image and an unapproved host file can never be in one a launch reuses.
-`skip` entries are placed after the clone on every launch so a failure that was skipped is
-never cached. A `downloads:` entry needs no approval (like `binaries`; `--no-deps` skips
+They are part of the image cache: entries are installed with the deps and baked in, keyed
+by `dest`/`mode`/`sha256` (not by URL or host path), so a new pin builds a new image and an
+unapproved host file can never be in one a launch reuses. An `on_error: skip` entry is
+tried on the host first; if it can't be loaded and verified it stays out of the image and
+its key, and is placed after the clone on every launch instead, so a failure is never
+cached. A `downloads:` entry needs no approval (like `binaries`; `--no-deps` skips
 it); a host `files:` entry is a request, placed only with `--allow-files` or a yes at the
 prompt (no terminal and no flag means skipped), and `--no-files` ignores them. Files are
 written as the session user. Field details:

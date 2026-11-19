@@ -306,11 +306,11 @@ class Sandbox:
         Candidates: the deps file's `downloads:` (sha256-pinned, no prompt, as
         for `binaries`) and the host file's `files:` (read from your disk, so
         they need --allow-files or a yes at the prompt; --no-files drops them).
-        Entries that must not fail open (`on_error: fail`) join deps["files"]:
-        they are installed with the deps and baked into the cached image, and
-        their dest/mode/sha256 are part of its cache key. `on_error: skip`
-        entries are placed after the clone on every launch instead, so a
-        transient failure is never frozen into an image.
+        Entries join deps["files"]: they are installed with the deps and baked
+        into the cached image, and their dest/mode/sha256 are part of its cache
+        key. The exception is an `on_error: skip` entry that can't be loaded
+        and verified right now: it is left out of the image (and its key) and
+        placed after the clone on every launch instead.
         """
         a = self.args
         self.launch_files, self.declined_files = [], []
@@ -343,8 +343,23 @@ class Sandbox:
                 self.declined_files.append(dict(e, reason=str(err)))
                 continue
             ok.append(e)
-        bake = [e for e in ok if e["on_error"] == "fail"]
-        self.launch_files = [e for e in ok if e["on_error"] == "skip"]
+        # `fail` entries are baked (a failure aborts the launch). `skip` ones
+        # are tried here, on the host, before any image work: if the bytes
+        # verify they are baked too; if not they stay out of the image, so a
+        # transient failure is never frozen into it, and are retried after the
+        # clone on every launch.
+        bake = []
+        for e in ok:
+            if e["on_error"] == "skip":
+                try:
+                    deps_files.load(e)
+                except container_deps.DepsError as err:
+                    log(f"warning: file {e['name']} not available now "
+                        f"({err}); it stays out of the image and is retried "
+                        "after the clone")
+                    self.launch_files.append(e)
+                    continue
+            bake.append(e)
         if bake:
             base = self.deps or container_deps.parse("")
             self.deps = dict(base, files=bake)
@@ -353,8 +368,8 @@ class Sandbox:
         return ok
 
     def place_files(self, workdir):
-        """Place the `on_error: skip` files under the session user's home
-        (the others went in with the deps). Called after the clone and before
+        """Place the `on_error: skip` files that could not be baked under the
+        session user's home (everything else went in with the deps). Called after the clone and before
         Claude credentials are pushed, so nothing placed here can read them. A
         failure is a note for the session, never an abort."""
         notes = deps_files.place(self.box, self.launch_files, workdir, log) \
