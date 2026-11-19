@@ -16,6 +16,10 @@ sources:
 # Requirements
 
 - `incus` installed and initialised, with your user in the `incus-admin` group.
+- `zstd` on the host (`sudo apt install zstd`). Cached images are published with it:
+  measured 2.7x faster to publish than gzip (15s against 40s for a ~700MB image) and
+  slightly smaller. Without it the launcher falls back to gzip, so launches still work
+  but image builds are slower.
 - Firewall rules for the Incus bridge if you use ufw:
   `sudo ufw allow in on <bridge>`, `sudo ufw route allow in on <bridge>`,
   `sudo ufw route allow out on <bridge>`.

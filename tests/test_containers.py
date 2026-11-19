@@ -147,3 +147,21 @@ def test_add_mount_is_read_only_by_default_and_has_no_shell(monkeypatch):
                       "disk", "source=/h/d", "path=/mnt/d", "readonly=true",
                       "shift=true"]
     assert "readonly=false" in ran[1]
+
+
+def test_launch_does_not_read_the_callers_stdin(tmp_path):
+    """`incus launch` reads its stdin to EOF as a YAML config whenever it is not a
+    terminal, so a caller whose stdin is an open pipe (CI, a wrapper, an agent
+    harness) hung it forever. Real process, fake incus that behaves the same."""
+    import subprocess as sp
+    import sys
+    fake = tmp_path / "incus"
+    fake.write_text("#!/bin/sh\ncat >/dev/null\n")
+    fake.chmod(0o755)
+    code = ("from claude_sandbox.container.incus import Container;"
+            f"Container({str(fake)!r}, 'box').launch('img', ephemeral=False)")
+    p = sp.Popen([sys.executable, "-c", code], stdin=sp.PIPE)  # open, never written
+    try:
+        assert p.wait(timeout=15) == 0
+    finally:
+        p.kill()

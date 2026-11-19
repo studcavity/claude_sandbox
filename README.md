@@ -42,7 +42,7 @@ what it does and does not stop.
 
 ## Requirements
 
-Linux host with Incus (your user in `incus-admin`), Python 3.12+, and for
+Linux host with Incus (your user in `incus-admin`), `zstd` (image compression), Python 3.12+, and for
 GitHub sessions `gh` logged in as the account you launch as (without the
 `workflow` scope). Whether a session is GitHub or local is chosen at each
 launch, not by the repo: the same repo can be launched either way.

@@ -192,3 +192,10 @@ def test_build_image_caps_root_disk_of_build_container(monkeypatch):
 
 def test_base_setup_caps_journal():
     assert "SystemMaxUse=100M" in im.BASE_ROOT_SETUP
+
+
+def test_publish_argv_uses_zstd_only_when_available():
+    assert im.publish_argv("incus", "b", "a", True) == [
+        "incus", "publish", "b", "--alias", "a", "--compression", "zstd"]
+    assert im.publish_argv("incus", "b", "a", False) == [
+        "incus", "publish", "b", "--alias", "a"]

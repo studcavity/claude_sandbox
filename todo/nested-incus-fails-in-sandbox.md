@@ -99,10 +99,8 @@ smoke test, `test_nesting_installs_and_initialises_incus`, covers `--nesting`
 through the real `--no-install-recommends` path.
 
 Still open:
-- Not verified against real incus: neither the new smoke test nor a nested
-  container actually starting in a `--nesting` sandbox has been run. Run
-  `./scripts/smoke.sh` on a host with incus. `init --minimal` may need more
-  packages than `dnsmasq-base` (e.g. nftables); add them to `NESTING_APT`.
+- (Resolved Nov 2026: nested incus works in a `--nesting` sandbox and
+  `./scripts/smoke.sh` ran there: 32 passed, only the live-`gh` tests failed.)
 - `NESTING_SETUP` does not repair a half-initialised default profile.
 - `scripts/final-check.sh`'s incus probe still uses `incus info`.
 - The spec 08 local-backend smoke run above.

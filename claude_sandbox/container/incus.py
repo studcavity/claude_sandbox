@@ -27,8 +27,11 @@ class Container:
         cfg = [a for k, v in (config or {}).items()
                for a in ("-c", f"{k}={v}")]
         dev = ["--device", f"root,size={root_size}"] if root_size else []
+        # input="" gives it an already-closed stdin: `incus launch` reads stdin to
+        # EOF as a YAML config when it is not a terminal, and hangs for ever on
+        # an open pipe (before it even contacts the daemon).
         run([self.cli, "launch", image, self.name]
-            + (["--ephemeral"] if ephemeral else []) + cfg + dev)
+            + (["--ephemeral"] if ephemeral else []) + cfg + dev, input="")
 
     def delete(self):
         run([self.cli, "delete", "--force", self.name], check=False, capture=True)
