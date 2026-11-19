@@ -19,14 +19,21 @@ sources:
 - Firewall rules for the Incus bridge if you use ufw:
   `sudo ufw allow in on <bridge>`, `sudo ufw route allow in on <bridge>`,
   `sudo ufw route allow out on <bridge>`.
-- `gh` on the host, logged in (`gh auth login`) as the account you launch as.
-  Every GitHub call goes through it, so keep it updated.
-- The `gh` token must **not** have the `workflow` scope (`gh auth status` lists
+- For GitHub sessions, `gh` on the host, logged in (`gh auth login`) as the account
+  you launch as. Every GitHub call goes through it, so keep it updated. A `--local`
+  session does not use it.
+- For GitHub sessions, the `gh` token must **not** have the `workflow` scope (`gh auth status` lists
   scopes). With it, the sandbox's deploy key can push `.github/workflows/`
   changes and an `on: push` workflow runs at once with the repo's Actions
   secrets, before any review. The launcher warns at startup if the token has it.[^cli]
 
 # Launching
+
+The backend is chosen **per launch**, not by the repository: `./run.sh <repository>`
+starts a GitHub session (deploy key, PRs) and `./run.sh --local <path>` starts a local
+one (no credential, branches imported for review). The same repository can be launched
+either way, and the session is told which one it got. Pages in these docs say when they
+apply to only one.
 
 ```
 ./run.sh <repository> [flags]    # same as: python3 claude_sandbox/__main__.py ...

@@ -8,7 +8,7 @@ description: "How to run, configure and secure claude_sandbox, the launcher that
 
 For the person at the host terminal who launches sandboxes. The introduction is
 the repository's [README](../../README.md). What the session inside the
-container is told is in the [session bundle](../session/github/index.md); how the
+container is told is in the session bundle ([github](../session/github/index.md) or [local](../session/local/index.md) variant, per launch); how the
 launcher is built is in the [development bundle](../dev/index.md).
 
 * [Guides](guides/index.md) - Launching, local repos, concurrent sessions and PRs, images, host access.

@@ -71,7 +71,7 @@ def test_the_prompt_only_points_at_pages_that_exist(kind, repo_root):
     md = render.render_claude_md(
         t, render.parse_probe("sudo=yes\ntools=git\nbranch=sbx/q/work"), "q", "/w",
         "o/r", False, "- d", session="q", kind=kind, access=["- A"])
-    assert f"**{kind}** backend" in md and session_docs.DOCS_PATH in md
+    assert f"the **{kind}** backend" in md and session_docs.DOCS_PATH in md
     pages = set(re.findall(r"`([a-z-]+\.md)`", md))
     assert pages and pages <= set(assembled(kind)), pages - set(assembled(kind))
 

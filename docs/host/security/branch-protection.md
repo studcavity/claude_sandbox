@@ -13,6 +13,8 @@ sources:
     title: The default ruleset
 ---
 
+*GitHub sessions only:* a `--local` session has no remote to protect.
+
 A deploy key can push to *any* branch, so the `sbx/<id>/` prefix is advice, not a
 permission. The enforcement is GitHub-side, in rulesets.[^protect]
 

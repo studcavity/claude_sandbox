@@ -13,6 +13,8 @@ sources:
     title: The todo/ file format
 ---
 
+*GitHub sessions only.* In a `--local` session a `todo/` file is simply read by the user when reviewing the branch; nothing files it.
+
 A session cannot call the GitHub API, so it asks for an issue by adding
 `todo/<name>.md` to a commit. `<name>` is lowercase letters, digits and `-`; the
 first heading is the issue title, the file is the body, and the path is its

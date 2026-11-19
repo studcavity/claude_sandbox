@@ -6,7 +6,7 @@ Three OKF bundles, one per reader. Start at the repository
 | Bundle | For | Start |
 | --- | --- | --- |
 | [`host/`](host/index.md) | the operator who launches sandboxes | guides, deps-file reference, security model |
-| [`session/`](session/github/index.md) | the Claude session inside a sandbox | copied into every container at launch, one variant per backend |
+| [`session/`](session/) ([github](session/github/index.md), [local](session/local/index.md)) | the Claude session inside a sandbox | copied into every container at launch, one variant per the session's backend, chosen at each launch |
 | [`dev/`](dev/index.md) | people changing the launcher | architecture, decisions, plans |
 
 `session/` is source for what the launcher embeds, not a bundle to read in
