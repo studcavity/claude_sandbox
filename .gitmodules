@@ -1,4 +1,3 @@
 [submodule "claude_sandbox/data/skills/open-knowledge-format"]
 	path = claude_sandbox/data/skills/open-knowledge-format
 	url = https://github.com/open-knowledge-format/open-knowledge-format.git
-	branch = main
