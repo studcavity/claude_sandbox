@@ -28,16 +28,41 @@ def test_parse_normalises_and_defaults():
     {"description": "```yaml"}, {"description": "$HOME"},
     {"description": "# Heading"}, {"description": ""},
     {"tools": "pyocd"}, {"tools": ["a b"]}, {"tools": ["a"] * 9},
-    {"extra": "x"},
 ])
 def test_parse_rejects(over):
     with pytest.raises(deps.DepsError):
         sh.parse(_doc(**over))
 
 
-def test_parse_rejects_unknown_top_level_key_and_dupes_and_too_many():
+def test_unknown_keys_warn_and_known_ones_still_validate():
+    cfg = sh.parse("apt: [git]\n" + "usb:\n  - {name: a, vendor_id: '2e8a', "
+                   "product_id: '0001', description: d, extra: x}\n")
+    assert cfg["usb"][0]["name"] == "a" and "extra" not in cfg["usb"][0]
+    assert any("apt" in w for w in cfg["warnings"]) and any(
+        "extra" in w for w in cfg["warnings"])
     with pytest.raises(deps.DepsError):
-        sh.parse("apt: [git]")
+        sh.parse("apt: [git]\nusb: [{name: a, vendor_id: zz}]")
+
+
+SHA = "a" * 64
+
+
+def test_host_files_section():
+    cfg = sh.parse("files:\n  - {name: c, dest: '~/.config/t/c', "
+                   f"host_path: '~/dotfiles/c', sha256: {SHA}, "
+                   "mode: '0600', on_error: skip}\n")
+    (f,) = cfg["files"]
+    assert (f["host_path"], f["url"], f["mode"], f["on_error"]) == (
+        "~/dotfiles/c", None, "0600", "skip")
+    assert sh.parse("")["files"] == []
+    for bad in (f"{{name: c, dest: '~/c', url: 'https://x/c', sha256: {SHA}}}",  # wrong source
+                f"{{name: c, dest: '~/.ssh/k', host_path: /h/k, sha256: {SHA}}}",
+                "{name: c, dest: '~/c', host_path: /h/k}"):                  # no pin
+        with pytest.raises(deps.DepsError):
+            sh.parse(f"files: [{bad}]")
+
+
+def test_parse_rejects_dupes_and_too_many():
     entry = "  - {name: %s, vendor_id: '2e8a', product_id: '%s', description: d}\n"
     with pytest.raises(deps.DepsError, match="names"):
         sh.parse("usb:\n" + entry % ("a", "0001") + entry % ("a", "0002"))
@@ -50,8 +75,8 @@ def test_parse_rejects_unknown_top_level_key_and_dupes_and_too_many():
 
 def test_deps_file_rejects_usb_and_host_file_never_touches_cache_key():
     """usb: lives only in the host file, so it cannot reach the image cache."""
-    with pytest.raises(deps.DepsError):
-        deps.parse("usb: []")
+    parsed = deps.parse("usb: [{name: a}]")   # unknown here: warned, ignored
+    assert "usb" not in parsed and any("usb" in w for w in parsed["warnings"])
     base = deps.parse("apt: [git]")
     import inspect
     from claude_sandbox.container import images as images
@@ -129,7 +154,6 @@ def test_mounts_parse_with_defaults_and_validation():
     "{source: /a, path: relative, description: d}",
     "{source: /a, description: 'has `tick`'}",          # markup in text
     "{source: /a}",                                      # no description
-    "{source: /a, description: d, extra: 1}",
 ])
 def test_bad_mount_entries_are_rejected(entry):
     with pytest.raises(deps.DepsError):

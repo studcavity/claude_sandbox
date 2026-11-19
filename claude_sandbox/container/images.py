@@ -8,6 +8,7 @@ import os
 import uuid
 
 from claude_sandbox.container import deps as container_deps
+from claude_sandbox.container import files
 from claude_sandbox.container.incus import Container
 from claude_sandbox.util import log, run
 
@@ -239,7 +240,7 @@ def _ensure_base_image(cli, source, alias, max_age_days, rebuild,
 
 
 def apply_deps(box, deps):
-    """Install parsed, validated deps into a container (apt, binaries, scripts).
+    """Install parsed, validated deps into a container (apt, binaries, files, scripts).
 
     Everything is downloaded and checksum-verified here on the host; the
     container only receives bytes. Must run before any credential is in the
@@ -259,6 +260,12 @@ def apply_deps(box, deps):
         if b["archive_path"]:
             data = container_deps.extract_member(data, b["archive_path"])
         box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
+
+    for f in deps.get("files") or []:
+        # Pinned files (downloads and approved host files that must not fail
+        # open): written as the session user, after the installs above.
+        log(f"placing file {f['dest']}")
+        box.put_user_file(f["dest"][2:], files.load(f), f["mode"])
 
     if deps["scripts"]:
         scratch = "/var/tmp/sandbox-deps"

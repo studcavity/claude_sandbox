@@ -19,6 +19,7 @@ def entry(**kw):
 
 
 def host_entry(**kw):
+    kw = {"name": "host", "dest": "~/host", **kw}
     return entry(url=None, host_path="/host/c", **kw)
 
 
@@ -116,40 +117,94 @@ class _Tty:
         return True
 
 
-def _box(make_args, entries, **kw):
+def _box(monkeypatch, make_args, downloads=(), host_files=(), **kw):
+    from claude_sandbox.container import deps as cd
     box = sandbox.Sandbox(make_args(repo="o/r", **kw))
-    box.deps = {"files": entries}
+    box.deps = dict(cd.parse(""), downloads=list(downloads))
+    monkeypatch.setattr(box, "host_config", lambda: {"files": list(host_files)})
     return box
 
 
 def test_resolve_files_flags(monkeypatch, make_args):
     h = host_entry()
     monkeypatch.setattr(sandbox, "ask_file", lambda e: pytest.fail("asked"))
-    box = _box(make_args, [entry(), h])
-    assert box.resolve_files() == [entry()]            # no tty: host_path skipped
+    box = _box(monkeypatch, make_args, [entry()], [h])
+    assert box.resolve_files() == [entry()]            # no tty: host file skipped
     assert box.declined_files == [h]
-    assert _box(make_args, [entry(), h], allow_files=True).resolve_files() == [entry(), h]
-    box = _box(make_args, [entry(), h], no_files=True, allow_files=True)
-    assert box.resolve_files() == [] and "--no-files" in box.deps_note
+    box = _box(monkeypatch, make_args, [entry()], [h], allow_files=True)
+    assert box.resolve_files() == [entry(), h]
+    box = _box(monkeypatch, make_args, [entry()], [h], no_files=True,
+               allow_files=True)
+    assert box.resolve_files() == [entry()] and "--no-files" in box.deps_note
 
 
 def test_resolve_files_prompts_on_a_tty(monkeypatch, make_args):
     monkeypatch.setattr(sandbox.sys, "stdin", _Tty())
     asked = []
-    monkeypatch.setattr(sandbox, "ask_file", lambda e: asked.append(e["name"]) or False)
-    box = _box(make_args, [entry(), host_entry(name="h", dest="~/h")])
+    monkeypatch.setattr(sandbox, "ask_file",
+                        lambda e: asked.append(e["name"]) or False)
+    box = _box(monkeypatch, make_args, [entry()],
+               [host_entry(name="h", dest="~/h")])
     box.resolve_files()
     assert asked == ["h"] and [e["name"] for e in box.declined_files] == ["h"]
+
+
+def test_fail_entries_are_baked_with_the_deps_skip_entries_are_not(
+        monkeypatch, make_args):
+    from claude_sandbox.container import deps as cd
+    box = _box(monkeypatch, make_args,
+               [entry(), entry(name="s", dest="~/s", on_error="skip")],
+               [host_entry(name="h", dest="~/h")], allow_files=True)
+    before = cd.cache_key(box.deps)
+    box.resolve_files()
+    assert [e["name"] for e in box.deps["files"]] == ["cfg", "h"]
+    assert [e["name"] for e in box.launch_files] == ["s"]
+    assert cd.cache_key(box.deps) not in (None, before)
+    # an unapproved host file is never in the key, so can't be in the image
+    box2 = _box(monkeypatch, make_args, [entry()], [host_entry(name="h", dest="~/h")])
+    box2.resolve_files()
+    assert [e["name"] for e in box2.deps["files"]] == ["cfg"]
+    assert cd.cache_key(box2.deps) != cd.cache_key(box.deps)
+
+
+def test_host_files_alone_still_get_a_deps_image(monkeypatch, make_args):
+    box = _box(monkeypatch, make_args, [], [host_entry()], allow_files=True)
+    box.deps = None   # no deps file at all
+    box.resolve_files()
+    assert box.deps and [e["name"] for e in box.deps["files"]] == ["host"]
+
+
+def test_overlap_with_the_clone_fails_or_skips_per_on_error(monkeypatch, make_args):
+    box = _box(monkeypatch, make_args, [entry(dest="~/r")])
+    monkeypatch.setattr(box.backend, "workdir", lambda: "/home/ubuntu/r")
+    with pytest.raises(DepsError, match="overlaps"):
+        box.resolve_files()
+    box = _box(monkeypatch, make_args, [entry(dest="~/r", on_error="skip")])
+    monkeypatch.setattr(box.backend, "workdir", lambda: "/home/ubuntu/r")
+    assert box.resolve_files() == []
+    assert "overlaps" in box.declined_files[0]["reason"]
 
 
 def test_place_files_reports_to_the_session(monkeypatch, make_args, fake_box):
     from claude_sandbox.container import deps as cd
     monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
-    box = _box(make_args, [entry(), host_entry(name="h", dest="~/h")])
+    box = _box(monkeypatch, make_args,
+               [entry(on_error="skip")], [host_entry(name="h", dest="~/h")])
     box.box = fake_box
-    box.deps_note = ""
     box.resolve_files()
     box.place_files("/home/ubuntu/repo")
     assert [c[1] for c in fake_box.calls] == [".config/tool/cfg"]
     assert "`~/.config/tool/cfg`: placed" in box.deps_note
     assert "`~/h`: **not placed**" in box.deps_note and "--allow-files" in box.deps_note
+
+
+def test_apply_deps_installs_baked_files(monkeypatch, fake_box):
+    from claude_sandbox.container import deps as cd
+    from claude_sandbox.container.images import apply_deps
+    monkeypatch.setattr(cd, "fetch", lambda url, cap, sha: DATA)
+    monkeypatch.setattr(f, "read_host_file", lambda p: DATA)
+    apply_deps(fake_box, dict(cd.parse(""), files=[
+        entry(mode="0600"), host_entry(name="h", dest="~/h")]))
+    assert fake_box.calls == [
+        ("put_user_file", ".config/tool/cfg", DATA, "0600"),
+        ("put_user_file", "h", DATA, "0644")]

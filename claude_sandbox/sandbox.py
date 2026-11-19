@@ -91,7 +91,8 @@ def with_nesting(deps):
     cached deps image (its key covers apt) rather than fetched per launch."""
     deps = dict(deps) if deps else {
         "image": None, "apt": [], "scripts": [], "binaries": [],
-        "setup": [], "check": [], "last_generated": None, "platform": None}
+        "downloads": [], "files": [], "setup": [], "check": [],
+        "last_generated": None, "platform": None, "warnings": []}
     deps["apt"] = list(deps["apt"]) + [
         p for p in NESTING_APT if p not in deps["apt"]]
     return deps
@@ -126,7 +127,8 @@ class Sandbox:
         self.usb_devices = []
         self.bind_mounts = []       # granted: --mount plus approved repo requests
         self.declined_mounts = []
-        self.granted_files, self.declined_files = [], []
+        self.launch_files, self.declined_files = [], []
+        self._host_cfg = None
         self.volumes = volumes.Volumes(self.cli, self.box, [], None)
         self.deps_note = ("No repo was cloned, so there is no "
                           f"`{container_deps.DEPS_FILE}`.")
@@ -215,10 +217,16 @@ class Sandbox:
             self.deps_note = f"This repo has no `{f}`, so nothing extra was installed."
             return None
         deps = container_deps.parse(raw)
+        for w in deps["warnings"]:
+            log(f"warning: {f}: {w}")
         lines = container_deps.summary(deps)
         self.deps_note = (f"Installed from `{f}`:\n"
                           + "\n".join(f"  - {l}" for l in lines)
                           if lines else f"`{f}` is present but empty.")
+        if deps["warnings"]:
+            self.deps_note += ("\nIgnored (unknown to this launcher, so "
+                               "not applied):\n" + "\n".join(
+                                   f"  - {w}" for w in deps["warnings"]))
         for l in lines:
             log(f"deps: {l}")
         self.deps = deps if lines else None
@@ -247,10 +255,7 @@ class Sandbox:
         self.usb_devices = []
         if a.no_usb:
             return []
-        requests = []
-        raw = self.backend.read_file(host.HOST_FILE)
-        if raw is not None:
-            requests = host.parse(raw)["usb"]
+        requests = self.host_config()["usb"]
         try:
             allow = host.load_allowlist(a.usb_allow)
         except ValueError as e:
@@ -275,10 +280,7 @@ class Sandbox:
         self.bind_mounts, self.declined_mounts = [], []
         if a.no_mounts:
             return []
-        requests = []
-        raw = self.backend.read_file(host.HOST_FILE)
-        if raw is not None:
-            requests = host.parse(raw)["mounts"]
+        requests = self.host_config()["mounts"]
         granted, declined, skipped = mounts.resolve_requests(
             requests, a.mount, a.allow_mounts,
             ask_mount if sys.stdin.isatty() else None)
@@ -287,42 +289,84 @@ class Sandbox:
         self.bind_mounts, self.declined_mounts = granted, declined
         return granted
 
+    def host_config(self):
+        """The parsed claude_sandbox_host.yaml (empty when absent), read and
+        validated once per launch; ignored unknown keys are logged here."""
+        if self._host_cfg is None:
+            raw = self.backend.read_file(host.HOST_FILE)
+            self._host_cfg = host.parse(raw if raw is not None else "")
+            for w in self._host_cfg["warnings"]:
+                log(f"warning: {host.HOST_FILE}: {w}")
+        return self._host_cfg
+
     def resolve_files(self):
-        """Decide which `files:` entries to place (host only, before any
-        build, so the prompt comes first). URL entries are pinned by sha256;
-        host_path entries read the host's disk, so they need --allow-files or
-        a yes at the prompt. --no-files ignores them all."""
+        """Decide which pinned files this launch places (host only, before any
+        build, so the prompt comes first).
+
+        Candidates: the deps file's `downloads:` (sha256-pinned, no prompt, as
+        for `binaries`) and the host file's `files:` (read from your disk, so
+        they need --allow-files or a yes at the prompt; --no-files drops them).
+        Entries that must not fail open (`on_error: fail`) join deps["files"]:
+        they are installed with the deps and baked into the cached image, and
+        their dest/mode/sha256 are part of its cache key. `on_error: skip`
+        entries are placed after the clone on every launch instead, so a
+        transient failure is never frozen into an image.
+        """
         a = self.args
-        self.granted_files, self.declined_files = [], []
-        entries = (self.deps or {}).get("files") or []
+        self.launch_files, self.declined_files = [], []
+        entries = list((self.deps or {}).get("downloads") or [])
+        if not getattr(a, "no_files", False):
+            entries += self.host_config()["files"]
+        elif self.host_config()["files"]:
+            self.deps_note += "\n`--no-files`: the host file's `files:` were not placed."
         if not entries:
             return []
-        if getattr(a, "no_files", False):
-            self.deps_note += "\n`--no-files`: the `files:` entries were not placed."
-            return []
-        self.granted_files, self.declined_files = deps_files.resolve(
+        names = [e["name"] for e in entries]
+        if len(set(names)) != len(names):
+            raise RuntimeError("a `downloads:` name is reused by a host `files:` entry")
+        granted, self.declined_files = deps_files.resolve(
             entries, getattr(a, "allow_files", False),
             ask_file if sys.stdin.isatty() else None)
         for e in self.declined_files:
             log(f"file {e['name']} (host path {e['host_path']!r}) not "
                 "approved: skipped")
-        return self.granted_files
+        # (no repo: the work directory is the home itself, nothing to protect)
+        workdir = self.backend.workdir() if self.backend.has_repo else None
+        ok = []
+        for e in granted:
+            try:
+                deps_files.check_dest(e, workdir)
+            except container_deps.DepsError as err:
+                if e["on_error"] != "skip":
+                    raise
+                log(f"warning: file {e['name']} skipped ({err})")
+                self.declined_files.append(dict(e, reason=str(err)))
+                continue
+            ok.append(e)
+        bake = [e for e in ok if e["on_error"] == "fail"]
+        self.launch_files = [e for e in ok if e["on_error"] == "skip"]
+        if bake:
+            base = self.deps or container_deps.parse("")
+            self.deps = dict(base, files=bake)
+            self.deps_note += ("\nFiles installed with the deps (sha256-verified):\n"
+                               + "\n".join(f"  - `{e['dest']}`" for e in bake))
+        return ok
 
     def place_files(self, workdir):
-        """Put the approved `files:` entries under the session user's home.
-        Called after the clone and before Claude credentials are pushed, so
-        nothing placed here can read them. A failing entry aborts the launch
-        unless it says `on_error: skip`."""
-        granted = getattr(self, "granted_files", [])
-        declined = getattr(self, "declined_files", [])
-        if not granted and not declined:
-            return
-        notes = deps_files.place(self.box, granted, workdir, log)
-        notes += [f"`{e['dest']}`: **not placed**: it reads `{e['host_path']}` "
-                  "on the host and the host user did not approve that "
-                  "(`--allow-files`)" for e in declined]
-        self.deps_note += "\nFiles this launch:\n" + "\n".join(
-            f"  - {n}" for n in notes)
+        """Place the `on_error: skip` files under the session user's home
+        (the others went in with the deps). Called after the clone and before
+        Claude credentials are pushed, so nothing placed here can read them. A
+        failure is a note for the session, never an abort."""
+        notes = deps_files.place(self.box, self.launch_files, workdir, log) \
+            if self.launch_files else []
+        for e in self.declined_files:
+            why = e.get("reason") or (
+                f"it reads `{e['host_path']}` on the host and the host user "
+                "did not approve that (`--allow-files`)")
+            notes.append(f"`{e['dest']}`: **not placed**: {why}")
+        if notes:
+            self.deps_note += "\nFiles this launch:\n" + "\n".join(
+                f"  - {n}" for n in notes)
 
     def attach_usb(self):
         """Attach approved devices. Runs after install_deps so repo-supplied

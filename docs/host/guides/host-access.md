@@ -42,6 +42,25 @@ that flag they are not attached. `--mount` is your own grant and never
 prompted. `--no-mounts` ignores both. A request whose source is missing or whose
 path is unsafe is logged and skipped.
 
+# Host files
+
+The same file can ask to copy pinned files from your machine into the sandbox's home:
+
+```yaml
+files:
+  - name: tool-config
+    host_path: ~/dotfiles/tool.toml   # on YOUR machine
+    dest: ~/.config/tool/config.toml  # under the sandbox user's home
+    sha256: <64 hex>                  # required; the file must match exactly
+    mode: "0600"                      # optional
+    on_error: skip                    # optional: fail (default) or skip
+```
+
+Each is shown with a `[y/N]` prompt unless you pass `--allow-files`; with neither a
+terminal nor the flag it is skipped, and `--no-files` ignores them. Approved files are
+part of the cached deps image's key. Details:
+[the deps file reference](../reference/repo-deps-file.md).
+
 Mounts are attached after the deps install and before any credential exists, and
 the session's CLAUDE.md lists each one plus any request you declined. Refused:
 `/`, system directories, `/tmp`, the session's `~/.ssh`, `~/.claude`,

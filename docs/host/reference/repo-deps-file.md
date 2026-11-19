@@ -15,7 +15,7 @@ sources:
 
 A repo puts `claude_sandbox_deps.yaml` at the root of its default branch to have
 tooling installed in the container before the session starts. The host fetches
-it through the GitHub API, validates it against a strict schema, downloads
+it through the GitHub API, validates it against its schema, downloads
 everything, and bakes the result into a cached image.[^deps] The session is
 told how to edit it by `docs/session/common/deps-file.md`, shipped into its
 container.
@@ -23,7 +23,7 @@ container.
 The format is the same page the session reads, so it lives in one place:
 [Editing the deps file](../../session/common/deps-file.md).
 
-Install order is apt, binaries, scripts. `--no-deps` skips all of it. Two
+Install order is apt, binaries, downloads, scripts. `--no-deps` skips all of it. Two
 optional metadata keys, `last_generated` (quoted ISO 8601 UTC timestamp) and
 `platform` (for example `lsb_release -a` plus `uname -m`), record where the
 toolchain was resolved so it can be reproduced; they are validated but never
@@ -67,24 +67,35 @@ launch; it is logged and listed in the session's CLAUDE.md so the session can
 tell you. `setup:` is not part of the cache key, so scripts should be idempotent
 and fast when already done.
 
-# Placed files (`files:`)
+# Pinned files (`downloads:` and host `files:`)
 
-Pinned files copied under the session user's home at the start of every launch
-(after the clone, before Claude's credentials and `setup:`). Sources are `url`
-(fetched and checked on the host, like `binaries`) or `host_path` (read from
-your disk); both need a `sha256`, which must match before the container sees a
-byte. A `host_path` entry is a request: it is placed only with `--allow-files`
-or a yes at the prompt (no terminal and no flag means skipped), and `--no-files`
-ignores every entry. Destinations are `~/...` only and exclude shell startup,
-ssh/gpg/git/Claude config and autostart locations, so a file cannot trivially
-become a persistence hook. `on_error: skip` lets a failed entry (download, missing
-file, hash mismatch, write error) pass with a note in the session's CLAUDE.md
-instead of aborting the launch. Files are written as the session user, never
-cached in an image. Field details: [Editing the deps file](../../session/common/deps-file.md).
+Pinned files copied under the session user's home. `downloads:` (in this file) fetches
+an https `url`; `files:` in `claude_sandbox_host.yaml` reads a `host_path` from your
+disk. Both need a `sha256`, checked on the host before the container sees a byte, a
+`~/...` destination (shell startup, ssh/gpg/git/Claude config and autostart locations are
+refused), an optional quoted octal `mode` and `on_error: fail|skip`.
+
+They are part of the image cache: `fail` entries (the default) are installed with the
+deps and baked in, keyed by `dest`/`mode`/`sha256` (not by URL or host path), so a new
+pin builds a new image and an unapproved host file can never be in one a launch reuses.
+`skip` entries are placed after the clone on every launch so a failure that was skipped is
+never cached. A `downloads:` entry needs no approval (like `binaries`; `--no-deps` skips
+it); a host `files:` entry is a request, placed only with `--allow-files` or a yes at the
+prompt (no terminal and no flag means skipped), and `--no-files` ignores them. Files are
+written as the session user. Field details:
+[Editing the deps file](../../session/common/deps-file.md).
+
+# Unknown keys
+
+Unknown keys, in this file and the host file, are ignored with a warning (logged at
+launch and listed in the session's CLAUDE.md) instead of aborting, so a repo can adopt a
+newer format without breaking older launchers. Known keys are validated as strictly as
+before and missing required keys still abort. A misspelt optional key is therefore ignored
+and its default applies (for example `on_eror` leaves `on_error: fail`).
 
 # Hardening and remaining trust
 
-- The strict schema rejects unknown keys, odd names, `-`-prefixed apt specs and
+- The schema rejects odd names, `-`-prefixed apt specs and
   loader/shell env vars such as `LD_PRELOAD` and `PATH`; any error aborts the
   launch.
 - The host downloads everything (https only, including redirects; no credentials

@@ -1,10 +1,11 @@
-"""container/files.py - place the deps file's `files:` entries in the container.
+"""container/files.py - approve, verify and place pinned files under ~.
 
-Runs on the HOST. The schema lives in deps.py (`_files`); this is what happens
-to a parsed entry. Why it is not an install step in images.py: the files land
-under the session user's home, may come from the host's disk, and need the
-host user's say-so, so they are placed on every launch (after the clone,
-before Claude's credentials arrive) and never baked into a cached image.
+Runs on the HOST. Entries come from the deps file's `downloads:` (url) and the
+host file's `files:` (host_path); the schema is deps.file_entry. Entries with
+`on_error: fail` are installed by images.apply_deps with the other deps (and
+so baked into the cached image, keyed by dest/mode/sha256); `on_error: skip`
+ones are placed here after the clone on every launch, since a failure that
+was skipped must not be frozen into an image.
 
   * every entry is pinned: the sha256 is checked on the host against the exact
     bytes, whichever source they came from, before the container sees them
@@ -85,13 +86,13 @@ def read_host_file(path, max_bytes=container_deps.MAX_FILE):
     return data
 
 
-def load(entry, fetch=None, read=read_host_file):
+def load(entry, fetch=None, read=None):
     """The verified bytes of one entry; DepsError if it can't be had or its
     sha256 doesn't match."""
     if entry["url"] is not None:
         fetch = fetch or container_deps.fetch  # looked up now, so tests can swap it
         return fetch(entry["url"], container_deps.MAX_FILE, entry["sha256"])
-    data = read(entry["host_path"])
+    data = (read or read_host_file)(entry["host_path"])
     got = hashlib.sha256(data).hexdigest()
     if not hmac.compare_digest(got, entry["sha256"]):
         raise DepsError(f"{entry['host_path']}: sha256 mismatch "
@@ -99,7 +100,7 @@ def load(entry, fetch=None, read=read_host_file):
     return data
 
 
-def place(box, entries, workdir, log, fetch=None, read=read_host_file):
+def place(box, entries, workdir, log, fetch=None, read=None):
     """Place granted entries; return one human line per entry.
 
     A failure raises DepsError for `on_error: fail` (the launch aborts) and is
