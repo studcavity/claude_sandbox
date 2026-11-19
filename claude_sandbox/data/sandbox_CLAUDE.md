@@ -194,6 +194,19 @@ verify or do (and why), and follow-ups someone must action later.
   decides.
 <!-- end -->
 
+## Documentation lives in the repo
+Keep documentation in the open project repo as decomposed Open Knowledge
+Format v0.2 files: small, single-topic files, not one big document.
+- Default to `docs/`, with nested subdirectories and an index at every
+  level of specificity (`docs/index.md`, `docs/<area>/index.md`, ...).
+- At every milestone (typically when you hand control back after one or more
+  commits), find the docs relevant to the work. Ask the user whether they are
+  out of date or need more detail about what changed. If the workstream has
+  no docs, create them.
+- Keep them succinct, pragmatic and human-readable. Beyond technical
+  specifics, record what code can't say: motivation, context, trade-offs,
+  reference sources.
+
 ## Testing and quality gates
 Work comes with automated tests that **live in the repo**; a one-off check in
 this session is lost when the sandbox ends.
