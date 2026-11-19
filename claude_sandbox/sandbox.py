@@ -27,6 +27,7 @@ from claude_sandbox import render
 from claude_sandbox import resume
 from claude_sandbox import session_tool
 from claude_sandbox import shell
+from claude_sandbox import session_docs
 from claude_sandbox import skills
 
 
@@ -405,6 +406,15 @@ class Sandbox:
                            input=session_tool.session_tool_archive(files))
         log("skills: " + ", ".join(sorted(skills.find_skills())))
 
+    def install_session_docs(self):
+        """Copy the session's OKF docs (common/ plus this backend's kind) into
+        ~/.claude/docs/sandbox. Directory made as the session user, files
+        arrive as root in one tar stream (see session_docs)."""
+        files = session_docs.session_doc_files(self.backend.kind)
+        self.box.user("mkdir -p " + shlex.quote(session_docs.CONTAINER_DOCS))
+        self.box.root_argv(["tar", "-xzf", "-", "-C", "/"],
+                           input=session_tool.session_tool_archive(files))
+
     def write_claude_md(self, workdir):
         """Render the --claude-md template into ~/.claude/ in the container."""
         probe = self.box.user(
@@ -434,11 +444,8 @@ class Sandbox:
                               disk_note=self.disk_note(),
                               ci_note=(render.MATRIX_CI_NOTE
                                        if self.backend.matrix_ci else ""))
-        self.box.user("mkdir -p ~/.claude/ref && cat > ~/.claude/CLAUDE.md",
+        self.box.user("mkdir -p ~/.claude && cat > ~/.claude/CLAUDE.md",
                       input=md)
-        with open(os.path.join(paths.DATA, render.DEPS_REF_TEMPLATE)) as f:
-            ref = render.render_deps_ref(f.read())
-        self.box.user(f"cat > {render.DEPS_REF_PATH}", input=ref)
 
     def seed_claude(self, workdir, secrets):
         """Pre-answer Claude Code's first-run dialogs (see

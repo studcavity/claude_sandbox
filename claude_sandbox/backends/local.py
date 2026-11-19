@@ -1,7 +1,7 @@
 """backends/local.py - the local backend: a git repo on the host.
 
 `./run.sh --local PATH` works on a git repository on this machine, with no
-GitHub (or any other remote) involved. See docs/decisions/08-local-backend.md.
+GitHub (or any other remote) involved. See docs/dev/decisions/08-local-backend.md.
 
 The trust boundary is a **git bundle** in each direction:
 - in: the host bundles ONE branch of the primary repo (the user's own, so

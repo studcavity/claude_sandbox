@@ -6,8 +6,8 @@ change under `.github/workflows/`. If it can, a session can push a branch with a
 new `on: push` workflow, which runs immediately, before any PR, hold or review,
 with whatever `permissions:` it declares and any repo-level Actions secret it
 names. That would break the rule "nothing runs in a trusted execution context
-before a human has reviewed it" (see `docs/decisions/07-untrusted-ci-context.md` and
-docs/security/actions-hardening.md).
+before a human has reviewed it" (see `docs/dev/decisions/07-untrusted-ci-context.md` and
+docs/host/security/actions-hardening.md).
 
 Nothing in this repo has ever verified the assumption. Removing the `workflow`
 scope from the host's `gh` token only constrains the *host's* OAuth token. A
@@ -39,7 +39,7 @@ On a host, with a **scratch repo that has no secrets** (Actions enabled):
 4. Delete the scratch repo (or at least the key and the branch).
 
 ## Done when
-- `docs/security/actions-hardening.md` states the result (replace "Open
+- `docs/host/security/actions-hardening.md` states the result (replace "Open
   question, not verified") and `sandbox_CLAUDE.md`'s "normally" wording is
   corrected if the result differs.
 - If the push was ACCEPTED: treat it as fix-immediately, not hardening.
@@ -52,6 +52,6 @@ On a host, with a **scratch repo that has no secrets** (Actions enabled):
 - **Keep secrets out of the repo level**: environment secrets with a
   protected-branch deployment policy are unreachable from an `sbx/` branch
   whatever its workflow declares.
-- A **staging repo** (see `docs/plans/simplification.md` item 6): sessions never
+- A **staging repo** (see `docs/dev/plans/simplification.md` item 6): sessions never
   push to the real repo. I lean towards the first two as the cheaper ones; the
   staging repo is a design project of its own.

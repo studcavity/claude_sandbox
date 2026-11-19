@@ -1,7 +1,8 @@
 """Extra host directories bind-mounted into the sandbox (`--mount`).
 
-Only the command line grants a mount: unlike USB there is no repo-supplied
-request file, because a repo must not be able to ask for the host's files.
+Only the host user grants a mount: `--mount`, or approval (a prompt or
+`--allow-mounts`) of a request the repo makes in claude_sandbox_host.yaml. A repo
+can ask but never attach.
 Read-only is the default; writing to the host needs an explicit `:rw`.
 
 Pure parsing and text here; `Container.add_mount` runs the incus command. Not
