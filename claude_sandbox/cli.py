@@ -181,6 +181,7 @@ def _launch(args):
             with timing.stage("usb requests + deps file"):
                 box.resolve_usb()  # prompt now, not after a long image build
                 box.resolve_mounts()
+                box.resolve_nesting()  # before load_deps/launch read args.nesting
                 box.load_deps()  # before the image: it may pick the base OS
                 box.resolve_files()  # prompt now, not after a long image build
             with timing.stage("preflight (protection, stale keys)"):

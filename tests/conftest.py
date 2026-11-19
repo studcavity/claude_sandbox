@@ -99,7 +99,7 @@ def make_args(tmp_path):
                     git_email=None, shell=False, tmux=False, no_cache=False,
                     rebuild=False, nesting=False, max_age=7, model="default", no_deps=False, no_final_check=False,
                     usb=[], no_usb=False, mount=[], allow_mounts=False, no_mounts=False,
-                    allow_files=False, no_files=False,
+                    allow_files=False, no_files=False, allow_nesting=False,
                     usb_allow=str(tmp_path / "usb_allow"),
                     claude_md=os.path.join(REPO_ROOT, "claude_sandbox", "data", "sandbox_CLAUDE.md"),
                     setup_token=False, disk_size=None, volume_size=None,

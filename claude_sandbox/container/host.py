@@ -16,7 +16,8 @@ Everything in the file is a REQUEST. The repo controls the file, so it can
 never grant itself hardware or host files: a request is attached only if the
 host user approves it (--usb flag, interactive prompt, or the host allowlist
 file for USB; --mount, --allow-mounts or an interactive prompt for mounts;
---allow-files or a prompt for `files:`, host files copied into the sandbox).
+--allow-files or a prompt for `files:`, host files copied into the sandbox;
+--nesting, --allow-nesting or a prompt for `nesting:`).
 Unknown keys are warnings, not errors (see deps._check_keys), so a repo can
 use a newer host file with an older launcher.
 """
@@ -56,10 +57,25 @@ def parse_usb_spec(spec):
     return m.group(1).lower(), m.group(2).lower()
 
 
+def _nesting(v, warn):
+    """`nesting: true`, `nesting: false` or `nesting: {description: ...}` ->
+    None (no request) or {"description": str} ('' when not given)."""
+    if v is None or v is False:
+        return None
+    if v is True:
+        return {"description": ""}
+    _check_keys(v, "nesting", (), ("description",), warn)
+    desc = v.get("description", "")
+    if desc != "":
+        desc = _str(v, "description", "nesting", DESCRIPTION_RE)
+    return {"description": desc}
+
+
 def parse(raw):
     """bytes/str -> {"usb": [{name, vendor_id, product_id, description, tools}],
     "mounts": [{source, path|None, mode, description}],
-    "files": [pinned host files, as deps.file_entry], "warnings": [...]}"""
+    "files": [pinned host files, as deps.file_entry],
+    "nesting": None | {"description"}, "warnings": [...]}"""
     if isinstance(raw, bytes):
         if len(raw) > MAX_HOST_FILE:
             raise DepsError(f"{HOST_FILE} is larger than {MAX_HOST_FILE} bytes")
@@ -73,7 +89,7 @@ def parse(raw):
         raise DepsError(f"{HOST_FILE}: invalid YAML: {e}") from None
     doc = doc or {}
     warn: list[str] = []
-    _check_keys(doc, HOST_FILE, (), ("usb", "mounts", "files"), warn)
+    _check_keys(doc, HOST_FILE, (), ("usb", "mounts", "files", "nesting"), warn)
 
     usb = []
     for i, d in enumerate(_section(doc, "usb")):
@@ -118,7 +134,8 @@ def parse(raw):
     files = [file_entry(f, f"files[{i}]", warn, "host_path")
              for i, f in enumerate(_section(doc, "files"))]
     check_file_set(files, "files")
-    return {"usb": usb, "mounts": mounts, "files": files, "warnings": warn}
+    return {"usb": usb, "mounts": mounts, "files": files,
+            "nesting": _nesting(doc.get("nesting"), warn), "warnings": warn}
 
 
 # --------------------------------------------------------------------------- #

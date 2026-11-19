@@ -120,6 +120,7 @@ open the page when its situation comes up.
   context: `follow-up-requests.md`.
 - Tests and quality gates: `testing.md`; CI and workflows (or their absence): `ci.md`.
 - A USB device or host directory: `host-access.md`.
+- Running containers inside this sandbox (nested Incus): `nesting.md`.
 - The task needs something this sandbox lacks: `missing-capabilities.md`; don't fake it.
 - At every milestone (when you hand control back after commits), check the docs
   for what changed: `documentation.md`.

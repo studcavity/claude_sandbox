@@ -164,3 +164,25 @@ def test_too_many_mounts_rejected():
     many = "".join(f"  - {{source: /a{i}, description: d}}\n" for i in range(9))
     with pytest.raises(deps.DepsError):
         sh.parse("mounts:\n" + many)
+
+
+@pytest.mark.parametrize("raw, want", [
+    ("", None), ("nesting: false", None), ("nesting: true", {"description": ""}),
+    ("nesting: {description: Tests need it}", {"description": "Tests need it"}),
+    ("nesting: {}", {"description": ""}),
+])
+def test_nesting_request(raw, want):
+    assert sh.parse(raw)["nesting"] == want
+
+
+@pytest.mark.parametrize("raw", [
+    "nesting: yes please", "nesting: {description: 'has `tick`'}",
+    "nesting: [1]", "nesting: {description: 5}"])
+def test_bad_nesting_request_is_rejected(raw):
+    with pytest.raises(deps.DepsError):
+        sh.parse(raw)
+
+
+def test_unknown_nesting_key_warns():
+    cfg = sh.parse("nesting: {description: d, privileged: true}")
+    assert cfg["nesting"] == {"description": "d"} and cfg["warnings"]

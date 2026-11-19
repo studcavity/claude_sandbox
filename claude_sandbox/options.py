@@ -212,7 +212,14 @@ def build_parser():
     p.add_argument("--nesting", action="store_true",
                    help="allow containers inside the sandbox "
                         "(security.nesting=true), install incus and "
-                        "set it up")
+                        "set it up. This loosens the container's confinement "
+                        "(more of the host kernel is reachable from inside); "
+                        f"the repo's {host.HOST_FILE} may only request it "
+                        "(see --allow-nesting)")
+    p.add_argument("--allow-nesting", action="store_true",
+                   help="grant the nesting the repo requests in "
+                        f"{host.HOST_FILE} without the confirmation prompt "
+                        "(without a terminal it is otherwise not granted)")
     p.add_argument("--no-cache", action="store_true",
                    help="launch --image directly and install everything at "
                         "boot instead of using the cached base image")
