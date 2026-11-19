@@ -151,6 +151,19 @@ def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     assert "pull requests for session quirky-hopper" in err and "#7" in err
 
 
+def test_full_launch_installs_the_skills_before_the_session(world, monkeypatch):
+    from claude_sandbox import skills
+    monkeypatch.setattr(skills, "skill_files", lambda: [
+        (skills.CONTAINER_SKILLS + "/okf-consume/SKILL.md", b"s", "0644")])
+    assert cs.main(argv(world)) == 0
+    calls = FakeContainer.instances[-1].calls
+    mk = [i for i, (what, a) in enumerate(calls)
+          if what == "user" and "mkdir -p" in str(a) and skills.CONTAINER_SKILLS in str(a)]
+    md = [i for i, (what, a) in enumerate(calls)
+          if what == "user" and ".claude/CLAUDE.md" in str(a)]
+    assert mk and md and mk[0] < md[0]
+
+
 def test_container_is_destroyed_before_any_landing_call(world, monkeypatch):
     """A process the session left running could push between the hold check
     and the PR; so nothing of the session may be alive when landing starts."""

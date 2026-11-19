@@ -18,6 +18,7 @@ from claude_sandbox.container.images import ensure_base_image, ensure_deps_image
 from claude_sandbox.util import log
 from claude_sandbox import options
 from claude_sandbox import sandbox
+from claude_sandbox import skills
 
 
 def refresh_argv(args, python, script):
@@ -121,6 +122,21 @@ def main(argv=None):
                     log(f"warning: couldn't write {args.timings_json}: {e}")
 
 
+def _skills_ready():
+    """Update the skill submodules; False (after saying why) only when that
+    failed and no skill is checked out to fall back on."""
+    ok, detail = skills.refresh()
+    verdict = skills.decide(ok, bool(skills.find_skills()))
+    if verdict == "missing":
+        print("error: couldn't fetch the Claude skills and none are checked out "
+              f"({detail}). Run: git submodule update --init", file=sys.stderr)
+        return False
+    if verdict == "stale":
+        log(f"warning: couldn't update the Claude skills ({detail}); "
+            "using the copy already checked out")
+    return True
+
+
 def _launch(args):
     if args.refresh_images:
         return refresh_images(args)
@@ -134,6 +150,11 @@ def _launch(args):
         return backends_github.land_all(args)
     if args.recover:
         return backends_local.recover(args, lambda: recovery_image(args))
+
+    if not args.setup_token:
+        with timing.stage("skills (git submodule update)"):
+            if not _skills_ready():
+                return 1
 
     box = sandbox.Sandbox(args)
     gh.start_prefetch(box.backend.prefetch_plan())
@@ -207,6 +228,7 @@ def _launch(args):
             box.run_setup(workdir)  # before Claude credentials reach the container
         with timing.stage("session tools + CLAUDE.md"):
             box.install_session_tools()
+            box.install_skills()
             box.write_claude_md(workdir)
         with timing.stage("session (interactive)"):
             box.session(workdir)

@@ -27,6 +27,7 @@ from claude_sandbox import render
 from claude_sandbox import resume
 from claude_sandbox import session_tool
 from claude_sandbox import shell
+from claude_sandbox import skills
 
 
 # `incus/lxc exec` starts with a clean environment: only TERM is carried over
@@ -390,6 +391,19 @@ class Sandbox:
                       + shlex.quote(os.path.dirname(session_tool.SESSION_TOOL_BIN)))
         self.box.root_argv(["tar", "-xzf", "-", "-C", "/"],
                            input=session_tool.session_tool_archive(session_tool.session_tool_files(paths.ROOT)))
+
+    def install_skills(self):
+        """Copy the submodule skills (okf-generate, okf-consume, ...) into the
+        container's ~/.claude/skills. The directories are made as the session
+        user so they stay theirs; the files arrive as root in one tar stream."""
+        files = skills.skill_files()
+        if not files:
+            return
+        dirs = sorted({os.path.dirname(p) for p, _, _ in files})
+        self.box.user("mkdir -p " + " ".join(shlex.quote(d) for d in dirs))
+        self.box.root_argv(["tar", "-xzf", "-", "-C", "/"],
+                           input=session_tool.session_tool_archive(files))
+        log("skills: " + ", ".join(sorted(skills.find_skills())))
 
     def write_claude_md(self, workdir):
         """Render the --claude-md template into ~/.claude/ in the container."""

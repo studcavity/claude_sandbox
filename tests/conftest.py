@@ -32,6 +32,16 @@ def no_real_provenance(monkeypatch, request):
     monkeypatch.setattr(provenance, "post_session", lambda *a, **k: [])
 
 
+@pytest.fixture(autouse=True)
+def no_real_skill_update(monkeypatch, request):
+    """Tests never run `git submodule update` (network); test_skills.py
+    exercises refresh itself with a fake invoke Context."""
+    from claude_sandbox import skills as skills
+    if request.module.__name__.endswith("test_skills"):
+        return
+    monkeypatch.setattr(skills, "refresh", lambda *a, **k: (True, ""))
+
+
 @pytest.fixture
 def repo_root():
     return REPO_ROOT

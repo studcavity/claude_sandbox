@@ -46,3 +46,5 @@ select = ["F"]
 check_untyped_defs = true
 ignore_missing_imports = true
 warn_unused_ignores = true
+# Third-party skill submodules (claude_sandbox/data/skills/*) are not ours to type-check.
+exclude = ["^claude_sandbox/data/skills/"]
