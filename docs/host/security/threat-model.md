@@ -19,8 +19,12 @@ reviewed it.**
 
 # What the session holds
 
-The launcher puts exactly three secrets in a container: the Claude credential,
-the repo-scoped deploy key, and the session's commit-signing key. Everything
+The backend is chosen per launch, and the table below describes a **GitHub**
+session. A `--local` session has no deploy key and no network credential, and its work
+leaves only as branches the launcher imports (see [Local repositories](../guides/local-repos.md)).
+
+A GitHub session holds exactly three secrets: the Claude credential, the repo-scoped
+deploy key, and the session's commit-signing key (a local one has the first and last). Everything
 else on the host (files, credentials, services) is unreachable unless you grant
 a [mount or USB device](../guides/host-access.md). The deploy key and container
 are destroyed at exit. See [Secret scanning](secrets-scanning.md).

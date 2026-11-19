@@ -968,7 +968,7 @@ def test_the_prompt_names_the_backend_and_the_docs_path(make_args, monkeypatch):
     box.box = Box()
     box.write_claude_md("/home/ubuntu/p")
     (main,) = [v for k, v in writes.items() if "CLAUDE.md" in k]
-    assert "**github** backend" in main
+    assert "the **github** backend" in main
     assert f"`{session_docs.DOCS_PATH}/index.md`" in main
 
 

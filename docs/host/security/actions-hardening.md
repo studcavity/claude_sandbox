@@ -13,6 +13,8 @@ sources:
     title: Open verification request
 ---
 
+*GitHub sessions only:* a `--local` session pushes nothing and runs no CI.
+
 The rule: **nothing runs in a trusted execution context before a human has
 reviewed it.** A same-repo PR runs the session's own workflow code (pytest, a
 `conftest.py`, anything it imports) before anyone reads it. That is acceptable

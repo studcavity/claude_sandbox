@@ -53,7 +53,8 @@ need no placeholders and read the same in the repo and in the container.
 
 # How the session finds the pages
 
-CLAUDE.md says which backend this is, where the bundle is, and lists the situation that
+CLAUDE.md says which backend *this session* uses (it is a per-launch choice, never a
+property of the repo), where the bundle is, and lists the situation that
 triggers each page. Those pointers are tested: every page CLAUDE.md names must exist in
 the assembled bundle for that backend. The one safety invariant that must not depend on
 the session choosing to read a page, the guard for hazardous scripts, is repeated in

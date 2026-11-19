@@ -103,7 +103,7 @@ $disk
   real project dependencies in the repo, not just in this container.
 
 ## Sandbox docs
-This is a **$backend** backend. Everything below applies to every session; guidance
+This session uses the **$backend** backend. Everything below applies to every session; guidance
 for particular situations lives in an OKF bundle at `$docs/` (start at
 `$docs/index.md`; read it with the `okf-consume` skill). It is not loaded by default:
 open the page when its situation comes up.

@@ -22,13 +22,15 @@ reach against you. Approving every action is safe but defeats the point.
 claude_sandbox lets the agent work unattended inside a boundary that is cheap
 to throw away:
 
-- **It can only lose its own work.** The container is destroyed on exit; the
-  only credential that can write anywhere is a deploy key scoped to one repo
-  and revoked at teardown.
+- **It can only lose its own work.** The container is destroyed on exit. On
+  a GitHub session the only credential that can write anywhere is a deploy
+  key scoped to one repo and revoked at teardown; a `--local` session has no
+  network credential at all.
 - **Nothing it writes is trusted until you read it.** Changes arrive as PRs
-  that the launcher opens from your side; the session has no GitHub API
-  token, cannot merge, and its commits are signed so you can tell which came
-  from it.
+  that the launcher opens from your side (GitHub sessions) or as branches
+  imported into your repo for review (`--local`). The session has no GitHub
+  API token, cannot merge, and its commits are signed so you can tell which
+  came from it.
 - **Anything with extra privilege is held for review.** Branches that touch
   CI, hooks or the sandbox's own setup get no PR until you say so.
 
@@ -40,8 +42,10 @@ what it does and does not stop.
 
 ## Requirements
 
-Linux host with Incus (your user in `incus-admin`), `gh` logged in as the
-account you launch as (without the `workflow` scope), Python 3.12+.
+Linux host with Incus (your user in `incus-admin`), Python 3.12+, and for
+GitHub sessions `gh` logged in as the account you launch as (without the
+`workflow` scope). Whether a session is GitHub or local is chosen at each
+launch, not by the repo: the same repo can be launched either way.
 Details: [Getting started](docs/host/guides/getting-started.md).
 
 ## Where to go next

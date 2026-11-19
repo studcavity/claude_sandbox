@@ -13,6 +13,8 @@ sources:
     title: Session ids and branch prefix
 ---
 
+*GitHub sessions only.* A `--local` session has no PRs; see [Local repositories](local-repos.md).
+
 Any number of sandboxes can run on one repo at once. The rest of this page is
 what keeps them apart and what happens to their work.
 

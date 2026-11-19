@@ -10,7 +10,8 @@ sources:
     title: The local backend
 ---
 
-For code that is not on GitHub, or that the sandbox must not reach over the
+The backend is chosen at launch with `--local`, so this works for any git repository on
+the host, including one that also has a GitHub remote. For code that is not on GitHub, or that the sandbox must not reach over the
 network, point the launcher at a git repository on the host:
 
 ```

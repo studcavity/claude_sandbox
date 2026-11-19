@@ -29,8 +29,8 @@ session's identity and branches, the trust boundary, git habits and the per-sess
 facts (access, installed tools, mounts, USB). Guidance for a particular situation
 (editing the deps file, writing a hazardous script, handing work back, asking for
 hardware) lives in an OKF bundle shipped into the container at
-`~/.claude/docs/sandbox/`, one variant per backend. The CLAUDE.md states the backend
-(`$backend`) and that path, and lists when to open which page, so the session finds
+`~/.claude/docs/sandbox/`, one variant per backend. The CLAUDE.md states the session's backend
+(`$backend`, chosen at launch) and that path, and lists when to open which page, so the session finds
 detail when it needs it and its context stays small. See
 [Session docs](../../dev/architecture/session-docs.md) for how the bundle is built.
 If a change makes anything the template says stale, fix it in the same branch.
