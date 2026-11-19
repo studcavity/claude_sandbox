@@ -115,8 +115,19 @@ open the page when its situation comes up.
   and you must never weaken one.
 - Commit messages: use `Verified:` / `Not verified:` / `Follow-up:` lines for
   what you did and could not check (`commit-messages.md`).
-- Before you finish a branch or hand back: `handing-back.md` (synopsis, `sandbox-check`,
-  what to list in your final message). To leave a follow-up for someone with no
+- **In the last commit of every branch, propose a PR synopsis**: one
+  `PR-Title: <what the branch does, under 80 chars>` line and a few
+  `PR-Summary: <point>` lines (what and why; one line each) in the message body.
+<!-- if github -->
+  The launcher uses them for the PR title and description; without them the PR
+  gets a generic title and no summary.
+<!-- end -->
+<!-- if local -->
+  The launcher shows the title in the report the user reviews.
+<!-- end -->
+  Also run `sandbox-check` (no arguments) before you finish.
+- Before you finish a branch or hand back: `handing-back.md` (full steps, what to
+  list in your final message). To leave a follow-up for someone with no
   context: `follow-up-requests.md`.
 - Tests and quality gates: `testing.md`; CI and workflows (or their absence): `ci.md`.
 - A USB device or host directory: `host-access.md`.
