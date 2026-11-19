@@ -17,8 +17,9 @@ re-run that: edits take effect the next time the user launches a sandbox. If you
 need a tool that is not installed: with `sudo`, install it now **and** add it to
 the file; otherwise add it, commit, and tell the user to relaunch.[^deps]
 
-Format (all sections optional; unknown keys make the whole file invalid and abort
-the launch):
+Format (all sections optional; unknown keys are ignored with a warning, so a file written
+for a newer launcher still works, but every key this launcher knows is validated and an
+invalid one aborts the launch):
 
 ```yaml
 image: images:ubuntu/24.04 # optional: this repo's base OS (default: images:ubuntu/26.04)
@@ -39,13 +40,13 @@ binaries:                  # installed to /usr/local/bin/<name>, mode 0755
     url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
     sha256: <64 hex>       # required
     archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
-files:                     # pinned files placed under ~ every launch (see below)
+downloads:                 # sha256-pinned URL files placed under ~ (see below)
   - name: tool-config      # [A-Za-z0-9._+-]
     dest: ~/.config/tool/config.toml   # always ~/<relative>; some places are refused
-    url: https://example.com/config.toml   # OR host_path: ~/dotfiles/config.toml
-    sha256: <64 hex>       # required for both sources
+    url: https://example.com/config.toml
+    sha256: <64 hex>       # required
     mode: "0600"           # optional, quoted octal string (default "0644")
-    on_error: skip         # optional: fail (default, aborts the launch) or skip
+    on_error: skip         # optional: fail (default, aborts) or skip (see below)
 setup:                     # repo scripts run in the container every launch (see below)
   - name: toolchain        # [A-Za-z0-9._+-]
     path: tools/setup.sh   # relative to the repo root; no leading /, no ..
@@ -70,7 +71,7 @@ check:                     # final gate run when Claude exits (see below); same 
   and package names and versions follow that release. Check this sandbox's OS with
   `cat /etc/os-release` before assuming one.
 - URLs must be `https://` (redirects too) with no credentials. Installation order:
-  apt, binaries, scripts.
+  apt, binaries, downloads, scripts.
 - `sha256` is of the downloaded file itself (the archive, if `archive_path` is
   used). Prefer a checksum published by the project; if you had to compute it from
   your own download (`sha256sum`), say so to the user, because that only proves the
@@ -83,25 +84,30 @@ check:                     # final gate run when Claude exits (see below); same 
   record when and on what OS the toolchain was resolved so it can be reproduced.
   They are never executed and do not affect the image cache.
 
-# Placed files (`files:`)
+# Pinned files (`downloads:`, and `files:` in the host file)
 
-Each entry puts one file under the session user's home on **every** launch (after the
-clone, before Claude's credentials arrive and before `setup:`); they are never baked into
-an image and do not affect the cache key. Exactly one source: `url` (https, fetched by
-the host) or `host_path` (a file on the host user's machine). The `sha256` of the exact
-bytes is required for both and checked on the host before the container sees them.
-A `host_path` entry reads the user's disk, so it is placed only with `--allow-files` or
-a yes at the launch prompt; otherwise it is skipped and listed in your CLAUDE.md.
-`--no-files` places nothing.
+`downloads:` puts a file fetched from an https `url` under the session user's home. Its
+twin, `files:` in `claude_sandbox_host.yaml`, does the same with a `host_path` on the host
+user's machine (same fields, `host_path` instead of `url`). Both require the `sha256` of
+the exact bytes, which the host checks before the container sees them.
 
-`dest` must be `~/<relative>`, with no `.`/`..`, and may not be under places that run
-code or hold credentials (`~/.ssh`, `~/.gnupg`, `~/.claude*`, shell startup files such
-as `~/.bashrc` and `~/.profile`, `~/.gitconfig`, `~/.config/{git,gh,systemd,autostart,...}`,
-`~/.netrc`, `~/.tmux.conf`; the list is `FILE_DEST_DENY` in `container/deps.py`) or
-overlap the clone. This is a guard rail, not a sandbox. `on_error: skip` makes a failure
-(download, missing host file, hash mismatch, write error) a logged note instead of
-aborting the launch; the file is simply absent. Do not pick `skip` for a file the
-work cannot do without.
+- **Cache:** entries with `on_error: fail` (the default) are installed with the deps
+  (after `binaries`, before `scripts`) and baked into the cached image; each one's `dest`,
+  `mode` and `sha256` are part of the cache key, so a changed pin rebuilds the image.
+- **Fail open:** `on_error: skip` turns any failure (download, missing host file, hash
+  mismatch, write error) into a logged note and an absent file. Those entries are placed
+  after the clone on every launch instead, so a transient failure is never frozen into an
+  image. Do not pick `skip` for a file the work cannot do without.
+- **Approval:** a `downloads:` entry needs none (the pin is the approval, as for
+  `binaries`; `--no-deps` skips it). A host `files:` entry reads the user's disk, so it is
+  placed only with `--allow-files` or a yes at the launch prompt, otherwise skipped and
+  listed in your CLAUDE.md; `--no-files` ignores them. An unapproved host file is never
+  in the image, because approval is part of what is keyed.
+- **`dest`:** `~/<relative>`, no `.`/`..`, never under places that run code or hold
+  credentials (`~/.ssh`, `~/.gnupg`, `~/.claude*`, shell startup files, `~/.gitconfig`,
+  `~/.config/{git,gh,systemd,autostart,...}`, `~/.netrc`, `~/.tmux.conf`; the list is
+  `FILE_DEST_DENY` in `container/deps.py`) and never overlapping the clone. A guard
+  rail, not a boundary: the session user can always edit its own home.
 
 # Per-launch setup scripts (`setup:`)
 

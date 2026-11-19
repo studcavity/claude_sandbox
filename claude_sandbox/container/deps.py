@@ -4,7 +4,8 @@ container/deps.py - parse, validate and download a repo's claude_sandbox_deps.ya
 Runs on the HOST. Nothing here executes downloaded content; claude_sandbox/cli.py
 pushes the verified bytes into the container. Design rules:
 
-  * strict schema: unknown keys, odd names and bad URLs are errors, not warnings
+  * strict values, tolerant keys: odd names and bad URLs are errors; keys this
+    launcher does not know are warnings (a newer file on an older launcher)
   * https only (including every redirect), no credentials in URLs, size caps
   * the GitHub token is never sent to a download host
   * binaries must carry a sha256; it is checked on the host before the bytes
@@ -86,15 +87,27 @@ class DepsError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # parsing / validation
 # --------------------------------------------------------------------------- #
-def _check_keys(item, where, required, optional=()):
+def _check_keys(item, where, required, optional=(), warn=None):
+    """Require `required` keys; unknown keys are not an error (a newer file
+    read by an older launcher) but are reported: appended to `warn`, a list of
+    messages for the caller to show, and ignored. Known keys are still fully
+    validated by the caller."""
     if not isinstance(item, dict):
         raise DepsError(f"{where}: expected a mapping, got {type(item).__name__}")
     extra = set(item) - set(required) - set(optional)
     missing = set(required) - set(item)
-    if extra:
-        raise DepsError(f"{where}: unknown key(s): {', '.join(sorted(map(str, extra)))}")
     if missing:
         raise DepsError(f"{where}: missing key(s): {', '.join(sorted(missing))}")
+    if extra and warn is not None:
+        names = ", ".join(sorted(_shown(k) for k in extra))
+        warn.append(f"{where}: ignoring unknown key(s): {names} "
+                    "(written for a newer launcher?)")
+
+
+def _shown(key):
+    """A repo-supplied key made safe to print: bounded, printable, quoted."""
+    text = "".join(c if c.isprintable() else "?" for c in str(key))
+    return repr(text[:40] + ("..." if len(text) > 40 else ""))
 
 
 def _str(item, key, where, regex=None):
@@ -146,13 +159,13 @@ def _env(item, where):
     return {k: str(v) for k, v in env.items()}
 
 
-def _repo_scripts(doc, key):
+def _repo_scripts(doc, key, warn):
     """The `setup:` / `check:` section: repo scripts run in the container, as
     the session user, in the clone (never baked into an image)."""
     out = []
     for i, s in enumerate(_section(doc, key)):
         w = f"{key}[{i}]"
-        _check_keys(s, w, ("name", "path"), ("args", "env", "timeout"))
+        _check_keys(s, w, ("name", "path"), ("args", "env", "timeout"), warn)
         timeout = s.get("timeout", SETUP_TIMEOUT_DEFAULT)
         if (not isinstance(timeout, int) or isinstance(timeout, bool)
                 or not 1 <= timeout <= SETUP_TIMEOUT_MAX):
@@ -170,60 +183,60 @@ def _repo_scripts(doc, key):
     return out
 
 
-def _files(doc):
-    """The `files:` section: pinned files placed under the session user's home.
+def file_entry(f, where, warn, source):
+    """One pinned file entry, shared by `downloads:` here (source "url") and
+    the host file's `files:` (source "host_path"). Returns the normalised dict
+    (the other source key is None); files.py acts on it.
 
-    Each entry has exactly one source (`url`, fetched by the host, or
-    `host_path`, read from the host and only with the host user's approval),
-    a required sha256 that the host checks before the bytes reach the
-    container, and a `~/` destination outside FILE_DEST_DENY. `on_error`
-    says what a failed placement does: `fail` (default) aborts the launch,
-    `skip` logs it and carries on without the file.
+    Always required: name, dest, sha256, and the source key. dest is
+    `~/<relative>` outside FILE_DEST_DENY; mode a quoted octal string;
+    on_error `fail` (default) or `skip`.
     """
-    out = []
-    for i, f in enumerate(_section(doc, "files")):
-        w = f"files[{i}]"
-        _check_keys(f, w, ("name", "dest", "sha256"),
-                    ("url", "host_path", "mode", "on_error"))
-        if ("url" in f) == ("host_path" in f):
-            raise DepsError(f"{w}: give exactly one of url or host_path")
-        dest = _str(f, "dest", w, FILE_DEST_RE)
-        rel = dest[2:]
-        if any(seg in (".", "..") for seg in rel.split("/")):
-            raise DepsError(f"{w}: invalid dest: {dest!r}")
-        for bad in FILE_DEST_DENY:
-            if rel == bad or rel.startswith(bad + "/"):
-                raise DepsError(f"{w}: dest {dest!r} is not allowed (it is "
-                                f"under ~/{bad}: shell, credential or "
-                                "autostart config)")
-        mode = f.get("mode", "0644")
-        if not isinstance(mode, str) or not FILE_MODE_RE.match(mode):
-            raise DepsError(f"{w}: mode must be a quoted octal string such as "
-                            f"\"0644\", got {mode!r}")
-        on_error = f.get("on_error", "fail")
-        if on_error not in ON_ERROR:
-            raise DepsError(f"{w}: on_error must be one of "
-                            f"{', '.join(ON_ERROR)}, got {on_error!r}")
-        host_path = None
-        if "host_path" in f:
-            host_path = _str(f, "host_path", w, FILE_HOST_RE)
-            if "\0" in host_path:
-                raise DepsError(f"{w}: invalid host_path")
-        out.append({"name": _str(f, "name", w, NAME_RE), "dest": dest,
-                    "url": _url(f, w) if "url" in f else None,
-                    "host_path": host_path,
-                    "sha256": _sha(f, w, required=True),
-                    "mode": mode, "on_error": on_error})
-    if len(out) > MAX_FILES:
-        raise DepsError(f"files: at most {MAX_FILES} entries")
+    _check_keys(f, where, ("name", "dest", "sha256", source),
+                ("mode", "on_error"), warn)
+    dest = _str(f, "dest", where, FILE_DEST_RE)
+    rel = dest[2:]
+    if any(seg in (".", "..") for seg in rel.split("/")):
+        raise DepsError(f"{where}: invalid dest: {dest!r}")
+    for bad in FILE_DEST_DENY:
+        if rel == bad or rel.startswith(bad + "/"):
+            raise DepsError(f"{where}: dest {dest!r} is not allowed (it is "
+                            f"under ~/{bad}: shell, credential or "
+                            "autostart config)")
+    mode = f.get("mode", "0644")
+    if not isinstance(mode, str) or not FILE_MODE_RE.match(mode):
+        raise DepsError(f"{where}: mode must be a quoted octal string such as "
+                        f"\"0644\", got {mode!r}")
+    on_error = f.get("on_error", "fail")
+    if on_error not in ON_ERROR:
+        raise DepsError(f"{where}: on_error must be one of "
+                        f"{', '.join(ON_ERROR)}, got {on_error!r}")
+    url = host_path = None
+    if source == "url":
+        url = _url(f, where)
+    else:
+        host_path = _str(f, "host_path", where, FILE_HOST_RE)
+    return {"name": _str(f, "name", where, NAME_RE), "dest": dest,
+            "url": url, "host_path": host_path,
+            "sha256": _sha(f, where, required=True),
+            "mode": mode, "on_error": on_error}
+
+
+def check_file_set(entries, section):
+    """Limits and duplicates across one section's entries."""
+    if len(entries) > MAX_FILES:
+        raise DepsError(f"{section}: at most {MAX_FILES} entries")
     for key in ("name", "dest"):
-        if len({f[key] for f in out}) != len(out):
-            raise DepsError(f"files: duplicate {key}s")
-    return out
+        if len({f[key] for f in entries}) != len(entries):
+            raise DepsError(f"{section}: duplicate {key}s")
 
 
 def parse(raw):
-    """bytes/str -> {"apt", "scripts", "binaries", "files", "setup", "check", + metadata}."""
+    """bytes/str -> {"apt", "scripts", "binaries", "downloads", "setup", "check",
+    "warnings" (unknown keys that were ignored), + metadata}.
+
+    Unknown keys are warnings, not errors, so a file written for a newer
+    launcher still works on an older one; every key we do know is validated."""
     if isinstance(raw, bytes):
         if len(raw) > MAX_DEPS_FILE:
             raise DepsError(f"{DEPS_FILE} is larger than {MAX_DEPS_FILE} bytes")
@@ -237,9 +250,10 @@ def parse(raw):
         raise DepsError(f"{DEPS_FILE}: invalid YAML: {e}") from None
     if doc is None:
         doc = {}
+    warn: list[str] = []
     _check_keys(doc, DEPS_FILE, (),
-                ("image", "apt", "scripts", "binaries", "files", "setup", "check",
-                 "last_generated", "platform"))
+                ("image", "apt", "scripts", "binaries", "downloads", "setup",
+                 "check", "last_generated", "platform"), warn)
 
     last_generated = doc.get("last_generated")
     if isinstance(last_generated, (datetime.datetime, datetime.date)):
@@ -273,7 +287,7 @@ def parse(raw):
     scripts = []
     for i, s in enumerate(_section(doc, "scripts")):
         w = f"scripts[{i}]"
-        _check_keys(s, w, ("name", "url"), ("sha256", "args", "env"))
+        _check_keys(s, w, ("name", "url"), ("sha256", "args", "env"), warn)
         scripts.append({"name": _str(s, "name", w, NAME_RE), "url": _url(s, w),
                         "sha256": _sha(s, w, required=False),
                         "args": _args(s, w), "env": _env(s, w)})
@@ -281,7 +295,7 @@ def parse(raw):
     binaries = []
     for i, b in enumerate(_section(doc, "binaries")):
         w = f"binaries[{i}]"
-        _check_keys(b, w, ("name", "url", "sha256"), ("archive_path",))
+        _check_keys(b, w, ("name", "url", "sha256"), ("archive_path",), warn)
         member = b.get("archive_path")
         if member is not None and (not isinstance(member, str) or not member
                                    or "\0" in member):
@@ -294,13 +308,17 @@ def parse(raw):
     if len(set(names)) != len(names):
         raise DepsError("binaries: duplicate names")
 
-    files = _files(doc)
-    setup = _repo_scripts(doc, "setup")
-    check = _repo_scripts(doc, "check")
+    downloads = [file_entry(f, f"downloads[{i}]", warn, "url")
+                 for i, f in enumerate(_section(doc, "downloads"))]
+    check_file_set(downloads, "downloads")
+    setup = _repo_scripts(doc, "setup", warn)
+    check = _repo_scripts(doc, "check", warn)
     return {"image": image, "apt": apt, "scripts": scripts,
-            "binaries": binaries, "files": files, "setup": setup,
-            "check": check,
-            "last_generated": last_generated, "platform": platform}
+            "binaries": binaries, "downloads": downloads,
+            "files": [],   # filled by the launcher: downloads + approved host files
+            "setup": setup, "check": check,
+            "last_generated": last_generated, "platform": platform,
+            "warnings": warn}
 
 
 def cache_key(deps):
@@ -308,17 +326,28 @@ def cache_key(deps):
     baked into a cached image.
 
     Only the install sections feed the key (comments, ordering of keys, the
-    metadata fields, `files` (placed per launch), `setup`/`check` (run in the container, never baked) and `image` don't;
-    the image is already part of the deps image's alias via the base image). Scripts without a sha256 are whatever the URL
-    serves at build time, and a cached image would freeze that with no way to
-    notice, so such deps are never cached.
+    metadata fields, `setup`/`check` (run in the container, never baked) and `image` don't;
+    the image is already part of the deps image's alias via the base image).
+    Scripts without a sha256 are whatever the URL serves at build time, and a
+    cached image would freeze that with no way to notice, so such deps are
+    never cached.
+
+    `deps["files"]` (set by the launcher) are the pinned files baked in:
+    downloads plus the host files the user approved. They are keyed by what
+    ends up on disk (dest, mode, sha256), not by where the bytes came from, so
+    approving a host file, or a new pin, builds a new image and an unapproved
+    launch can never reuse one that holds a file it did not approve.
     """
-    if not (deps["apt"] or deps["scripts"] or deps["binaries"]):
+    files = [{"dest": f["dest"], "mode": f["mode"], "sha256": f["sha256"]}
+             for f in sorted(deps.get("files") or [], key=lambda f: f["dest"])]
+    if not (deps["apt"] or deps["scripts"] or deps["binaries"] or files):
         return None
     if any(s["sha256"] is None for s in deps["scripts"]):
         return None
-    blob = json.dumps({k: deps[k] for k in ("apt", "scripts", "binaries")},
-                      sort_keys=True, separators=(",", ":"))
+    parts = {k: deps[k] for k in ("apt", "scripts", "binaries")}
+    if files:   # absent when empty, so keys of file-less deps never change
+        parts["files"] = files
+    blob = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(
         (INSTALL_RECIPE_VERSION + "\0" + blob).encode()).hexdigest()
 
@@ -335,10 +364,9 @@ def summary(deps):
     if deps["binaries"]:
         out.append("binaries: " + ", ".join(
             f"`{b['name']}` (/usr/local/bin)" for b in deps["binaries"]))
-    if deps.get("files"):
-        out.append("files (placed under your home at the start of every "
-                   "launch, sha256-pinned): " + ", ".join(
-                       f"`{f['dest']}`" for f in deps["files"]))
+    if deps.get("downloads"):
+        out.append("downloads (sha256-pinned files under your home): "
+                   + ", ".join(f"`{f['dest']}`" for f in deps["downloads"]))
     if deps.get("setup"):
         out.append("setup (run in the container at the start of every launch, "
                    "after the clone): " + ", ".join(

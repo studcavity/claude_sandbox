@@ -54,7 +54,6 @@ last_generated: 2026-11-15T00:40:00Z
 
 
 @pytest.mark.parametrize("doc, msg", [
-    ("bogus: 1", "unknown key"),
     ("[1, 2]", "expected a mapping"),
     ("apt: git", "expected a list"),
     ("apt: ['-o=evil']", "invalid package"),
@@ -205,7 +204,7 @@ def test_setup_parses_with_defaults():
     "{name: a, path: x.sh, timeout: 0}", "{name: a, path: x.sh, timeout: 3601}",
     "{name: a, path: x.sh, timeout: true}", "{name: a, path: x.sh, timeout: '5'}",
     "{name: a, path: x.sh, env: {LD_PRELOAD: x}}",
-    "{name: a, path: x.sh, args: [1]}", "{name: a, path: x.sh, extra: 1}",
+    "{name: a, path: x.sh, args: [1]}", "{name: a, path: x.sh, timeout: 0}",
     "{path: x.sh}", "{name: a b, path: x.sh}",
 ])
 def test_setup_rejects_bad_entries(entry):
@@ -280,7 +279,7 @@ def test_check_parses_like_setup_and_is_independent_of_it():
 
 @pytest.mark.parametrize("entry", [
     "{name: a, path: ../x.sh}", "{name: a, path: /abs.sh}",
-    "{name: a, path: x.sh, timeout: 0}", "{name: a, path: x.sh, extra: 1}",
+    "{name: a, path: x.sh, timeout: 0}", "{name: a, path: x.sh, timeout: 0}",
     "{name: a, path: x.sh, env: {LD_PRELOAD: x}}",
 ])
 def test_check_rejects_bad_entries_naming_the_section(entry):
@@ -294,7 +293,36 @@ def test_check_is_never_baked_and_is_summarised():
     assert any("tools/final.sh" in l and "exit" in l for l in d.summary(parsed))
 
 
-# --- files: ---------------------------------------------------------------- #
+# --- unknown keys warn, known keys are still validated --------------------- #
+def test_unknown_keys_warn_and_are_ignored():
+    deps = d.parse("""
+future_section: [1]
+apt: [jq]
+binaries:
+  - {name: b, url: 'https://x/b', sha256: %s, newfield: 1}
+setup:
+  - {name: s, path: a.sh, shiny: true}
+""" % SHA)
+    assert deps["apt"] == ["jq"] and "future_section" not in deps
+    assert "newfield" not in deps["binaries"][0]
+    text = "\n".join(deps["warnings"])
+    assert "future_section" in text and "newfield" in text and "shiny" in text
+    assert d.parse("apt: [jq]")["warnings"] == []
+
+
+def test_unknown_key_names_are_printed_safely():
+    (w,) = d.parse(yaml.safe_dump({"\x1b[31m" + "x" * 100: 1}))["warnings"]
+    assert "\x1b" not in w and "..." in w
+
+
+def test_known_fields_are_still_validated_when_unknown_ones_are_present():
+    with pytest.raises(DepsError, match="missing key"):
+        d.parse("binaries: [{name: b, url: 'https://x/b', extra: 1}]")
+    with pytest.raises(DepsError, match="invalid package"):
+        d.parse("future: 1\napt: ['-o=evil']")
+
+
+# --- downloads: ------------------------------------------------------------ #
 def _file(**kw):
     e = {"name": "cfg", "dest": "~/.config/tool/cfg", "sha256": SHA,
          "url": "https://example.com/cfg"}
@@ -302,37 +330,30 @@ def _file(**kw):
     return e
 
 
-def _parse_files(*entries):
-    return d.parse(yaml.safe_dump({"files": list(entries)}))["files"]
+def _parse_dl(*entries):
+    return d.parse(yaml.safe_dump({"downloads": list(entries)}))["downloads"]
 
 
-def test_files_defaults_and_host_path_source():
-    h = {k: v for k, v in _file().items() if k != "url"}
-    h.update(name="h", dest="~/x", host_path="~/dotfiles/x", mode="0600",
-             on_error="skip")
-    (a, b) = _parse_files(_file(), h)
-    assert (a["mode"], a["on_error"], a["host_path"]) == ("0644", "fail", None)
-    assert (b["url"], b["host_path"], b["mode"], b["on_error"]) == (
-        None, "~/dotfiles/x", "0600", "skip")
-    assert d.parse("files: []")["files"] == []
-    assert d.parse("")["files"] == []
+def test_downloads_defaults():
+    (a,) = _parse_dl(_file())
+    assert (a["mode"], a["on_error"], a["host_path"], a["url"]) == (
+        "0644", "fail", None, "https://example.com/cfg")
+    assert d.parse("downloads: []")["downloads"] == []
+    assert d.parse("")["downloads"] == [] and d.parse("")["files"] == []
 
 
 @pytest.mark.parametrize("entry", [
-    _file(sha256=None),                                  # pin is required
-    {k: v for k, v in _file().items() if k != "sha256"},
-    {k: v for k, v in _file().items() if k != "url"},    # no source
-    _file(host_path="/etc/hostname"),                    # two sources
-    _file(url="http://example.com/x"),                   # not https
+    {k: v for k, v in _file().items() if k != "sha256"},   # pin is required
+    {k: v for k, v in _file().items() if k != "url"},      # no source
+    _file(url="http://example.com/x"),                     # not https
     _file(dest="/etc/passwd"), _file(dest="x"), _file(dest="~/../etc/x"),
     _file(dest="~/a/./b"), _file(dest="~/"), _file(dest="~/a b"),
     _file(mode=644), _file(mode="4755"), _file(mode="0o644"),
-    _file(on_error="ignore"), _file(on_error=True), _file(extra=1),
+    _file(on_error="ignore"), _file(on_error=True),
 ])
-def test_files_rejects_bad_entries(entry):
-    entry = {k: v for k, v in entry.items() if v is not None}
+def test_downloads_reject_bad_entries(entry):
     with pytest.raises(DepsError):
-        _parse_files(entry)
+        _parse_dl(entry)
 
 
 @pytest.mark.parametrize("dest", [
@@ -340,30 +361,42 @@ def test_files_rejects_bad_entries(entry):
     "~/.bashrc", "~/.profile", "~/.gitconfig", "~/.config/git/config",
     "~/.config/autostart/x.desktop", "~/.config/systemd/user/x.service",
     "~/.zshrc", "~/.tmux.conf", "~/.netrc"])
-def test_files_denies_persistence_and_credential_destinations(dest):
+def test_downloads_deny_persistence_and_credential_destinations(dest):
     with pytest.raises(DepsError, match="not allowed"):
-        _parse_files(_file(dest=dest))
+        _parse_dl(_file(dest=dest))
 
 
-def test_files_allows_neighbours_of_denied_names():
-    # a prefix match on path segments, not on characters
-    _parse_files(_file(dest="~/.sshfoo"), _file(name="b", dest="~/.config/gitx/c"),
-                 _file(name="c", dest="~/.local/share/app/data"))
+def test_downloads_allow_neighbours_of_denied_names():
+    _parse_dl(_file(dest="~/.sshfoo"), _file(name="b", dest="~/.config/gitx/c"),
+              _file(name="c", dest="~/.local/share/app/data"))
 
 
-def test_files_duplicates_and_limits():
+def test_downloads_duplicates_and_limits():
     with pytest.raises(DepsError, match="duplicate names"):
-        _parse_files(_file(), _file(dest="~/b"))
+        _parse_dl(_file(), _file(dest="~/b"))
     with pytest.raises(DepsError, match="duplicate dests"):
-        _parse_files(_file(), _file(name="b"))
+        _parse_dl(_file(), _file(name="b"))
     with pytest.raises(DepsError, match="at most"):
-        _parse_files(*[_file(name=f"n{i}", dest=f"~/f{i}")
-                       for i in range(d.MAX_FILES + 1)])
+        _parse_dl(*[_file(name=f"n{i}", dest=f"~/f{i}")
+                    for i in range(d.MAX_FILES + 1)])
 
 
-def test_files_do_not_change_the_image_cache_key_and_show_in_summary():
+def test_files_are_part_of_the_cache_key_by_what_lands_on_disk():
     base = d.parse("apt: [jq]")
-    with_files = d.parse(yaml.safe_dump({"apt": ["jq"], "files": [_file()]}))
-    assert d.cache_key(base) == d.cache_key(with_files)
-    assert d.cache_key(d.parse(yaml.safe_dump({"files": [_file()]}))) is None
-    assert any("~/.config/tool/cfg" in l for l in d.summary(with_files))
+    f1 = {"dest": "~/a", "mode": "0644", "sha256": SHA, "url": "https://x/a",
+          "host_path": None, "name": "a", "on_error": "fail"}
+    key = lambda **kw: d.cache_key(dict(base, files=[dict(f1, **kw)]))  # noqa: E731
+    assert d.cache_key(base) != key()                     # adding a file rebuilds
+    assert key() == key(url="https://other/a", name="z")  # source/name don't count
+    assert key() == key(url=None, host_path="/h/a")       # same bytes, same image
+    assert key() != key(sha256="b" * 64)
+    assert key() != key(mode="0600")
+    assert key() != key(dest="~/b")
+    # files alone are cacheable; file-less keys are unchanged by the new feature
+    assert d.cache_key(dict(d.parse(""), files=[f1])) is not None
+    assert d.cache_key(base) == d.cache_key(dict(base, files=[]))
+
+
+def test_downloads_show_in_summary():
+    assert any("~/.config/tool/cfg" in l
+               for l in d.summary(d.parse(yaml.safe_dump({"downloads": [_file()]}))))

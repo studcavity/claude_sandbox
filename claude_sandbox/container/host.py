@@ -15,7 +15,10 @@ purpose:
 Everything in the file is a REQUEST. The repo controls the file, so it can
 never grant itself hardware or host files: a request is attached only if the
 host user approves it (--usb flag, interactive prompt, or the host allowlist
-file for USB; --mount, --allow-mounts or an interactive prompt for mounts).
+file for USB; --mount, --allow-mounts or an interactive prompt for mounts;
+--allow-files or a prompt for `files:`, host files copied into the sandbox).
+Unknown keys are warnings, not errors (see deps._check_keys), so a repo can
+use a newer host file with an older launcher.
 """
 import os
 import re
@@ -23,7 +26,9 @@ import stat
 
 import yaml
 
-from claude_sandbox.container.deps import NAME_RE, DepsError, _check_keys, _section, _str
+from claude_sandbox.container.deps import (NAME_RE, DepsError, _check_keys,
+                                           _section, _str, check_file_set,
+                                           file_entry)
 
 HOST_FILE = "claude_sandbox_host.yaml"
 MAX_HOST_FILE = 64 * 1024
@@ -53,7 +58,8 @@ def parse_usb_spec(spec):
 
 def parse(raw):
     """bytes/str -> {"usb": [{name, vendor_id, product_id, description, tools}],
-    "mounts": [{source, path|None, mode, description}]}"""
+    "mounts": [{source, path|None, mode, description}],
+    "files": [pinned host files, as deps.file_entry], "warnings": [...]}"""
     if isinstance(raw, bytes):
         if len(raw) > MAX_HOST_FILE:
             raise DepsError(f"{HOST_FILE} is larger than {MAX_HOST_FILE} bytes")
@@ -66,13 +72,14 @@ def parse(raw):
     except yaml.YAMLError as e:
         raise DepsError(f"{HOST_FILE}: invalid YAML: {e}") from None
     doc = doc or {}
-    _check_keys(doc, HOST_FILE, (), ("usb", "mounts"))
+    warn: list[str] = []
+    _check_keys(doc, HOST_FILE, (), ("usb", "mounts", "files"), warn)
 
     usb = []
     for i, d in enumerate(_section(doc, "usb")):
         w = f"usb[{i}]"
         _check_keys(d, w, ("name", "vendor_id", "product_id", "description"),
-                    ("tools",))
+                    ("tools",), warn)
         tools = d.get("tools") or []
         if (not isinstance(tools, list) or len(tools) > MAX_TOOLS
                 or not all(isinstance(t, str) and NAME_RE.match(t)
@@ -96,7 +103,7 @@ def parse(raw):
     mounts = []
     for i, d in enumerate(_section(doc, "mounts")):
         w = f"mounts[{i}]"
-        _check_keys(d, w, ("source", "description"), ("path", "mode"))
+        _check_keys(d, w, ("source", "description"), ("path", "mode"), warn)
         mode = d.get("mode", "ro")
         if mode not in ("ro", "rw"):
             raise DepsError(f"{w}: mode must be ro or rw")
@@ -108,7 +115,10 @@ def parse(raw):
         })
     if len(mounts) > MAX_MOUNTS:
         raise DepsError(f"mounts: at most {MAX_MOUNTS} entries")
-    return {"usb": usb, "mounts": mounts}
+    files = [file_entry(f, f"files[{i}]", warn, "host_path")
+             for i, f in enumerate(_section(doc, "files"))]
+    check_file_set(files, "files")
+    return {"usb": usb, "mounts": mounts, "files": files, "warnings": warn}
 
 
 # --------------------------------------------------------------------------- #
