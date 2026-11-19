@@ -186,3 +186,12 @@ def test_bad_nesting_request_is_rejected(raw):
 def test_unknown_nesting_key_warns():
     cfg = sh.parse("nesting: {description: d, privileged: true}")
     assert cfg["nesting"] == {"description": "d"} and cfg["warnings"]
+
+
+def test_this_repos_host_file_requests_nesting_for_the_smoke_tests(repo_root):
+    with open(os.path.join(repo_root, sh.HOST_FILE), "rb") as f:
+        cfg = sh.parse(f.read())
+    assert cfg["nesting"] and cfg["nesting"]["description"]
+    assert cfg["warnings"] == [] and cfg["usb"] == cfg["mounts"] == []
+    with open(os.path.join(repo_root, "scripts", "final-check.sh")) as f:
+        assert "-m incus tests/integration" in f.read()

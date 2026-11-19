@@ -5,7 +5,7 @@
 
 # Where/when this toolchain was resolved, so it can be reproduced later.
 # Refresh both whenever you edit this file (inert metadata, never executed).
-last_generated: "2026-11-18T03:56:33Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
+last_generated: "2026-11-19T02:34:11Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
 platform: |                              # lsb_release -a; uname -m
   Distributor ID: Ubuntu
   Description:    Ubuntu 26.04.1 LTS
@@ -42,4 +42,4 @@ binaries:
 check:
   - name: lint-and-tests
     path: scripts/final-check.sh
-    timeout: 1800
+    timeout: 3600
