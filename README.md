@@ -35,40 +35,41 @@ to throw away:
 It is for developers who want to hand a repo to an agent and review the result
 as they would a colleague's pull request. It does not make a malicious session
 harmless: it limits the damage to one repo's unmerged branches and makes that
-damage visible. The [threat model](docs/security/threat-model.md) says exactly
+damage visible. The [threat model](docs/host/security/threat-model.md) says exactly
 what it does and does not stop.
 
 ## Requirements
 
 Linux host with Incus (your user in `incus-admin`), `gh` logged in as the
 account you launch as (without the `workflow` scope), Python 3.12+.
-Details: [Getting started](docs/guides/getting-started.md).
+Details: [Getting started](docs/host/guides/getting-started.md).
 
 ## Where to go next
 
 **Use it**
-- [Getting started](docs/guides/getting-started.md): first launch, model, Claude login
-- [Local repositories](docs/guides/local-repos.md): `--local`, bundles in and out, crash recovery
-- [Concurrent sessions](docs/guides/concurrent-sessions.md): identity, branches, PRs, held branches
-- [Follow-up issues](docs/guides/follow-up-issues.md): `todo/` files
-- [Images, caching and disk](docs/guides/images-and-caching.md)
-- [Mounts, USB and nested containers](docs/guides/host-access.md): including the `claude_sandbox_host.yaml` request file
+- [Getting started](docs/host/guides/getting-started.md): first launch, model, Claude login
+- [Local repositories](docs/host/guides/local-repos.md): `--local`, bundles in and out, crash recovery
+- [Concurrent sessions](docs/host/guides/concurrent-sessions.md): identity, branches, PRs, held branches
+- [Follow-up issues](docs/host/guides/follow-up-issues.md): `todo/` files
+- [Images, caching and disk](docs/host/guides/images-and-caching.md)
+- [Mounts, USB and nested containers](docs/host/guides/host-access.md): including the `claude_sandbox_host.yaml` request file
 
 **Configure a repo for it**
-- [`claude_sandbox_deps.yaml`](docs/reference/repo-deps-file.md): tools installed before a session
-- [The final check](docs/reference/final-check.md): what runs when you exit
-- [The session's CLAUDE.md](docs/reference/sandbox-claude-md.md)
+- [`claude_sandbox_deps.yaml`](docs/host/reference/repo-deps-file.md): tools installed before a session
+- [The final check](docs/host/reference/final-check.md): what runs when you exit
+- [The session's CLAUDE.md](docs/host/reference/sandbox-claude-md.md)
 
 **Trust and security**
-- [Threat model](docs/security/threat-model.md): what is and isn't protected
-- [Protecting `main`](docs/security/branch-protection.md), [provenance](docs/security/provenance.md),
-  [Actions hardening](docs/security/actions-hardening.md), [secret scanning](docs/security/secrets-scanning.md),
-  [optional rulesets](docs/security/optional-rulesets.md)
+- [Threat model](docs/host/security/threat-model.md): what is and isn't protected
+- [Protecting `main`](docs/host/security/branch-protection.md), [provenance](docs/host/security/provenance.md),
+  [Actions hardening](docs/host/security/actions-hardening.md), [secret scanning](docs/host/security/secrets-scanning.md),
+  [optional rulesets](docs/host/security/optional-rulesets.md)
 
 **Work on it**
-- [Architecture and package layout](docs/architecture/package-layout.md)
-- [Design decisions](docs/decisions/index.md): specs 01-09 and why
+- [Architecture and package layout](docs/dev/architecture/package-layout.md)
+- [Session docs](docs/dev/architecture/session-docs.md): what the in-container Claude is told, and how
+- [Design decisions](docs/dev/decisions/index.md): specs 01-09 and why
 - [Contributing and testing](CLAUDE.md)
 
-`./run.sh --help` lists every flag. The same material, structured for agents,
-starts at [`docs/index.md`](docs/index.md).
+`./run.sh --help` lists every flag. `docs/` is three OKF bundles, one per reader
+(operator, in-container session, maintainer); see [`docs/README.md`](docs/README.md).

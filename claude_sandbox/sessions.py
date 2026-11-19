@@ -146,7 +146,7 @@ def protection_warning(branch, rule_types, classic_requires_pr):
     return (f"`{branch}` does not require pull requests, so any session's "
             "deploy key (including a prompt-injected one) can push straight "
             "to it and concurrent sessions can race each other. Apply "
-            "rulesets/protect-main.json (see docs/security/branch-protection.md)")
+            "rulesets/protect-main.json (see docs/host/security/branch-protection.md)")
 
 
 def check_protection(repo):

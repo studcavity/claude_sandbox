@@ -170,7 +170,7 @@ def gap_warnings(repo, branch, state, required, ci):
         missing = sorted(set(ci) - required)
         mw = matrix_warning(repo, branch, matrix, required)
         how = (" To require them, add a required_status_checks rule to the "
-               f"ruleset (`gh api repos/{repo}/rulesets` lists its id; docs/security/branch-protection.md: "
+               f"ruleset (`gh api repos/{repo}/rulesets` lists its id; docs/host/security/branch-protection.md: "
                "Required status checks).")
         if not required:
             out.append(f"no status check is required to merge into `{branch}` "

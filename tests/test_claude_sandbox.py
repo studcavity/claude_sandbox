@@ -25,6 +25,7 @@ from claude_sandbox import options
 from claude_sandbox import render
 from claude_sandbox import resume
 from claude_sandbox import sandbox
+from claude_sandbox import session_docs
 from claude_sandbox import session_tool
 from claude_sandbox import shell
 from claude_sandbox.backends import github as bg
@@ -489,9 +490,8 @@ def _render(repo_root, devices, visible=""):
 # Every character of the rendered CLAUDE.md is loaded into every session's
 # context. The budget is ~6k tokens with room for long per-session notes;
 # before raising it, move detail into an on-demand reference file
-# (sandbox_ref_deps.md is the model) or cut it.
-CLAUDE_MD_BUDGET_CHARS = 23_000
-DEPS_REF_BUDGET_CHARS = 8_000
+# (the session docs under docs/session/ are the model) or cut it.
+CLAUDE_MD_BUDGET_CHARS = 15_000
 
 
 def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
@@ -503,9 +503,6 @@ def test_rendered_claude_md_stays_within_the_context_budget(repo_root):
         disk_note="- " + "disk note " * 30)
     assert len(md) <= CLAUDE_MD_BUDGET_CHARS, (
         f"{len(md)} chars: move detail to an on-demand reference file")
-    ref = render.render_deps_ref(
-        open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read())
-    assert len(ref) <= DEPS_REF_BUDGET_CHARS
 
 
 def test_claude_md_usb_states(repo_root):
@@ -602,11 +599,13 @@ def test_launch_writes_sandbox_marker(make_args, monkeypatch, fake_box):
 def test_template_documents_setup_and_the_hazard_guard(repo_root):
     t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
     guard = '[ -f /etc/claude-sandbox ] || '
-    assert guard in t and "Gate hazardous scripts" in t
-    flat = " ".join(t.split())
-    assert "sudo" in t and "rm -rf" in t and "never weaken or remove" in flat
+    assert guard in t and "never weaken one" in t   # the invariant is always loaded
     assert shell.SANDBOX_MARKER == "/etc/claude-sandbox"
-    ref = open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read()
+    page = " ".join(open(os.path.join(repo_root, "docs", "session", "common",
+                                      "hazard-guard.md")).read().split())
+    assert guard in page and "sudo" in page and "rm -rf" in page
+    assert "never weaken or remove an existing guard" in page
+    ref = open(os.path.join(repo_root, "docs", "session", "common", "deps-file.md")).read()
     assert "\nsetup:" in ref and "idempotent" in ref
 
 
@@ -782,7 +781,7 @@ def test_main_builds_the_base_from_the_repos_image(main_env, monkeypatch):
 
 
 def test_template_documents_image_key(repo_root):
-    t = open(os.path.join(repo_root, "claude_sandbox", "data", render.DEPS_REF_TEMPLATE)).read()
+    t = open(os.path.join(repo_root, "docs", "session", "common", "deps-file.md")).read()
     assert "\nimage: images:ubuntu/24.04" in t and "--image" in t
 
 
@@ -840,7 +839,9 @@ def test_claude_md_stresses_ephemeral_session(repo_root):
 
 def test_claude_md_documents_commit_message_followups(repo_root):
     md = _render(repo_root, [])
-    assert "Follow-up:" in md and "git log --grep='Follow-up'" in md
+    assert "Follow-up:" in md and "commit-messages.md" in md
+    page = open(os.path.join(repo_root, "docs", "session", "common", "commit-messages.md")).read()
+    assert "git log --grep='Follow-up'" in page
 
 
 # --------------------------------------------------------------------------- #
@@ -953,10 +954,9 @@ def test_template_tells_session_its_identity_and_branch_rules(repo_root):
         "~/.claude/", "")
 
 
-def test_deps_reference_is_written_and_the_prompt_points_at_it(
-        make_args, monkeypatch, repo_root):
-    """The deps schema is read on demand: it must land where CLAUDE.md says,
-    fully rendered, and CLAUDE.md must name that path."""
+def test_the_prompt_names_the_backend_and_the_docs_path(make_args, monkeypatch):
+    """CLAUDE.md is the only thing always loaded, so it must say which backend
+    this is and where the on-demand docs are (installed by install_session_docs)."""
     writes = {}
 
     class Box:
@@ -967,11 +967,9 @@ def test_deps_reference_is_written_and_the_prompt_points_at_it(
     box = _sandbox(make_args, monkeypatch, repo="me/p")
     box.box = Box()
     box.write_claude_md("/home/ubuntu/p")
-    (ref,) = [v for k, v in writes.items() if k == f"cat > {render.DEPS_REF_PATH}"]
-    assert container_deps.DEPS_FILE in ref and "last_generated" in ref
-    assert not re.search(r"\$[a-z_{]", ref), "unsubstituted placeholder"
     (main,) = [v for k, v in writes.items() if "CLAUDE.md" in k]
-    assert render.DEPS_REF_PATH in main
+    assert "**github** backend" in main
+    assert f"`{session_docs.DOCS_PATH}/index.md`" in main
 
 
 def test_ruleset_file_requires_pull_requests_and_blocks_rewrites(repo_root):
@@ -994,7 +992,7 @@ def test_the_session_end_never_files_issues(make_args, monkeypatch):
 
 
 def test_template_asks_for_a_todo_file_per_issue(repo_root):
-    t = open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read()
+    t = open(os.path.join(repo_root, "docs", "session", "github", "follow-up-requests.md")).read()
     assert "`todo/<name>.md`" in t and "first heading is the" in t
     assert "fresh agent" in t
     for gone in ("Sandbox-Action", "random", "<YYYYMMDD>", "secrets.token_hex"):
@@ -1002,9 +1000,9 @@ def test_template_asks_for_a_todo_file_per_issue(repo_root):
 
 
 def test_template_says_the_todo_brief_describes_but_does_not_dictate(repo_root):
-    t = " ".join(open(os.path.join(repo_root, "claude_sandbox", "data", "sandbox_CLAUDE.md")).read().split())
+    t = " ".join(open(os.path.join(repo_root, "docs", "session", "github", "follow-up-requests.md")).read().split())
     assert "describe a problem and some potential solutions" in t
-    assert "NOT a work order" in t and "don't dictate" in t
+    assert "NOT a work order" in t and "do not dictate" in t
 
 
 def test_template_names_credits_as_a_way_work_is_lost(repo_root):

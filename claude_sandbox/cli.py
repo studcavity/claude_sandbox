@@ -229,6 +229,7 @@ def _launch(args):
         with timing.stage("session tools + CLAUDE.md"):
             box.install_session_tools()
             box.install_skills()
+            box.install_session_docs()
             box.write_claude_md(workdir)
         with timing.stage("session (interactive)"):
             box.session(workdir)

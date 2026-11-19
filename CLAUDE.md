@@ -2,7 +2,7 @@
 
 Host-side launcher that runs a Claude Code session in a throwaway Incus/LXD
 container with a repo-scoped GitHub deploy key. `README.md` introduces it and indexes `docs/`;
-`docs/architecture/package-layout.md` has the module table and the layout rules
+`docs/dev/architecture/package-layout.md` has the module table and the layout rules
 (import layering is a test: `tests/test_layering.py`); module
 docstrings say what each file is for.
 
@@ -30,7 +30,8 @@ docstrings say what each file is for.
   every session, so keep it small: a test caps its size (per backend: text
   that differs goes in `<!-- if github -->` / `<!-- if local -->` ...
   `<!-- end -->` blocks, see `select_variant`). Detail needed only
-  sometimes goes in an on-demand reference like `data/sandbox_ref_deps.md`.
+  sometimes goes in the on-demand session docs (`docs/session/`, shipped to the
+  container; see `docs/dev/architecture/session-docs.md`).
   If a change makes anything it says stale, fix it in the same branch.
 - GitHub: use `github/client.py` (PyGithub, typed results) for new code;
   `gh_api` in `github/gh.py` stays for raw REST dicts or exact file bytes

@@ -11,3 +11,4 @@ MAIN_SCRIPT = os.path.join(PACKAGE, "__main__.py")
 DATA = os.path.join(PACKAGE, "data")  # session CLAUDE.md, deps reference, templates/
 RULESETS = os.path.join(ROOT, "rulesets")
 SCRIPTS = os.path.join(ROOT, "scripts")
+SESSION_DOCS = os.path.join(ROOT, "docs", "session")  # source of the session's embedded docs

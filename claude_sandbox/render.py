@@ -1,7 +1,8 @@
-"""render.py - render the session CLAUDE.md and the deps reference from their templates."""
+"""render.py - render the session CLAUDE.md from its template."""
 
 import re
 import string
+from claude_sandbox import session_docs
 from claude_sandbox import sessions
 from claude_sandbox.container import deps
 from claude_sandbox.container import host
@@ -13,14 +14,6 @@ from claude_sandbox.backends.github import access_lines
 # The checker, copied into the sandbox so a session can lint its own commits
 # before it exits (plan 4d). Stdlib-only modules; the list is tested against
 # the checker's real import graph.
-# Reference text the session reads on demand instead of carrying it in every
-# prompt: rendered from DEPS_REF_TEMPLATE (next to this script) to DEPS_REF_PATH.
-DEPS_REF_TEMPLATE = "sandbox_ref_deps.md"
-
-
-DEPS_REF_PATH = "~/.claude/ref/deps.md"
-
-
 def parse_probe(out):
     """Parse the key=value lines printed by the container probe."""
     facts = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
@@ -86,7 +79,7 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
     The template is plain Markdown with string.Template placeholders
     ($container, $access, $user, $uid, $home, $sudo, $tools, $branch, $deps,
     $deps_file, $host_file, $usb, $mounts, $disk, $session, $prefix, $repo,
-    $ci_note); write $$ for a
+    $ci_note, $backend, $docs); write $$ for a
     literal dollar sign. `facts` comes from
     parse_probe().
     """
@@ -107,6 +100,8 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
         branch=f" (`{branch}`)" if branch else "",
         deps=deps_note,
         ci_note=ci_note,
+        backend=kind,
+        docs=session_docs.DOCS_PATH,
         deps_file=deps.DEPS_FILE,
         host_file=host.HOST_FILE,
         disk=disk_note or "- Disk limits are unknown; check `df -h`.",
@@ -116,8 +111,3 @@ def render_claude_md(template, facts, container, workdir, repo, read_only,
                                      facts["usb"]) or "No USB devices were requested.",
     )
 
-
-def render_deps_ref(template):
-    """Fill the deps-file reference (placeholders: $deps_file, $user)."""
-    return string.Template(template).substitute(
-        deps_file=deps.DEPS_FILE, user=USER)
