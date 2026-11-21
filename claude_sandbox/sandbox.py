@@ -2,6 +2,7 @@
 
 import getpass
 import os
+import platform
 import shlex
 import threading
 import subprocess
@@ -18,6 +19,7 @@ from claude_sandbox.container import volumes
 from claude_sandbox import paths
 from claude_sandbox.container.incus import Container
 from claude_sandbox.container.images import apply_deps
+from claude_sandbox.github import gh
 from claude_sandbox.util import log, sigint_to_child
 from claude_sandbox.backends.github import GitHubBackend
 from claude_sandbox.backends.local import LocalBackend
@@ -46,7 +48,7 @@ TERM_ENV_VARS = ("TERM", "COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION",
 # Tools listed in the sandbox's CLAUDE.md when present.
 SANDBOX_TOOLS = ("git", "python3", "pip3", "rg", "fd", "jq", "tree", "gcc",
                  "make", "gdb", "strace", "lsof", "htop", "dig", "nc", "tmux",
-                 "curl", "wget")
+                 "curl", "wget", "prek")
 
 
 def choose_image(flag, repo_image):
@@ -104,6 +106,23 @@ def with_nesting(deps):
     deps["apt"] = list(deps["apt"]) + [
         p for p in NESTING_APT if p not in deps["apt"]]
     return deps
+
+
+# The repo config prek reads (its own prek.toml is not run for you: only the
+# pre-commit file, which is what the exit check and the skill key off).
+PREK_CONFIG = ".pre-commit-config.yaml"
+PREK_SKILL = ["gh", "skill", "install", container_deps.PREK_REPO,
+              f"prek@{container_deps.PREK_VERSION}", "--agent", "claude-code",
+              "--scope", "user", "--force"]
+PREK_SKILL_TIMEOUT = 120
+PREK_CHECK_TIMEOUT = 1800
+# Guarded so a branch without the config passes (the check runs on each
+# session branch). A fixed string: nothing is interpolated into it.
+PREK_CHECK = {
+    "name": "prek", "path": f"prek run --all-files ({PREK_CONFIG})", "args": [],
+    "env": {}, "timeout": PREK_CHECK_TIMEOUT,
+    "argv": ["timeout", "--kill-after=10", str(PREK_CHECK_TIMEOUT), "bash", "-c",
+             f"[ -f {PREK_CONFIG} ] || exit 0; exec prek run --all-files"]}
 
 
 def launch_config(args):
@@ -229,6 +248,16 @@ class Sandbox:
         """The deps to install: the repo's file (see `_read_deps`) plus, with
         nesting, the packages nested incus needs (even under --no-deps)."""
         deps = self._read_deps()
+        before = [b["name"] for b in (deps or {}).get("binaries", [])]
+        deps = container_deps.with_prek(deps, platform.machine())
+        if [b["name"] for b in deps["binaries"]] != before:
+            self.deps_note += (
+                f"\nInstalled in every sandbox: `prek` "
+                f"{container_deps.PREK_VERSION} (/usr/local/bin; sha256 and "
+                "GitHub attestation verified). If the repo has a "
+                f"`{PREK_CONFIG}`, `prek run --all-files` also runs as part "
+                "of the final check when you exit.")
+        self.deps = deps
         if self.args.nesting:
             deps = with_nesting(deps)
             self.deps_note += (NESTING_NOTE.format(
@@ -451,7 +480,44 @@ class Sandbox:
         so installers never see them.
         """
         if self.deps and not self.deps_baked:
-            apply_deps(self.box, self.deps)
+            apply_deps(self.box, self.deps, gh.verify_attestation)
+
+    def has_prek(self):
+        """Whether prek is among the deps installed in this sandbox."""
+        return any(b["name"] == "prek"
+                   for b in (self.deps or {}).get("binaries", []))
+
+    def has_prek_config(self, workdir):
+        """Whether the clone has a `.pre-commit-config.yaml` at its root."""
+        return self.box.user_argv(
+            ["test", "-f", f"{workdir}/{PREK_CONFIG}"],
+            check=False).returncode == 0
+
+    def install_prek_skill(self, workdir):
+        """When the repo has a `.pre-commit-config.yaml`, install prek's agent
+        skill (`gh skill install`, user scope, pinned to the installed prek
+        version) so the session knows how to drive prek.
+
+        Same slot as run_setup: after the clone, before Claude credentials
+        reach the container. Best effort: a failure (gh too old for `gh
+        skill`, offline) is a note for the session, never an abort.
+        """
+        if not (self.has_prek() and self.has_prek_config(workdir)):
+            return
+        log("installing the prek skill (the repo has a "
+            f"{PREK_CONFIG})")
+        r = self.box.user_argv(
+            ["timeout", "--kill-after=10", str(PREK_SKILL_TIMEOUT), *PREK_SKILL],
+            cwd=workdir, check=False, input="", capture=True)
+        if r.returncode == 0:
+            self.deps_note += ("\nThe repo has a `.pre-commit-config.yaml`: "
+                               "the `prek` skill was installed; use it.")
+        else:
+            log("warning: couldn't install the prek skill; continuing")
+            self.deps_note += (
+                "\nThe repo has a `.pre-commit-config.yaml` but the `prek` "
+                "skill could not be installed (`gh skill install` failed, "
+                "probably gh older than 2.90); use `prek --help`.")
 
     def run_setup(self, workdir):
         """Run the repo's `setup:` scripts in the container (as the session
@@ -711,7 +777,8 @@ class Sandbox:
                         + (f" on {branch}" if branch else "")
                         + f" (timeout {s['timeout']}s; "
                         "Ctrl-C skips it and tears down)")
-                    cmd = self.box.user_cmd(*shell.setup_argv(s), env=s["env"])
+                    cmd = self.box.user_cmd(*(s.get("argv") or shell.setup_argv(s)),
+                                            env=s["env"])
                     cmd[cmd.index("--cwd") + 1] = workdir
                     code, out = resume.run_streaming(cmd)
                     if code != 0:
@@ -728,9 +795,11 @@ class Sandbox:
         Returns the prompt to resume Claude with when something failed and the
         user wants that, else None. Ctrl-C skips the check (and tears down)."""
         a = self.args
-        checks = (self.deps or {}).get("check") or []
+        checks = list((self.deps or {}).get("check") or [])
         if a.shell or a.no_final_check:
             return None
+        if self.has_prek() and self.has_prek_config(workdir):
+            checks.append(PREK_CHECK)   # built in: after the repo's own checks
         failures = self.run_checks(workdir, checks) if checks else []
         merge = self.merge_findings(workdir)
         if not failures and not merge:

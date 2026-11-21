@@ -219,13 +219,15 @@ def _sandbox(make_args, monkeypatch, **kw):
 
 def test_load_deps_missing_file_is_noted(make_args, monkeypatch, gh):
     box = _sandbox(make_args, monkeypatch, repo="me/p")
-    assert box.load_deps() is None
-    assert "has no" in box.deps_note
+    deps = box.load_deps()
+    assert [b["name"] for b in deps["binaries"]] == ["prek"]  # the default dep
+    assert "has no" in box.deps_note and "prek" in box.deps_note
 
 
 def test_load_deps_no_deps_flag_skips_fetch(make_args, monkeypatch, gh):
     box = _sandbox(make_args, monkeypatch, repo="me/p", no_deps=True)
-    assert box.load_deps() is None and gh == []
+    deps = box.load_deps()
+    assert [b["name"] for b in deps["binaries"]] == ["prek"] and gh == []
     assert "--no-deps" in box.deps_note
 
 
@@ -1602,3 +1604,94 @@ def test_the_prompt_itself_asks_for_the_pr_synopsis(repo_root, kind):
     md = _render_kind(repo_root, kind)
     assert "PR-Title:" in md and "PR-Summary:" in md
     assert "sandbox-check" in md
+
+
+# --------------------------------------------------------------------------- #
+# prek: the default dependency, its exit check and its skill
+# --------------------------------------------------------------------------- #
+def _with_prek(box, config):
+    box.deps = dict(container_deps.with_prek(None, "x86_64"), check=[])
+    box.box = types.SimpleNamespace(
+        calls=[], user_cmd=lambda *argv, env=None: ["x", "--cwd", "/h", "--", *argv])
+
+    def user_argv(argv, **k):
+        box.box.calls.append((argv, k))
+        rc = 0 if (argv[0] != "test" or config) else 1
+        return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+    box.box.user_argv = user_argv
+    return box
+
+
+def test_prek_config_is_looked_for_in_the_clone_root(make_args):
+    box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), True)
+    assert box.has_prek_config("/w/repo")
+    assert box.box.calls[0][0] == ["test", "-f", "/w/repo/.pre-commit-config.yaml"]
+
+
+def test_the_prek_skill_is_installed_pinned_when_the_repo_has_a_config(make_args):
+    box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), True)
+    box.install_prek_skill("/w/repo")
+    argv, kw = box.box.calls[-1]
+    assert argv[-len(sandbox.PREK_SKILL):] == sandbox.PREK_SKILL
+    assert argv[:2] == ["timeout", "--kill-after=10"]
+    assert sandbox.PREK_SKILL[:5] == ["gh", "skill", "install", "j178/prek",
+                                      "prek@v0.5.11"]
+    assert kw["cwd"] == "/w/repo" and kw["input"] == ""   # never prompts
+    assert "skill was installed" in box.deps_note
+
+
+def test_no_prek_skill_without_a_config(make_args):
+    box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), False)
+    box.install_prek_skill("/w/repo")
+    assert [c[0][0] for c in box.box.calls] == ["test"]   # only the probe
+    assert box.deps_note == sandbox.Sandbox(make_args(repo="o/r")).deps_note
+
+
+def test_a_failing_prek_skill_install_is_a_note_not_an_abort(make_args):
+    box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), True)
+    inner = box.box.user_argv
+    box.box.user_argv = lambda argv, **k: (
+        types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        if argv[0] == "timeout" else inner(argv, **k))
+    box.install_prek_skill("/w/repo")
+    assert "could not be installed" in box.deps_note
+
+
+def test_prek_skill_and_check_are_off_when_prek_is_not_installed(make_args):
+    box = sandbox.Sandbox(make_args(repo="o/r"))
+    box.deps, box.box = None, types.SimpleNamespace(calls=[])
+    box.install_prek_skill("/w")   # would raise on the missing probe if it ran
+    assert not box.has_prek()
+
+
+def test_prek_check_is_fixed_guarded_and_bounded():
+    argv = sandbox.PREK_CHECK["argv"]
+    assert argv[:4] == ["timeout", "--kill-after=10", "1800", "bash"]
+    # a branch without the config passes instead of failing prek
+    assert argv[-1].startswith("[ -f .pre-commit-config.yaml ] || exit 0;")
+    assert argv[-1].endswith("exec prek run --all-files")
+
+
+def test_final_check_runs_prek_after_the_repos_checks_when_there_is_a_config(
+        checking):
+    checking.box = _with_prek(checking.box, True)
+    checking.box.deps["check"] = [CHECK]
+    checking.results += [(0, "ok"), (0, "ok")]
+    assert checking.box.final_check("/w/repo") is None
+    assert [c[c.index("--") + 1:] for c in checking.ran] == [
+        shell.setup_argv(CHECK), sandbox.PREK_CHECK["argv"]]
+    assert all(c[c.index("--cwd") + 1] == "/w/repo" for c in checking.ran)
+
+
+def test_final_check_has_no_prek_run_without_a_config(checking):
+    checking.box = _with_prek(checking.box, False)
+    assert checking.box.final_check("/w/repo") is None
+    assert checking.ran == []
+
+
+def test_a_failing_prek_check_resumes_the_session(checking):
+    checking.box = _with_prek(checking.box, True)
+    checking.results.append((1, "ruff....Failed"))
+    checking.monkeypatch.setattr(resume, "ask_resume", lambda names: True)
+    prompt = checking.box.final_check("/w")
+    assert "ruff....Failed" in prompt and "prek run --all-files" in prompt

@@ -192,3 +192,34 @@ def test_build_image_caps_root_disk_of_build_container(monkeypatch):
 
 def test_base_setup_caps_journal():
     assert "SystemMaxUse=100M" in im.BASE_ROOT_SETUP
+
+
+def test_apply_deps_verifies_the_attestation_before_installing(monkeypatch, fake_box):
+    deps = container_deps.parse(
+        f"binaries: [{{name: tool, url: 'https://x/t', sha256: {SHA}, attest: o/r}}]")
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"X")
+    seen = []
+    im.apply_deps(fake_box, deps, lambda data, repo: seen.append((data, repo)))
+    assert seen == [(b"X", "o/r")]
+    assert ("put_file", "/usr/local/bin/tool") in [(c[0], c[1]) for c in fake_box.calls]
+
+
+def test_a_failed_attestation_installs_nothing(monkeypatch, fake_box):
+    deps = container_deps.parse(
+        f"binaries: [{{name: tool, url: 'https://x/t', sha256: {SHA}, attest: o/r}}]")
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"X")
+
+    def bad(data, repo):
+        raise RuntimeError("no attestation")
+    with pytest.raises(RuntimeError):
+        im.apply_deps(fake_box, deps, bad)
+    assert not any(c[0] == "put_file" for c in fake_box.calls)
+
+
+def test_an_attest_entry_without_a_verifier_is_refused(monkeypatch, fake_box):
+    deps = container_deps.parse(
+        f"binaries: [{{name: tool, url: 'https://x/t', sha256: {SHA}, attest: o/r}}]")
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"X")
+    with pytest.raises(container_deps.DepsError, match="attestation"):
+        im.apply_deps(fake_box, deps)   # never silently skipped
+    assert not any(c[0] == "put_file" for c in fake_box.calls)

@@ -27,6 +27,14 @@ having no terminal, tears down as before with a warning in the log; what was
 pushed still becomes a PR. Ctrl-C during the check skips it and tears down.
 `--no-final-check`, `--no-deps` and `--shell` skip it.
 
+# prek
+
+When the clone has a `.pre-commit-config.yaml` at its root, `prek run --all-files`
+(prek is installed in every sandbox, see [the deps file](repo-deps-file.md)) runs
+after the repo's `check:` scripts, in the clone, on each session branch (a branch
+without the file passes), with a 1800s timeout. A failure resumes the session like
+a failing script. Hooks that fetch their own tools need network access.
+
 # The launcher's own check
 
 Whether or not the repo has `check:` scripts, the launcher judges each of the

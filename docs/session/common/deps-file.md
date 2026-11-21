@@ -40,6 +40,8 @@ binaries:                  # installed to /usr/local/bin/<name>, mode 0755
     url: https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
     sha256: <64 hex>       # required
     archive_path: shellcheck-v0.10.0/shellcheck   # optional: file inside a tar/zip
+    attest: owner/repo     # optional: the file must carry that repo's GitHub build
+                           # attestation (`gh attestation verify`, on the host)
 downloads:                 # sha256-pinned URL files placed under ~ (see below)
   - name: tool-config      # [A-Za-z0-9._+-]
     dest: ~/.config/tool/config.toml   # always ~/<relative>; some places are refused
@@ -72,6 +74,9 @@ check:                     # final gate run when Claude exits (see below); same 
   `cat /etc/os-release` before assuming one.
 - URLs must be `https://` (redirects too) with no credentials. Installation order:
   apt, binaries, downloads, scripts.
+- `prek` (v0.5.11) is installed in every sandbox by the launcher, not by this file
+  (sha256 and `attest: j178/prek` checked at image build; a `prek` binary entry here
+  replaces it). Do not add it.
 - `sha256` is of the downloaded file itself (the archive, if `archive_path` is
   used). Prefer a checksum published by the project; if you had to compute it from
   your own download (`sha256sum`), say so to the user, because that only proves the

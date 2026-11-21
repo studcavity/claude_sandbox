@@ -239,13 +239,17 @@ def _ensure_base_image(cli, source, alias, max_age_days, rebuild,
     return alias
 
 
-def apply_deps(box, deps):
+def apply_deps(box, deps, verify=None):
     """Install parsed, validated deps into a container (apt, binaries, files, scripts).
 
     Everything is downloaded and checksum-verified here on the host; the
     container only receives bytes. Must run before any credential is in the
     container (the per-launch container and the image build container both
     satisfy that).
+
+    `verify(data, repo)` checks a build attestation for a binary that asks for
+    one (`attest:`); it raises on failure. A binary that asks for one when no
+    verifier is given is refused: attestation is never silently skipped.
     """
     if deps["apt"]:
         log("installing apt packages")
@@ -257,6 +261,13 @@ def apply_deps(box, deps):
     for b in deps["binaries"]:
         log(f"installing binary {b['name']}")
         data = container_deps.fetch(b["url"], container_deps.MAX_BINARY, b["sha256"])
+        if b.get("attest"):
+            if verify is None:
+                raise container_deps.DepsError(
+                    f"binary {b['name']} needs an attestation check "
+                    "but no verifier was given")
+            log(f"verifying the {b['attest']} attestation of {b['name']}")
+            verify(data, b["attest"])
         if b["archive_path"]:
             data = container_deps.extract_member(data, b["archive_path"])
         box.put_file(f"/usr/local/bin/{b['name']}", data, "0755")
@@ -286,7 +297,7 @@ def apply_deps(box, deps):
 
 def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
                       root_size=None, *, hard_max_age_days=None, on_stale=None,
-                      refresh=False):
+                      refresh=False, verify=None):
     """Alias of a per-deps image derived from `base`, building it if needed;
     None when these deps must be installed per launch instead.
 
@@ -328,7 +339,7 @@ def ensure_deps_image(cli, base, deps, max_age_days, rebuild,
             return alias
 
         def provision(build):
-            apply_deps(build, deps)
+            apply_deps(build, deps, verify)
             build.root(BASE_APT_CLEAN, capture=True)
 
         log(f"building deps image {alias} (one-time per change)")

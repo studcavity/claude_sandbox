@@ -85,7 +85,7 @@ def refresh_images(args):
         if box.deps:
             ensure_deps_image(args.cli, image, box.deps, args.max_age, False,
                               args.disk_size, hard_max_age_days=args.hard_max_age,
-                              refresh=True)
+                              refresh=True, verify=gh.verify_attestation)
     except (GitHubError, subprocess.CalledProcessError, RuntimeError, OSError) as e:
         log(f"error: image refresh failed: {e}")
         return 1
@@ -200,7 +200,8 @@ def _launch(args):
             if box.deps and not args.no_cache:
                 baked = ensure_deps_image(args.cli, image, box.deps,
                                           args.max_age, args.rebuild,
-                                          args.disk_size, **swr)
+                                          args.disk_size, verify=gh.verify_attestation,
+                                          **swr)
                 if baked:
                     image, box.deps_baked = baked, True
                     box.deps_note += ("\n(Preinstalled in a cached image; edits "
@@ -230,6 +231,7 @@ def _launch(args):
             box.place_files(workdir)  # before setup (which may use them) and credentials
         with timing.stage("repo setup scripts"):
             box.run_setup(workdir)  # before Claude credentials reach the container
+            box.install_prek_skill(workdir)  # likewise
         with timing.stage("session tools + CLAUDE.md"):
             box.install_session_tools()
             box.install_skills()

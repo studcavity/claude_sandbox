@@ -41,6 +41,9 @@ INSTALL_RECIPE_VERSION = "1"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 # Debian package name, optional =version. No leading '-' (option injection).
 APT_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,99}(=[A-Za-z0-9][A-Za-z0-9.+:~-]{0,99})?$")
+# `attest:` on a binary: the GitHub repo (owner/name) whose build attestation
+# the downloaded file must carry (verified on the host with `gh`).
+ATTEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 # Variables that change how bash/the loader behave rather than configure a tool.
@@ -295,14 +298,18 @@ def parse(raw):
     binaries = []
     for i, b in enumerate(_section(doc, "binaries")):
         w = f"binaries[{i}]"
-        _check_keys(b, w, ("name", "url", "sha256"), ("archive_path",), warn)
+        _check_keys(b, w, ("name", "url", "sha256"),
+                    ("archive_path", "attest"), warn)
         member = b.get("archive_path")
         if member is not None and (not isinstance(member, str) or not member
                                    or "\0" in member):
             raise DepsError(f"{w}: invalid archive_path: {member!r}")
+        attest = b.get("attest")
+        if attest is not None:
+            attest = _str(b, "attest", w, ATTEST_RE)
         binaries.append({"name": _str(b, "name", w, NAME_RE), "url": _url(b, w),
                          "sha256": _sha(b, w, required=True),
-                         "archive_path": member})
+                         "archive_path": member, "attest": attest})
 
     names = [b["name"] for b in binaries]
     if len(set(names)) != len(names):
@@ -319,6 +326,43 @@ def parse(raw):
             "setup": setup, "check": check,
             "last_generated": last_generated, "platform": platform,
             "warnings": warn}
+
+
+# prek (https://github.com/j178/prek) is installed in every sandbox, whatever
+# the repo's deps file says. Pinned: bump the version and BOTH digests together
+# (the .sha256 files in the release; the attestation is checked at install).
+PREK_VERSION = "v0.5.11"
+PREK_REPO = "j178/prek"
+PREK_TARGETS = {   # platform.machine() -> (release target, sha256 of the .tar.gz)
+    "x86_64": ("x86_64-unknown-linux-gnu",
+               "a4ff4c70aef6f21925aa52b82d0746095fbd66893ac3b053e859f6d3454c16ae"),
+    "aarch64": ("aarch64-unknown-linux-gnu",
+                "f5ce760188710a34f32cf7cc52a5f2150e5d0e90189e4328243f3ff5d4037164"),
+}
+PREK_TARGETS["arm64"] = PREK_TARGETS["aarch64"]
+
+
+def prek_entry(machine):
+    """The `binaries:` entry for prek on this CPU, or None if there is no
+    build for it. Pure."""
+    target = PREK_TARGETS.get(machine)
+    if target is None:
+        return None
+    triple, sha = target
+    return {"name": "prek", "sha256": sha, "attest": PREK_REPO,
+            "url": f"https://github.com/{PREK_REPO}/releases/download/"
+                   f"{PREK_VERSION}/prek-{triple}.tar.gz",
+            "archive_path": f"prek-{triple}/prek"}
+
+
+def with_prek(deps, machine):
+    """`deps` (parsed deps, or None) plus prek, unless the repo already
+    installs a binary called `prek` (its choice wins). Pure."""
+    deps = dict(deps) if deps else parse("")
+    entry = prek_entry(machine)
+    if entry and all(b["name"] != "prek" for b in deps["binaries"]):
+        deps["binaries"] = list(deps["binaries"]) + [entry]
+    return deps
 
 
 def cache_key(deps):

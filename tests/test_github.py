@@ -160,3 +160,21 @@ def test_workflow_push_warning_fires_when_the_sandbox_could_push_workflows():
     assert "-s workflow" not in has   # never advise granting it
     unknown = g.workflow_push_warning(None)
     assert "couldn't verify" in unknown and "secrets" in unknown
+
+
+def test_verify_attestation_runs_gh_on_a_private_file(gh):
+    calls, replies = gh
+    replies.append(Result(""))
+    g.verify_attestation(b"bytes", "j178/prek")
+    argv = calls[0]["argv"]
+    assert argv[:3] == ["gh", "attestation", "verify"]
+    assert argv[4:] == ["--repo", "j178/prek"]
+
+
+def test_verify_attestation_fails_closed(gh):
+    calls, replies = gh
+    replies.append(Result("", "no attestations found", 1))
+    with pytest.raises(g.GitHubError, match="did not verify"):
+        g.verify_attestation(b"bytes", "j178/prek")
+    with pytest.raises(ValueError):   # the repo goes to argv: validated first
+        g.verify_attestation(b"bytes", "--repo=evil")
