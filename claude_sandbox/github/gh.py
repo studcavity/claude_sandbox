@@ -3,8 +3,10 @@ import concurrent.futures
 import functools
 import io
 import json
+import os
 import re
 import shlex
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -229,3 +231,24 @@ def workflow_push_warning(scopes):
                 "push a workflow that runs with this repo's Actions secrets "
                 "before any review; " + WORKFLOW_FIX)
     return None
+
+
+def verify_attestation(data, repo):
+    """Check that the file `data` has a GitHub build attestation from `repo`
+    (`gh attestation verify`, run on the host with its login). Raises
+    GitHubError when it doesn't, or when gh can't check (too old, offline,
+    not logged in): a failed check never means "assume fine".
+
+    The bytes are written to a fresh private directory; the file name is not
+    part of the check, only its sha256.
+    """
+    validate_repo(repo)
+    with tempfile.TemporaryDirectory(prefix="cs-attest-") as d:
+        path = os.path.join(d, "artifact")
+        with open(path, "wb") as f:
+            f.write(data)
+        r = _gh(["attestation", "verify", path, "--repo", repo])
+    if r.exited != 0:
+        text = (r.stderr.strip() or r.stdout.strip())[:500]
+        raise GitHubError(f"attestation of a download from {repo} did not "
+                          f"verify (needs host gh >= 2.90, logged in): {text}", 0)

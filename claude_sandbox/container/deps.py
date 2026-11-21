@@ -41,6 +41,16 @@ INSTALL_RECIPE_VERSION = "1"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
 # Debian package name, optional =version. No leading '-' (option injection).
 APT_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,99}(=[A-Za-z0-9][A-Za-z0-9.+:~-]{0,99})?$")
+# `attest:` on a binary: the GitHub repo (owner/name) whose build attestation
+# the downloaded file must carry (verified on the host with `gh`).
+ATTEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+# `apt_repos:` values end up in a deb822 .sources file, so they are plain
+# tokens: no whitespace, quotes or newlines to smuggle in another field.
+REPO_URL_RE = re.compile(r"^https://[A-Za-z0-9._~/%+:@-]+$")
+SUITE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+KEY_URL_RE = re.compile(r"^https://[A-Za-z0-9._~/%+:@-]+\.(gpg|asc)$")
+ARCH_RE = re.compile(r"^[a-z0-9]{2,16}$")
+MAX_APT_REPOS, MAX_KEY = 8, 256 * 1024
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 # Variables that change how bash/the loader behave rather than configure a tool.
@@ -232,7 +242,7 @@ def check_file_set(entries, section):
 
 
 def parse(raw):
-    """bytes/str -> {"apt", "scripts", "binaries", "downloads", "setup", "check",
+    """bytes/str -> {"apt_repos", "apt", "scripts", "binaries", "downloads", "setup", "check",
     "warnings" (unknown keys that were ignored), + metadata}.
 
     Unknown keys are warnings, not errors, so a file written for a newer
@@ -252,7 +262,7 @@ def parse(raw):
         doc = {}
     warn: list[str] = []
     _check_keys(doc, DEPS_FILE, (),
-                ("image", "apt", "scripts", "binaries", "downloads", "setup",
+                ("image", "apt_repos", "apt", "scripts", "binaries", "downloads", "setup",
                  "check", "last_generated", "platform"), warn)
 
     last_generated = doc.get("last_generated")
@@ -284,6 +294,33 @@ def parse(raw):
             raise DepsError(f"apt[{i}]: invalid package spec: {pkg!r}")
         apt.append(pkg)
 
+    apt_repos = []
+    for i, r in enumerate(_section(doc, "apt_repos")):
+        w = f"apt_repos[{i}]"
+        _check_keys(r, w, ("name", "url", "suite", "key_url", "key_sha256"),
+                    ("components", "architectures"), warn)
+        key_sha = _str(r, "key_sha256", w, SHA_RE).lower()
+        comps = r.get("components", ["main"])
+        archs = r.get("architectures", [])
+        for label, vals, rx in (("components", comps, SUITE_RE),
+                                ("architectures", archs, ARCH_RE)):
+            if not isinstance(vals, list) or not all(
+                    isinstance(v, str) and rx.match(v) for v in vals):
+                raise DepsError(f"{w}: {label} must be a list of plain words")
+        if not comps:
+            raise DepsError(f"{w}: components must not be empty")
+        apt_repos.append({
+            "name": _str(r, "name", w, NAME_RE),
+            "url": _str(r, "url", w, REPO_URL_RE),
+            "suite": _str(r, "suite", w, SUITE_RE),
+            "components": comps, "architectures": archs,
+            "key_url": _str(r, "key_url", w, KEY_URL_RE),
+            "key_sha256": key_sha})
+    if len(apt_repos) > MAX_APT_REPOS:
+        raise DepsError(f"apt_repos: at most {MAX_APT_REPOS} entries")
+    if len({r["name"] for r in apt_repos}) != len(apt_repos):
+        raise DepsError("apt_repos: duplicate names")
+
     scripts = []
     for i, s in enumerate(_section(doc, "scripts")):
         w = f"scripts[{i}]"
@@ -295,14 +332,18 @@ def parse(raw):
     binaries = []
     for i, b in enumerate(_section(doc, "binaries")):
         w = f"binaries[{i}]"
-        _check_keys(b, w, ("name", "url", "sha256"), ("archive_path",), warn)
+        _check_keys(b, w, ("name", "url", "sha256"),
+                    ("archive_path", "attest"), warn)
         member = b.get("archive_path")
         if member is not None and (not isinstance(member, str) or not member
                                    or "\0" in member):
             raise DepsError(f"{w}: invalid archive_path: {member!r}")
+        attest = b.get("attest")
+        if attest is not None:
+            attest = _str(b, "attest", w, ATTEST_RE)
         binaries.append({"name": _str(b, "name", w, NAME_RE), "url": _url(b, w),
                          "sha256": _sha(b, w, required=True),
-                         "archive_path": member})
+                         "archive_path": member, "attest": attest})
 
     names = [b["name"] for b in binaries]
     if len(set(names)) != len(names):
@@ -313,12 +354,56 @@ def parse(raw):
     check_file_set(downloads, "downloads")
     setup = _repo_scripts(doc, "setup", warn)
     check = _repo_scripts(doc, "check", warn)
-    return {"image": image, "apt": apt, "scripts": scripts,
+    return {"image": image, "apt_repos": apt_repos, "apt": apt,
+            "scripts": scripts,
             "binaries": binaries, "downloads": downloads,
             "files": [],   # filled by the launcher: downloads + approved host files
             "setup": setup, "check": check,
             "last_generated": last_generated, "platform": platform,
             "warnings": warn}
+
+
+# prek (https://github.com/j178/prek) is installed in every sandbox, whatever
+# the repo's deps file says. Pinned: bump the version and BOTH digests together
+# (the .sha256 files in the release; the attestation is checked at install).
+PREK_VERSION = "v0.5.11"
+PREK_REPO = "j178/prek"
+PREK_TARGETS = {   # platform.machine() -> (release target, sha256 of the .tar.gz)
+    "x86_64": ("x86_64-unknown-linux-gnu",
+               "a4ff4c70aef6f21925aa52b82d0746095fbd66893ac3b053e859f6d3454c16ae"),
+    "aarch64": ("aarch64-unknown-linux-gnu",
+                "f5ce760188710a34f32cf7cc52a5f2150e5d0e90189e4328243f3ff5d4037164"),
+}
+# prek's agent skill (one file), fetched on the host at the same tag and pinned
+# by sha256, so no `gh` is needed in the container. Bump with PREK_VERSION.
+PREK_SKILL_URL = (f"https://raw.githubusercontent.com/{PREK_REPO}/"
+                  f"{PREK_VERSION}/skills/prek/SKILL.md")
+PREK_SKILL_SHA256 = "fc06a9c64008f3c16ee2765fc79b230186b168ce1bd8d3bdd22fe040016a8a52"
+PREK_SKILL_MAX = 64 * 1024
+PREK_TARGETS["arm64"] = PREK_TARGETS["aarch64"]
+
+
+def prek_entry(machine):
+    """The `binaries:` entry for prek on this CPU, or None if there is no
+    build for it. Pure."""
+    target = PREK_TARGETS.get(machine)
+    if target is None:
+        return None
+    triple, sha = target
+    return {"name": "prek", "sha256": sha, "attest": PREK_REPO,
+            "url": f"https://github.com/{PREK_REPO}/releases/download/"
+                   f"{PREK_VERSION}/prek-{triple}.tar.gz",
+            "archive_path": f"prek-{triple}/prek"}
+
+
+def with_prek(deps, machine):
+    """`deps` (parsed deps, or None) plus prek, unless the repo already
+    installs a binary called `prek` (its choice wins). Pure."""
+    deps = dict(deps) if deps else parse("")
+    entry = prek_entry(machine)
+    if entry and all(b["name"] != "prek" for b in deps["binaries"]):
+        deps["binaries"] = list(deps["binaries"]) + [entry]
+    return deps
 
 
 def cache_key(deps):
@@ -340,11 +425,15 @@ def cache_key(deps):
     """
     files = [{"dest": f["dest"], "mode": f["mode"], "sha256": f["sha256"]}
              for f in sorted(deps.get("files") or [], key=lambda f: f["dest"])]
-    if not (deps["apt"] or deps["scripts"] or deps["binaries"] or files):
+    repos = deps.get("apt_repos") or []
+    if not (deps["apt"] or deps["scripts"] or deps["binaries"] or files
+            or repos):
         return None
     if any(s["sha256"] is None for s in deps["scripts"]):
         return None
     parts = {k: deps[k] for k in ("apt", "scripts", "binaries")}
+    if repos:   # absent when empty, so keys of repo-less deps never change
+        parts["apt_repos"] = repos
     if files:   # absent when empty, so keys of file-less deps never change
         parts["files"] = files
     blob = json.dumps(parts, sort_keys=True, separators=(",", ":"))
@@ -357,6 +446,9 @@ def summary(deps):
     out = []
     if deps.get("image"):
         out.append(f"image: `{deps['image']}` (the base OS image to launch)")
+    if deps.get("apt_repos"):
+        out.append("apt repos (key sha256-pinned): " + ", ".join(
+            f"`{r['name']}` ({r['url']} {r['suite']})" for r in deps["apt_repos"]))
     if deps["apt"]:
         out.append("apt: " + ", ".join(f"`{p}`" for p in deps["apt"]))
     if deps["scripts"]:

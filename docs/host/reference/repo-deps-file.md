@@ -23,19 +23,35 @@ container.
 The format is the same page the session reads, so it lives in one place:
 [Editing the deps file](../../session/common/deps-file.md).
 
-Install order is apt, binaries, downloads, scripts. `--no-deps` skips all of it. Two
+Install order is apt_repos, apt, binaries, downloads, scripts. `--no-deps` skips all of it. Two
 optional metadata keys, `last_generated` (quoted ISO 8601 UTC timestamp) and
 `platform` (for example `lsb_release -a` plus `uname -m`), record where the
 toolchain was resolved so it can be reproduced; they are validated but never
 executed and do not affect caching. Scripts under `check:` are described in
 [The final check](final-check.md).
 
+# prek, installed everywhere
+
+Every sandbox gets [prek](https://github.com/j178/prek) (pinned to v0.5.11 in
+`container/deps.py`: per-CPU URL, sha256 and `attest: j178/prek`) added to the
+binaries, even with no deps file or with `--no-deps`; a `prek` entry in the
+repo's own `binaries:` wins. It is baked into the cached image like any binary.
+If the clone has a `.pre-commit-config.yaml` at its root, the launcher also runs
+puts prek's agent skill in `~/.claude/skills/prek/` after the clone: the host
+downloads the one `SKILL.md` at the same tag, checks its pinned sha256 and
+copies it in, so the container needs no `gh` (a failure is only a note). Also
+`prek run --all-files` joins the [final check](final-check.md). To bump prek,
+change the version, both digests and the skill's digest together.
+
+**Host requirement:** the host's `gh` must be 2.90 or newer and logged in; the
+launcher uses it to attest the prek download (`gh attestation verify`).
+
 # Caching
 
 The deps are baked into a per-repo local image (`claude-sandboxdeps-<hash>`,
 derived from the base image), so only the first launch after a change pays for
 the installs. The key covers the base image and the validated
-`apt`/`scripts`/`binaries` content; comments, metadata, `image:` and `setup:` do
+`apt_repos`/`apt`/`scripts`/`binaries` content; comments, metadata, `image:` and `setup:` do
 not count. The image is refreshed on the same `--max-age` / `--hard-max-age`
 rules as the [base image](../guides/images-and-caching.md), rebuilt when the base
 was rebuilt after it or with `--rebuild`, and the newest 4 are kept. It is built
@@ -101,8 +117,10 @@ and its default applies (for example `on_eror` leaves `on_error: fail`).
   launch.
 - The host downloads everything (https only, including redirects; no credentials
   in URLs; size caps; the GitHub token is never sent) and checks sha256 *before*
-  the bytes enter the container. Binaries must have a checksum. Archive members
-  are read in memory, never unpacked.
+  the bytes enter the container. Binaries must have a checksum, and may carry
+  `attest: owner/repo`: the host then runs `gh attestation verify` (host gh 2.90+,
+  logged in) on the bytes and aborts the build if it fails; it is never skipped
+  silently. Archive members are read in memory, never unpacked.
 - Install runs *before* the SSH deploy key and Claude credentials exist in the
   container, so an installer cannot read them, and uses argv lists, never a
   shell string.

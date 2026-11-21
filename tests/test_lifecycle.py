@@ -12,6 +12,7 @@ import types
 import pytest
 
 from claude_sandbox import cli as cs
+from claude_sandbox.container import deps as container_deps
 from claude_sandbox.container import incus
 from claude_sandbox import resume
 from claude_sandbox import sandbox
@@ -62,8 +63,28 @@ class FakeContainer:
     def __getattr__(self, what):  # launch, root, put_file, user, delete, ...
         return lambda *a, **k: self._ok(what, *a, **k)
 
+    has_prek_config = False   # does the fake clone have .pre-commit-config.yaml?
+
+    def user_argv(self, argv, env=None, cwd=None, **kw):
+        self.calls.append(("user_argv", (argv,)))
+        probe = argv[0] == "test"
+        return types.SimpleNamespace(
+            stdout="", returncode=0 if probe and self.has_prek_config else
+            (1 if probe else 0))
+
     def user_cmd(self, *argv, env=None):
         return ["fake-exec", "--cwd", incus.HOME, "--", *argv]
+
+
+def record_user_argv(sent, field=None):
+    """A FakeContainer.user_argv that records the exec's stdin (and argv),
+    except the launcher's `test -f` probes, which just say "no such file"."""
+    def fake(self, argv, **k):
+        if argv[0] == "test":
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        sent.append((argv, k["input"]) if field == "argv" else k["input"])
+        return types.SimpleNamespace(returncode=0, stderr="")
+    return fake
 
 
 class FakeGitHub:
@@ -107,7 +128,7 @@ class FakeGitHub:
 def world(monkeypatch, tmp_path):
     FakeContainer.instances = []
     gh = FakeGitHub("quirky-hopper")
-    ran = []
+    ran, attested = [], []
     monkeypatch.setattr(cs, "Container", FakeContainer)
     monkeypatch.setattr(sandbox, "Container", FakeContainer)
     for mod in (bg, sessions, github_land, github_gh):
@@ -116,11 +137,20 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(bg, "check_workflow_scope", lambda: None)
     monkeypatch.setattr(pool, "check", lambda *a: None)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
+    # prek is always a dep, so every launch asks for a deps image: none built
+    monkeypatch.setattr(cs, "ensure_deps_image", lambda *a, **k: None)
+    # ... so prek is installed into the fake container: no network, and the
+    # attestation check is recorded rather than run
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"tar")
+    monkeypatch.setattr(container_deps, "extract_member", lambda d, m: b"bin")
+    monkeypatch.setattr(github_gh, "verify_attestation",
+                        lambda data, repo: attested.append(repo))
     monkeypatch.setattr(sandbox.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     monkeypatch.setattr(cs.subprocess, "run",
                         lambda cmd, **k: ran.append(cmd))
-    return types.SimpleNamespace(gh=gh, ran=ran, tmp=tmp_path)
+    return types.SimpleNamespace(gh=gh, ran=ran, tmp=tmp_path,
+                                 attested=attested)
 
 
 def argv(world, *extra):
@@ -131,6 +161,10 @@ def argv(world, *extra):
 
 def test_full_launch_runs_session_opens_pr_and_cleans_up(world, capsys):
     assert cs.main(argv(world)) == 0
+    # prek was installed in the (fake) container, after its attestation check
+    assert world.attested == ["j178/prek"]
+    assert ("put_file", ("/usr/local/bin/prek", b"bin", "0755")) in \
+        FakeContainer.instances[-1].calls
     # the interactive session actually started, in the clone
     assert any("claude" in c for cmd in world.ran for c in cmd)
     assert any(incus.HOME + "/claude_sandbox" == c or "o/r".split("/")[1] in c
@@ -373,8 +407,7 @@ def test_the_default_hard_cap_is_thirty_days(world, monkeypatch):
 def test_own_repo_is_pre_trusted_and_themed(world, monkeypatch):
     sent = []
     monkeypatch.setattr(FakeContainer, "user_argv",
-                        lambda self, argv, **k: sent.append((argv, k["input"]))
-                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        record_user_argv(sent, "argv"),
                         raising=False)
     assert cs.main(argv(world)) == 0
     (argv_, stdin), = sent
@@ -389,8 +422,7 @@ def test_foreign_repo_is_not_pre_trusted(world, monkeypatch, capsys):
     world.gh.owner = "someone-else"
     sent = []
     monkeypatch.setattr(FakeContainer, "user_argv",
-                        lambda self, argv, **k: sent.append(k["input"])
-                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        record_user_argv(sent),
                         raising=False)
     assert cs.main(argv(world)) == 0
     assert "projects" not in json.loads(sent[0])[".claude.json"]
@@ -400,8 +432,7 @@ def test_foreign_repo_is_not_pre_trusted(world, monkeypatch, capsys):
 def test_owner_lookup_failure_fails_closed(world, monkeypatch):
     sent = []
     monkeypatch.setattr(FakeContainer, "user_argv",
-                        lambda self, argv, **k: sent.append(k["input"])
-                        or types.SimpleNamespace(returncode=0, stderr=""),
+                        record_user_argv(sent),
                         raising=False)
     monkeypatch.setattr(bg, "repo_owner",
                         lambda repo: (_ for _ in ()).throw(GitHubError("x", 500)))
@@ -494,6 +525,10 @@ def local_world(monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "gh_api", no_github)
     monkeypatch.setattr(github_gh, "github_login", no_github)
     monkeypatch.setattr(cs, "ensure_base_image", lambda *a, **k: "img")
+    monkeypatch.setattr(cs, "ensure_deps_image", lambda *a, **k: None)
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"tar")
+    monkeypatch.setattr(container_deps, "extract_member", lambda d, m: b"bin")
+    monkeypatch.setattr(github_gh, "verify_attestation", lambda data, repo: None)
     monkeypatch.setattr(sandbox.Sandbox, "attach_volumes", lambda self: None)
     monkeypatch.setattr(cs.signal, "signal", lambda *a: None)
     real_run = sp.run

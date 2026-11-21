@@ -400,3 +400,103 @@ def test_files_are_part_of_the_cache_key_by_what_lands_on_disk():
 def test_downloads_show_in_summary():
     assert any("~/.config/tool/cfg" in l
                for l in d.summary(d.parse(yaml.safe_dump({"downloads": [_file()]}))))
+
+
+# --------------------------------------------------------------------------- #
+# prek, the default dependency
+# --------------------------------------------------------------------------- #
+def test_binary_attest_key_is_validated():
+    ok = d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}, "
+                 "attest: o/r}]")
+    assert ok["binaries"][0]["attest"] == "o/r"
+    assert d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}}}]"
+                   )["binaries"][0]["attest"] is None
+    for bad in ("'o/r; rm -rf ~'", "'--repo'", "'../x'", "7"):
+        with pytest.raises(DepsError, match="attest"):
+            d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}, "
+                    f"attest: {bad}}}]")
+
+
+@pytest.mark.parametrize("machine,triple", [
+    ("x86_64", "x86_64-unknown-linux-gnu"),
+    ("aarch64", "aarch64-unknown-linux-gnu"),
+    ("arm64", "aarch64-unknown-linux-gnu")])
+def test_prek_entry_is_pinned_per_cpu(machine, triple):
+    e = d.prek_entry(machine)
+    assert e["url"] == ("https://github.com/j178/prek/releases/download/"
+                        f"v0.5.11/prek-{triple}.tar.gz")
+    assert e["archive_path"] == f"prek-{triple}/prek"
+    assert d.SHA_RE.match(e["sha256"]) and e["attest"] == "j178/prek"
+    # it must pass the same validation as a repo-written binaries entry
+    parsed = d.parse(yaml.safe_dump({"binaries": [
+        {k: v for k, v in e.items()}]}))
+    assert parsed["binaries"] == [e]
+
+
+def test_prek_entry_is_none_for_an_unknown_cpu():
+    assert d.prek_entry("riscv64") is None
+    assert d.with_prek(None, "riscv64")["binaries"] == []
+
+
+def test_with_prek_adds_it_once_and_keeps_the_repos_own():
+    out = d.with_prek(None, "x86_64")
+    assert [b["name"] for b in out["binaries"]] == ["prek"]
+    assert d.cache_key(out) is not None   # always baked into an image
+    repo = d.parse("apt: [git]")
+    merged = d.with_prek(repo, "x86_64")
+    assert repo["binaries"] == []         # input untouched
+    assert d.with_prek(merged, "x86_64")["binaries"] == merged["binaries"]
+    own = d.parse(f"binaries: [{{name: prek, url: 'https://x/p', sha256: {SHA}}}]")
+    assert d.with_prek(own, "x86_64")["binaries"] == own["binaries"]
+
+
+def test_the_attest_key_is_part_of_the_cache_key():
+    a = d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}}}]")
+    b = d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}, "
+                "attest: o/r}]")
+    assert d.cache_key(a) != d.cache_key(b)
+
+
+# --------------------------------------------------------------------------- #
+# apt_repos
+# --------------------------------------------------------------------------- #
+REPO = ("{name: gh, url: 'https://cli.github.com/packages', suite: stable, "
+        f"key_url: 'https://cli.github.com/packages/k.gpg', key_sha256: {SHA}}}")
+
+
+def test_apt_repos_parse_with_defaults():
+    r, = d.parse(f"apt_repos: [{REPO}]")["apt_repos"]
+    assert r["components"] == ["main"] and r["architectures"] == []
+    assert r["key_sha256"] == SHA and r["suite"] == "stable"
+    assert d.parse("apt: [git]")["apt_repos"] == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("url", "http://x/p"), ("url", "'https://x/p q'"), ("url", "'https://x/p\\nTypes: deb-src'"),
+    ("suite", "'stable main'"), ("suite", "'-x'"), ("key_url", "https://x/key.txt"),
+    ("key_url", "http://x/k.gpg"), ("key_sha256", "abc"), ("name", "'a b'"),
+    ("components", "[main, 'x y']"), ("components", "[]"), ("architectures", "amd64")])
+def test_apt_repo_values_cannot_inject(field, value):
+    entry = yaml.safe_load(f"[{REPO}]")[0]
+    entry[field] = yaml.safe_load(str(value))
+    with pytest.raises(DepsError):
+        d.parse(yaml.safe_dump({"apt_repos": [entry]}))
+
+
+def test_apt_repo_needs_a_pinned_key_and_unique_names():
+    with pytest.raises(DepsError, match="key_sha256"):
+        d.parse("apt_repos: [{name: g, url: 'https://x/p', suite: s, "
+                "key_url: 'https://x/k.gpg'}]")
+    with pytest.raises(DepsError, match="duplicate"):
+        d.parse(f"apt_repos: [{REPO}, {REPO}]")
+
+
+def test_apt_repos_are_part_of_the_cache_key_but_not_when_absent():
+    plain = d.parse("apt: [git]")
+    with_repo = d.parse(f"apt: [git]\napt_repos: [{REPO}]")
+    assert d.cache_key(plain) != d.cache_key(with_repo)
+    assert d.cache_key(d.parse(f"apt_repos: [{REPO}]")) is not None
+    # a deps dict from before this feature (no apt_repos key) keys the same
+    old = {k: v for k, v in plain.items() if k != "apt_repos"}
+    assert d.cache_key(old) == d.cache_key(plain)
+    assert "apt repos" in d.summary(with_repo)[0]
