@@ -111,10 +111,7 @@ def with_nesting(deps):
 # The repo config prek reads (its own prek.toml is not run for you: only the
 # pre-commit file, which is what the exit check and the skill key off).
 PREK_CONFIG = ".pre-commit-config.yaml"
-PREK_SKILL = ["gh", "skill", "install", container_deps.PREK_REPO,
-              f"prek@{container_deps.PREK_VERSION}", "--agent", "claude-code",
-              "--scope", "user", "--force"]
-PREK_SKILL_TIMEOUT = 120
+PREK_SKILL_DEST = ".claude/skills/prek/SKILL.md"   # under the session home
 PREK_CHECK_TIMEOUT = 1800
 # Guarded so a branch without the config passes (the check runs on each
 # session branch). A fixed string: nothing is interpolated into it.
@@ -494,30 +491,31 @@ class Sandbox:
             check=False).returncode == 0
 
     def install_prek_skill(self, workdir):
-        """When the repo has a `.pre-commit-config.yaml`, install prek's agent
-        skill (`gh skill install`, user scope, pinned to the installed prek
-        version) so the session knows how to drive prek.
+        """When the repo has a `.pre-commit-config.yaml`, put prek's agent
+        skill (one SKILL.md, pinned to the installed prek version by sha256)
+        in ~/.claude/skills so the session knows how to drive prek. The host
+        downloads and verifies it, so the container needs no `gh`.
 
         Same slot as run_setup: after the clone, before Claude credentials
-        reach the container. Best effort: a failure (gh too old for `gh
-        skill`, offline) is a note for the session, never an abort.
+        reach the container. Best effort: a failure (offline, hash mismatch)
+        is a note for the session, never an abort.
         """
         if not (self.has_prek() and self.has_prek_config(workdir)):
             return
-        log("installing the prek skill (the repo has a "
-            f"{PREK_CONFIG})")
-        r = self.box.user_argv(
-            ["timeout", "--kill-after=10", str(PREK_SKILL_TIMEOUT), *PREK_SKILL],
-            cwd=workdir, check=False, input="", capture=True)
-        if r.returncode == 0:
-            self.deps_note += ("\nThe repo has a `.pre-commit-config.yaml`: "
-                               "the `prek` skill was installed; use it.")
-        else:
-            log("warning: couldn't install the prek skill; continuing")
+        log(f"installing the prek skill (the repo has a {PREK_CONFIG})")
+        try:
+            data = container_deps.fetch(container_deps.PREK_SKILL_URL,
+                                        container_deps.PREK_SKILL_MAX,
+                                        container_deps.PREK_SKILL_SHA256)
+            self.box.put_user_file(PREK_SKILL_DEST, data, "0644")
+        except (container_deps.DepsError, subprocess.CalledProcessError) as e:
+            log(f"warning: couldn't install the prek skill ({e}); continuing")
             self.deps_note += (
-                "\nThe repo has a `.pre-commit-config.yaml` but the `prek` "
-                "skill could not be installed (`gh skill install` failed, "
-                "probably gh older than 2.90); use `prek --help`.")
+                f"\nThe repo has a `{PREK_CONFIG}` but the `prek` skill could "
+                "not be installed; use `prek --help`.")
+            return
+        self.deps_note += (f"\nThe repo has a `{PREK_CONFIG}`: the `prek` "
+                           "skill was installed; use it.")
 
     def run_setup(self, workdir):
         """Run the repo's `setup:` scripts in the container (as the session

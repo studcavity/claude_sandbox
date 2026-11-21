@@ -339,6 +339,12 @@ PREK_TARGETS = {   # platform.machine() -> (release target, sha256 of the .tar.g
     "aarch64": ("aarch64-unknown-linux-gnu",
                 "f5ce760188710a34f32cf7cc52a5f2150e5d0e90189e4328243f3ff5d4037164"),
 }
+# prek's agent skill (one file), fetched on the host at the same tag and pinned
+# by sha256, so no `gh` is needed in the container. Bump with PREK_VERSION.
+PREK_SKILL_URL = (f"https://raw.githubusercontent.com/{PREK_REPO}/"
+                  f"{PREK_VERSION}/skills/prek/SKILL.md")
+PREK_SKILL_SHA256 = "fc06a9c64008f3c16ee2765fc79b230186b168ce1bd8d3bdd22fe040016a8a52"
+PREK_SKILL_MAX = 64 * 1024
 PREK_TARGETS["arm64"] = PREK_TARGETS["aarch64"]
 
 

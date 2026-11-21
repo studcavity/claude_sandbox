@@ -37,10 +37,14 @@ Every sandbox gets [prek](https://github.com/j178/prek) (pinned to v0.5.11 in
 binaries, even with no deps file or with `--no-deps`; a `prek` entry in the
 repo's own `binaries:` wins. It is baked into the cached image like any binary.
 If the clone has a `.pre-commit-config.yaml` at its root, the launcher also runs
-`gh skill install j178/prek prek@v0.5.11 --agent claude-code --scope user` after
-the clone (needs gh 2.90+ in the image; a failure is only a note), and
+puts prek's agent skill in `~/.claude/skills/prek/` after the clone: the host
+downloads the one `SKILL.md` at the same tag, checks its pinned sha256 and
+copies it in, so the container needs no `gh` (a failure is only a note). Also
 `prek run --all-files` joins the [final check](final-check.md). To bump prek,
-change the version and both digests together.
+change the version, both digests and the skill's digest together.
+
+**Host requirement:** the host's `gh` must be 2.90 or newer and logged in; the
+launcher uses it to attest the prek download (`gh attestation verify`).
 
 # Caching
 
@@ -114,7 +118,7 @@ and its default applies (for example `on_eror` leaves `on_error: fail`).
 - The host downloads everything (https only, including redirects; no credentials
   in URLs; size caps; the GitHub token is never sent) and checks sha256 *before*
   the bytes enter the container. Binaries must have a checksum, and may carry
-  `attest: owner/repo`: the host then runs `gh attestation verify` (gh 2.49+,
+  `attest: owner/repo`: the host then runs `gh attestation verify` (host gh 2.90+,
   logged in) on the bytes and aborts the build if it fails; it is never skipped
   silently. Archive members are read in memory, never unpacked.
 - Install runs *before* the SSH deploy key and Claude credentials exist in the

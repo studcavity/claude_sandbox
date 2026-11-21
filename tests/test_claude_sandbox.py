@@ -1628,31 +1628,39 @@ def test_prek_config_is_looked_for_in_the_clone_root(make_args):
     assert box.box.calls[0][0] == ["test", "-f", "/w/repo/.pre-commit-config.yaml"]
 
 
-def test_the_prek_skill_is_installed_pinned_when_the_repo_has_a_config(make_args):
+def test_the_prek_skill_is_fetched_pinned_and_placed_without_gh(
+        make_args, monkeypatch):
     box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), True)
+    fetched, placed = [], []
+    monkeypatch.setattr(container_deps, "fetch",
+                        lambda url, cap, sha=None: fetched.append((url, cap, sha))
+                        or b"SKILL")
+    box.box.put_user_file = lambda rel, data, mode: placed.append((rel, data, mode))
     box.install_prek_skill("/w/repo")
-    argv, kw = box.box.calls[-1]
-    assert argv[-len(sandbox.PREK_SKILL):] == sandbox.PREK_SKILL
-    assert argv[:2] == ["timeout", "--kill-after=10"]
-    assert sandbox.PREK_SKILL[:5] == ["gh", "skill", "install", "j178/prek",
-                                      "prek@v0.5.11"]
-    assert kw["cwd"] == "/w/repo" and kw["input"] == ""   # never prompts
+    (url, cap, sha), = fetched
+    assert url.startswith("https://raw.githubusercontent.com/j178/prek/v0.5.11/")
+    assert sha == container_deps.PREK_SKILL_SHA256 and cap == 64 * 1024
+    assert placed == [(".claude/skills/prek/SKILL.md", b"SKILL", "0644")]
+    assert all("gh" not in c[0] for c in box.box.calls)   # nothing runs in the container
     assert "skill was installed" in box.deps_note
 
 
-def test_no_prek_skill_without_a_config(make_args):
+def test_no_prek_skill_without_a_config(make_args, monkeypatch):
     box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), False)
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: 1 / 0)
     box.install_prek_skill("/w/repo")
     assert [c[0][0] for c in box.box.calls] == ["test"]   # only the probe
     assert box.deps_note == sandbox.Sandbox(make_args(repo="o/r")).deps_note
 
 
-def test_a_failing_prek_skill_install_is_a_note_not_an_abort(make_args):
+def test_a_failing_prek_skill_download_is_a_note_not_an_abort(
+        make_args, monkeypatch):
     box = _with_prek(sandbox.Sandbox(make_args(repo="o/r")), True)
-    inner = box.box.user_argv
-    box.box.user_argv = lambda argv, **k: (
-        types.SimpleNamespace(returncode=1, stdout="", stderr="")
-        if argv[0] == "timeout" else inner(argv, **k))
+
+    def bad(*a, **k):
+        raise container_deps.DepsError("sha256 mismatch")
+    monkeypatch.setattr(container_deps, "fetch", bad)
+    box.box.put_user_file = lambda *a: 1 / 0   # never reached
     box.install_prek_skill("/w/repo")
     assert "could not be installed" in box.deps_note
 

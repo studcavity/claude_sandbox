@@ -251,4 +251,4 @@ def verify_attestation(data, repo):
     if r.exited != 0:
         text = (r.stderr.strip() or r.stdout.strip())[:500]
         raise GitHubError(f"attestation of a download from {repo} did not "
-                          f"verify (needs gh >= 2.49, logged in): {text}", 0)
+                          f"verify (needs host gh >= 2.90, logged in): {text}", 0)
