@@ -239,8 +239,41 @@ def _ensure_base_image(cli, source, alias, max_age_days, rebuild,
     return alias
 
 
+APT_PREFIX = "claude-sandbox-"   # our files in apt's dirs; never a system name
+
+
+def apt_source_text(r):
+    """deb822 .sources text for one validated `apt_repos:` entry. Pure. The
+    values were checked against plain-token patterns, so none can add a field."""
+    lines = ["Types: deb", f"URIs: {r['url']}", f"Suites: {r['suite']}",
+             "Components: " + " ".join(r["components"])]
+    if r["architectures"]:
+        lines.append("Architectures: " + " ".join(r["architectures"]))
+    lines.append(f"Signed-By: {apt_key_path(r)}")
+    return "\n".join(lines) + "\n"
+
+
+def apt_key_path(r):
+    ext = "asc" if r["key_url"].endswith(".asc") else "gpg"
+    return f"/etc/apt/keyrings/{APT_PREFIX}{r['name']}.{ext}"
+
+
+def add_apt_repos(box, repos):
+    """Write each repo's pinned signing key and .sources file. The key is
+    downloaded and sha256-checked on the host; the repo is trusted only for
+    packages signed by that key (Signed-By), never added to the global keyring."""
+    box.root_argv(["install", "-d", "-m", "0755", "/etc/apt/keyrings"])
+    for r in repos:
+        log(f"adding apt repo {r['name']}")
+        key = container_deps.fetch(r["key_url"], container_deps.MAX_KEY,
+                                   r["key_sha256"])
+        box.put_file(apt_key_path(r), key, "0644")
+        box.put_file(f"/etc/apt/sources.list.d/{APT_PREFIX}{r['name']}.sources",
+                     apt_source_text(r).encode(), "0644")
+
+
 def apply_deps(box, deps, verify=None):
-    """Install parsed, validated deps into a container (apt, binaries, files, scripts).
+    """Install parsed, validated deps into a container (apt repos, apt, binaries, files, scripts).
 
     Everything is downloaded and checksum-verified here on the host; the
     container only receives bytes. Must run before any credential is in the
@@ -251,10 +284,15 @@ def apply_deps(box, deps, verify=None):
     one (`attest:`); it raises on failure. A binary that asks for one when no
     verifier is given is refused: attestation is never silently skipped.
     """
-    if deps["apt"]:
-        log("installing apt packages")
+    repos = deps.get("apt_repos") or []
+    if repos:
+        add_apt_repos(box, repos)
+    if deps["apt"] or repos:
+        log("installing apt packages" if deps["apt"] else "updating apt")
         env = {"DEBIAN_FRONTEND": "noninteractive"}
+        # always after the repos are added, so their packages are visible
         box.root_argv(["apt-get", "update", "-qq"], env=env)
+    if deps["apt"]:
         box.root_argv(["apt-get", "install", "-y", "-qq",
                        "--no-install-recommends", *deps["apt"]], env=env)
 

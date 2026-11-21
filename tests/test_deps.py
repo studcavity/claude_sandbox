@@ -455,3 +455,48 @@ def test_the_attest_key_is_part_of_the_cache_key():
     b = d.parse(f"binaries: [{{name: t, url: 'https://x/t', sha256: {SHA}, "
                 "attest: o/r}]")
     assert d.cache_key(a) != d.cache_key(b)
+
+
+# --------------------------------------------------------------------------- #
+# apt_repos
+# --------------------------------------------------------------------------- #
+REPO = ("{name: gh, url: 'https://cli.github.com/packages', suite: stable, "
+        f"key_url: 'https://cli.github.com/packages/k.gpg', key_sha256: {SHA}}}")
+
+
+def test_apt_repos_parse_with_defaults():
+    r, = d.parse(f"apt_repos: [{REPO}]")["apt_repos"]
+    assert r["components"] == ["main"] and r["architectures"] == []
+    assert r["key_sha256"] == SHA and r["suite"] == "stable"
+    assert d.parse("apt: [git]")["apt_repos"] == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("url", "http://x/p"), ("url", "'https://x/p q'"), ("url", "'https://x/p\\nTypes: deb-src'"),
+    ("suite", "'stable main'"), ("suite", "'-x'"), ("key_url", "https://x/key.txt"),
+    ("key_url", "http://x/k.gpg"), ("key_sha256", "abc"), ("name", "'a b'"),
+    ("components", "[main, 'x y']"), ("components", "[]"), ("architectures", "amd64")])
+def test_apt_repo_values_cannot_inject(field, value):
+    entry = yaml.safe_load(f"[{REPO}]")[0]
+    entry[field] = yaml.safe_load(str(value))
+    with pytest.raises(DepsError):
+        d.parse(yaml.safe_dump({"apt_repos": [entry]}))
+
+
+def test_apt_repo_needs_a_pinned_key_and_unique_names():
+    with pytest.raises(DepsError, match="key_sha256"):
+        d.parse("apt_repos: [{name: g, url: 'https://x/p', suite: s, "
+                "key_url: 'https://x/k.gpg'}]")
+    with pytest.raises(DepsError, match="duplicate"):
+        d.parse(f"apt_repos: [{REPO}, {REPO}]")
+
+
+def test_apt_repos_are_part_of_the_cache_key_but_not_when_absent():
+    plain = d.parse("apt: [git]")
+    with_repo = d.parse(f"apt: [git]\napt_repos: [{REPO}]")
+    assert d.cache_key(plain) != d.cache_key(with_repo)
+    assert d.cache_key(d.parse(f"apt_repos: [{REPO}]")) is not None
+    # a deps dict from before this feature (no apt_repos key) keys the same
+    old = {k: v for k, v in plain.items() if k != "apt_repos"}
+    assert d.cache_key(old) == d.cache_key(plain)
+    assert "apt repos" in d.summary(with_repo)[0]

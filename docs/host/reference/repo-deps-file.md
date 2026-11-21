@@ -23,7 +23,7 @@ container.
 The format is the same page the session reads, so it lives in one place:
 [Editing the deps file](../../session/common/deps-file.md).
 
-Install order is apt, binaries, downloads, scripts. `--no-deps` skips all of it. Two
+Install order is apt_repos, apt, binaries, downloads, scripts. `--no-deps` skips all of it. Two
 optional metadata keys, `last_generated` (quoted ISO 8601 UTC timestamp) and
 `platform` (for example `lsb_release -a` plus `uname -m`), record where the
 toolchain was resolved so it can be reproduced; they are validated but never
@@ -51,7 +51,7 @@ launcher uses it to attest the prek download (`gh attestation verify`).
 The deps are baked into a per-repo local image (`claude-sandboxdeps-<hash>`,
 derived from the base image), so only the first launch after a change pays for
 the installs. The key covers the base image and the validated
-`apt`/`scripts`/`binaries` content; comments, metadata, `image:` and `setup:` do
+`apt_repos`/`apt`/`scripts`/`binaries` content; comments, metadata, `image:` and `setup:` do
 not count. The image is refreshed on the same `--max-age` / `--hard-max-age`
 rules as the [base image](../guides/images-and-caching.md), rebuilt when the base
 was rebuilt after it or with `--rebuild`, and the newest 4 are kept. It is built

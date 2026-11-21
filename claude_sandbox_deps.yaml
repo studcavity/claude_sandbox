@@ -1,11 +1,11 @@
 # Tooling installed into the sandbox before the session starts.
 # Format and rules: see docs/host/reference/repo-deps-file.md. Any invalid entry
 # aborts the launch; skip this file with --no-deps.
-# Install order: apt, binaries, scripts.
+# Install order: apt_repos, apt, binaries, scripts.
 
 # Where/when this toolchain was resolved, so it can be reproduced later.
 # Refresh both whenever you edit this file (inert metadata, never executed).
-last_generated: "2026-11-19T02:34:11Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
+last_generated: "2026-11-21T04:17:39Z"   # date -u +%Y-%m-%dT%H:%M:%SZ
 platform: |                              # lsb_release -a; uname -m
   Distributor ID: Ubuntu
   Description:    Ubuntu 26.04.1 LTS
@@ -13,12 +13,24 @@ platform: |                              # lsb_release -a; uname -m
   Codename:       resolute
   x86_64
 
+# Extra apt repositories, added (key sha256-pinned, Signed-By) before apt runs.
+apt_repos:
+  # GitHub's own repo for `gh`: newer than Ubuntu's package, which lacks
+  # `gh attestation`/`gh skill`. Key: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+  - name: github-cli
+    url: https://cli.github.com/packages
+    suite: stable
+    components: [main]
+    key_url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    key_sha256: 6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b
+
 # Debian/Ubuntu packages (optionally pinned: name=version).
 apt:
   - shfmt
   # (incus for nested containers is installed by `--nesting` itself.)
   # tests/integration/test_gh.py drives the real gh binary against a local fake
-  # API. It is never logged in here, so it cannot call GitHub.
+  # API. It is never logged in here, so it cannot call GitHub. Comes from the
+  # github-cli repo above.
   - gh
 
 # Prebuilt binaries -> /usr/local/bin/<name>. sha256 is required and covers

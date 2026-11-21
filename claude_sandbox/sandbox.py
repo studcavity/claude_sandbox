@@ -100,7 +100,7 @@ def with_nesting(deps):
     Pure; the packages join the deps' apt section so they are baked into the
     cached deps image (its key covers apt) rather than fetched per launch."""
     deps = dict(deps) if deps else {
-        "image": None, "apt": [], "scripts": [], "binaries": [],
+        "image": None, "apt_repos": [], "apt": [], "scripts": [], "binaries": [],
         "downloads": [], "files": [], "setup": [], "check": [],
         "last_generated": None, "platform": None, "warnings": []}
     deps["apt"] = list(deps["apt"]) + [

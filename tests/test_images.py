@@ -223,3 +223,50 @@ def test_an_attest_entry_without_a_verifier_is_refused(monkeypatch, fake_box):
     with pytest.raises(container_deps.DepsError, match="attestation"):
         im.apply_deps(fake_box, deps)   # never silently skipped
     assert not any(c[0] == "put_file" for c in fake_box.calls)
+
+
+REPO_YAML = (f"apt_repos: [{{name: gh, url: 'https://cli.github.com/packages', "
+             f"suite: stable, architectures: [amd64], key_url: "
+             f"'https://cli.github.com/packages/k.gpg', key_sha256: {SHA}}}]\n")
+
+
+def test_apt_source_text_is_deb822_with_signed_by():
+    r, = container_deps.parse(REPO_YAML)["apt_repos"]
+    assert im.apt_source_text(r) == (
+        "Types: deb\nURIs: https://cli.github.com/packages\nSuites: stable\n"
+        "Components: main\nArchitectures: amd64\n"
+        "Signed-By: /etc/apt/keyrings/claude-sandbox-gh.gpg\n")
+
+
+def test_apt_repos_are_added_then_apt_is_updated_before_installing(
+        monkeypatch, fake_box):
+    deps = container_deps.parse(REPO_YAML + "apt: [gh]\n")
+    fetched = []
+    monkeypatch.setattr(container_deps, "fetch",
+                        lambda url, cap, sha=None: fetched.append((url, sha)) or b"KEY")
+    im.apply_deps(fake_box, deps)
+    assert fetched == [("https://cli.github.com/packages/k.gpg", SHA)]
+    kinds = [(c[0], c[1]) for c in fake_box.calls]
+    key = kinds.index(("put_file", "/etc/apt/keyrings/claude-sandbox-gh.gpg"))
+    src = kinds.index(("put_file",
+                       "/etc/apt/sources.list.d/claude-sandbox-gh.sources"))
+    update = kinds.index(("root_argv", ["apt-get", "update", "-qq"]))
+    install = next(i for i, k in enumerate(kinds)
+                   if k[0] == "root_argv" and k[1][:2] == ["apt-get", "install"])
+    assert key < src < update < install   # update sees the new repo
+
+
+def test_a_repo_with_no_packages_still_updates_apt(monkeypatch, fake_box):
+    monkeypatch.setattr(container_deps, "fetch", lambda *a, **k: b"KEY")
+    im.apply_deps(fake_box, container_deps.parse(REPO_YAML))
+    assert ("root_argv", ["apt-get", "update", "-qq"]) in [
+        (c[0], c[1]) for c in fake_box.calls]
+
+
+def test_a_key_that_fails_its_pin_adds_no_source(monkeypatch, fake_box):
+    def bad(*a, **k):
+        raise container_deps.DepsError("sha256 mismatch")
+    monkeypatch.setattr(container_deps, "fetch", bad)
+    with pytest.raises(container_deps.DepsError):
+        im.apply_deps(fake_box, container_deps.parse(REPO_YAML + "apt: [gh]\n"))
+    assert not any(c[0] == "put_file" for c in fake_box.calls)

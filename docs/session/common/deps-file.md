@@ -23,6 +23,14 @@ invalid one aborts the launch):
 
 ```yaml
 image: images:ubuntu/24.04 # optional: this repo's base OS (default: images:ubuntu/26.04)
+apt_repos:                 # extra apt repositories, added before `apt` is installed
+  - name: github-cli       # [A-Za-z0-9._+-]; file names get a claude-sandbox- prefix
+    url: https://cli.github.com/packages   # https only, plain characters
+    suite: stable
+    components: [main]     # optional (default [main])
+    architectures: [amd64] # optional (default: all)
+    key_url: https://cli.github.com/packages/githubcli-archive-keyring.gpg  # .gpg or .asc
+    key_sha256: <64 hex>   # required: the key is checked on the host
 apt:                       # Debian/Ubuntu package names, optional =version
   - build-essential
   - libssl-dev=3.0.13-0ubuntu3
@@ -73,7 +81,13 @@ check:                     # final gate run when Claude exits (see below); same 
   and package names and versions follow that release. Check this sandbox's OS with
   `cat /etc/os-release` before assuming one.
 - URLs must be `https://` (redirects too) with no credentials. Installation order:
-  apt, binaries, downloads, scripts.
+  apt_repos, apt, binaries, downloads, scripts.
+- `apt_repos:` each become a deb822 `/etc/apt/sources.list.d/claude-sandbox-<name>.sources`
+  with `Signed-By` pointing at that repo's own pinned key in `/etc/apt/keyrings/`, so
+  the key vouches for that repo only (it is never added to apt's global trust). A
+  repo's packages run as root, so add only vendors' official repos and say so in the
+  commit. `apt-get update` always runs after the repos are added and before the
+  `apt` packages install; nothing runs `apt-get upgrade`.
 - `prek` (v0.5.11) is installed in every sandbox by the launcher, not by this file
   (sha256 and `attest: j178/prek` checked at image build; a `prek` binary entry here
   replaces it). Do not add it.
